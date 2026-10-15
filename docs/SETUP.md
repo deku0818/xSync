@@ -1,6 +1,6 @@
 # 安装与接入 xSync
 
-当前为 **0.1.0 初始版本**，GitHub 发布状态见 [Releases](https://github.com/deku0818/xSync/releases)，社区条目已登记用于预审，保持草稿。普通库初始化与设备接入已实现；首次使用先选独立测试库和备份。旧 0.0.x 是预置身份的实验环境，不能通过改名把旧服务器数据当成新库。
+当前为 **0.1.0 初始版本**，已发布到 [Obsidian 社区目录](https://community.obsidian.md/plugins/xsync)，版本文件见 [Releases](https://github.com/deku0818/xSync/releases)。普通库初始化与设备接入已实现；首次使用先选独立测试库和备份。旧 0.0.x 是预置身份的实验环境，不能通过改名把旧服务器数据当成新库。
 
 ## 服务器由谁初始化
 
@@ -20,7 +20,9 @@ npm run server:init -- --out .local/xsync-owner
 
 ## 安装插件
 
-在仓库根目录运行 `npm run package:plugin`。产物位于 `dist/release/`，ZIP 内为 `xsync/` 文件夹；将它放到测试库的 `<配置目录>/plugins/xsync/`，在第三方插件设置中启用 **xSync**。默认配置目录是 `.obsidian`。最低宿主版本暂设为 **1.14.5**；这不是对所有较新版本或平台的兼容保证。
+在 Obsidian 的“设置 → 第三方插件 → 浏览”中搜索 **xSync**，安装后启用。也可打开[社区展示页](https://community.obsidian.md/plugins/xsync)，点击 **Add to Obsidian**。
+
+手动安装使用 GitHub Release 中的 `main.js`、`manifest.json` 和 `styles.css`，放到测试库的 `<配置目录>/plugins/xsync/`。开发构建可在仓库根目录运行 `npm run package:plugin`；产物位于 `dist/release/`，ZIP 内为 `xsync/` 文件夹。默认配置目录是 `.obsidian`。最低宿主版本暂设为 **1.14.5**；这不是对所有较新版本或平台的兼容保证。当前插件界面为中文。
 
 已有 `obsidian-sync-dev` 的测试库：先禁用旧插件，不要同时启用两个同步实例。新插件 ID 不会自动迁移旧插件设置，也不会自动安装、更新或卸载插件。原实验服务、设备身份和 IndexedDB 不能与新建服务混用；保留旧数据，另建测试库验证新接入流程。之前的探针是独立插件，不是 xSync 的依赖。
 

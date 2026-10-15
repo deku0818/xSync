@@ -2,10 +2,21 @@
 
 Sync an Obsidian vault between your own devices using a self-hosted server and end-to-end encryption. Overlapping edits remain available for explicit conflict review; xSync never chooses a winner by timestamp, upload order, or device priority.
 
+[Install from the Obsidian Community directory](https://community.obsidian.md/plugins/xsync) · [Set up your server](docs/DEPLOYMENT.md) · [Installation and device enrollment](docs/SETUP.md)
+
+Free and open source. Bring your own HTTPS server; no hosted service is included. The current interface is in Chinese.
+
+## What you can do
+
+- Sync notes, attachments, and shareable configuration with end-to-end encryption. Credentials, workspace layouts, and the core-plugin enable list stay local.
+- Compare conflicting edits side by side, keep both versions, select a version, merge text manually, or postpone the decision while other files continue syncing.
+- Set independent file-size, folder, extension, and regular-expression exclusions on each device. View other devices' rule snapshots without applying them locally.
+- Pause and resume without re-entering your saved key. Persistent queues recover interrupted work and automatically catch up when the app returns to the foreground.
+
 ## Quick start
 
 1. Follow [server setup](docs/DEPLOYMENT.md). Generate the vault's random sync key on your own computer with `npm run server:init -- --out .local/xsync-owner`. Copy only `server.json` to the server; keep `sync-key.txt` private and backed up separately.
-2. Download the plugin files from [GitHub Releases](https://github.com/deku0818/xSync/releases), or build with `npm ci && npm run package:plugin`. Install the `xsync` folder into your vault's configuration directory under `plugins/`, then enable xSync.
+2. Install **xSync** from Obsidian's **Settings → Community plugins → Browse**, or open the [community listing](https://community.obsidian.md/plugins/xsync) and choose **Add to Obsidian**. Enable the plugin. For manual installation, use the files from [GitHub Releases](https://github.com/deku0818/xSync/releases) under `<configuration directory>/plugins/xsync/`.
 3. Enter a device name, your HTTPS server address, and the sync key. Select **Save and test**. The first device can enroll; an administrator must temporarily open enrollment for subsequent devices.
 
 Daily controls are pause and resume. A saved key can be reused by leaving the password field empty. See [installation, enrollment, and revocation](docs/SETUP.md) for details.
@@ -20,13 +31,13 @@ Foreground sync and reconciliation after returning from the background are suppo
 
 The plugin connects to the self-hosted server you configure. It transfers encrypted contents, paths and configuration snapshots, plus file identities, sizes and synchronization metadata. The server can see device names and credential hashes, but does not receive the vault sync key or content-decryption keys. Device sessions and authorization tokens are protected by the operating system; there is no plaintext storage fallback.
 
-There is no analytics, advertising, or plugin self-updater. Credentials, device identity, workspace layout, the core-plugin enable list, and xSync's own files stay local. Unknown secret fields in other plugins' settings may need explicit exclusion. The community listing remains a draft until separately published.
+There is no analytics, advertising, or plugin self-updater. Credentials, device identity, workspace layout, the core-plugin enable list, and xSync's own files stay local. Unknown secret fields in other plugins' settings may need explicit exclusion.
 
 ## 中文简介
 
 个人多设备 Obsidian 同步插件与自建服务，目标是电脑与手机间的端到端加密整库同步。重叠修改展示差异，由用户明确选择版本、保留双方或手动合并。
 
-**当前版本为 0.1.0，插件 ID 为 `xsync`。** 已支持普通库初始化、设备接入/撤销和标准发布包；GitHub 发布状态见 [Releases](https://github.com/deku0818/xSync/releases)，社区条目仍为草稿。新接入流程仍需 Mac/iPhone 真机复验，联合备份还原与生产安全验收尚未完成，请先在独立测试库验证。
+**当前版本为 0.1.0，插件 ID 为 `xsync`，已发布到 [Obsidian 社区目录](https://community.obsidian.md/plugins/xsync)。** 免费开源，需要自己的 HTTPS 同步服务器，当前界面为中文。已支持普通库初始化、设备接入/撤销和标准发布包；版本文件见 [Releases](https://github.com/deku0818/xSync/releases)。新接入流程仍需 Mac/iPhone 真机复验，联合备份还原与生产安全验收尚未完成，请先在独立测试库验证。
 
 ## 当前实现
 
@@ -44,7 +55,7 @@ There is no analytics, advertising, or plugin self-updater. Credentials, device 
 
 先阅读[安装与接入](docs/SETUP.md)和[服务部署](docs/DEPLOYMENT.md)。`npm run server:init -- --out .local/xsync-owner` 在所有者电脑生成初始化文件，只把 `server.json` 送到服务器，`sync-key.txt` 留在自己的设备与离线备份中。
 
-`npm run package:plugin` 生成 `dist/release/xsync-0.1.0.zip` 及插件文件，解压到独立测试库的 `.obsidian/plugins/xsync/` 并启用。填写名称、HTTPS 地址、同步密钥，保存并测试后前台自动同步。后续新增设备需管理者临时开放接入。最低宿主版本暂设为 1.14.5；Android 尚无安全存储适配，Windows/Linux 未完成真机验收。
+在 Obsidian 的“设置 → 第三方插件 → 浏览”中搜索 **xSync**，或从[社区展示页](https://community.obsidian.md/plugins/xsync)点击 **Add to Obsidian**，安装并启用。手动安装可使用 GitHub Release 文件；开发构建运行 `npm run package:plugin`，将生成的 `xsync/` 文件夹放到独立测试库的 `<配置目录>/plugins/`。填写名称、HTTPS 地址、同步密钥，保存并测试后前台自动同步。后续新增设备需管理者临时开放接入。最低宿主版本暂设为 1.14.5；Android 尚无安全存储适配，Windows/Linux 未完成真机验收。
 
 插件会连接用户配置的自建服务，上传文件/路径/配置的密文、文件身份、长度和同步版本元数据；服务端可见设备名称与授权摘要。没有分析统计、广告或插件自动更新器。暂停会保留本机配置；凭据、身份、布局、核心插件启用状态及 xSync/旧开发插件自身固定排除。其他第三方配置中的未知秘密字段仍可能未被识别，应使用本机排除规则。网络和本机存储边界见[安装说明](docs/SETUP.md)。
 
@@ -82,4 +93,4 @@ HTML 可直接打开，也可用 make preview 在本机预览。实现按 plugin
 
 ## 许可
 
-项目采用 [MIT License](LICENSE)。官方插件模板与依赖保留相应许可，见 [模板来源](plugin/TEMPLATE.md) 和 plugin/licenses/。源码提交不代表生产发布。
+项目采用 [MIT License](LICENSE)。官方插件模板与依赖保留相应许可，见 [模板来源](plugin/TEMPLATE.md) 和 plugin/licenses/。

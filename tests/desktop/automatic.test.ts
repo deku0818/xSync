@@ -2,7 +2,16 @@ import { afterEach, expect, it, vi } from "vitest";
 import { AutomaticSync, RemoteEvents, SerialWork, type EventSocket } from "../../plugin/src/sync/realtime";
 import { boundedRequest } from "../../plugin/src/sync/transport";
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+it("uses host-window timers and cancels pending reconciliation on stop", async () => {
+  vi.useFakeTimers();
+  const host = { setTimeout: vi.fn(setTimeout), clearTimeout: vi.fn(clearTimeout), setInterval: vi.fn(setInterval), clearInterval: vi.fn(clearInterval) };
+  vi.stubGlobal("window",host);
+  const run=vi.fn(async()=>{}); const automatic=new AutomaticSync(run,()=>{},10,1000);
+  automatic.start(); await vi.advanceTimersByTimeAsync(0); automatic.trigger("file"); automatic.stop();
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(run).toHaveBeenCalledTimes(1); expect(host.setTimeout).toHaveBeenCalled(); expect(host.setInterval).toHaveBeenCalled(); expect(host.clearTimeout).toHaveBeenCalled(); expect(host.clearInterval).toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+});
 it("coalesces file bursts and drains changes arriving during a run without overlap", async () => {
   vi.useFakeTimers(); let finish!: () => void; let active = 0; let maximum = 0;
   const run = vi.fn(async () => { active++; maximum = Math.max(active, maximum); if (run.mock.calls.length === 1) await new Promise<void>(resolve => { finish = resolve; }); active--; });

@@ -1,3 +1,4 @@
+import { timerHost, type TimerHandle } from "../runtime/timers";
 import { z } from "zod";
 import { commitSchema, changeSchema, handshakeSchema, receiptSchema, snapshotSchema } from "../../../protocol/src/wire";
 import type { Commit } from "../../../protocol/src/types";
@@ -9,10 +10,10 @@ export interface HTTPRequest { url: string; method: string; headers: Record<stri
 export interface HTTPResponse { status: number; headers: Record<string, string>; bytes: Uint8Array }
 export type HTTP = (request: HTTPRequest) => Promise<HTTPResponse>;
 export async function boundedRequest<T>(request: PromiseLike<T>, milliseconds = 15000): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: TimerHandle | undefined;
   try {
-    return await Promise.race([Promise.resolve(request), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("NETWORK_TIMEOUT")), milliseconds); })]);
-  } finally { clearTimeout(timer); }
+    return await Promise.race([Promise.resolve(request), new Promise<never>((_resolve, reject) => { timer = timerHost().setTimeout(() => reject(new Error("NETWORK_TIMEOUT")), milliseconds); })]);
+  } finally { timerHost().clearTimeout(timer); }
 }
 export class RemoteError extends Error { constructor(readonly code: string, readonly status?: number) { super(code); } }
 /** Explicit, exact-origin opt-in carried only by a generated development device fixture. */

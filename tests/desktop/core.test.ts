@@ -70,3 +70,12 @@ it("maps the actual configDir into shared configuration while excluding credenti
   await expect(port.write(".obsidian/core-plugins.json", new Uint8Array(), null)).rejects.toThrow("DEVICE_LOCAL_PATH");
   await expect(port.remove(".obsidian/core-plugins.json", new Uint8Array())).rejects.toThrow("DEVICE_LOCAL_PATH");
 });
+it("honours the host trash preference only after verifying the exact file bytes", async () => {
+  const expected=new TextEncoder().encode("reviewed bytes"); const file={path:"note.md",stat:{size:expected.length}};
+  let current=expected.slice();
+  const trashFile=vi.fn(async()=>{}), directTrash=vi.fn(async()=>{});
+  const app={vault:{configDir:".obsidian",getFileByPath:()=>file,readBinary:async()=>current.slice().buffer,trash:directTrash},fileManager:{trashFile}} as unknown as App;
+  const port=new ObsidianVaultPort(app,".obsidian/obsidian-sync-local");
+  current=new TextEncoder().encode("unreviewed change"); await expect(port.remove(file.path,expected)).rejects.toThrow("LOCAL_CHANGED_DURING_DELETE"); expect(trashFile).not.toHaveBeenCalled();
+  current=expected.slice(); await port.remove(file.path,expected); expect(trashFile).toHaveBeenCalledWith(file); expect(directTrash).not.toHaveBeenCalled();
+});

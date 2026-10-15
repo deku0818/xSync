@@ -33,7 +33,10 @@ export function mergeConfig(path: string, local: Uint8Array | null, desired: Uin
   if (canonical(project(incoming)) !== canonical(incoming)) throw new Error("REMOTE_CONFIG_CONTAINS_DEVICE_FIELDS");
   const own = local ? JSON.parse(decoder.decode(local)) as unknown : {};
   let result = merge(own, incoming);
-  if (path === ".obsidian/community-plugins.json" && Array.isArray(incoming) && Array.isArray(own) && own.some(isSelfPlugin)) result = [...incoming.filter(v => !isSelfPlugin(v)), ...own.filter(isSelfPlugin)];
+  if (path === ".obsidian/community-plugins.json" && Array.isArray(incoming) && Array.isArray(own) && own.some(isSelfPlugin)) {
+    const shared: unknown[] = incoming; const local: unknown[] = own;
+    result = [...shared.filter(v => !isSelfPlugin(v)), ...local.filter(isSelfPlugin)];
+  }
   return encoder.encode(JSON.stringify(result, null, 2));
 }
 export function hasDeviceFields(path: string, local: Uint8Array): boolean {

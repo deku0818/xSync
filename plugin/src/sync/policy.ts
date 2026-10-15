@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { RE2JS } from "re2js";
 import { isSelfPlugin } from "./plugin-identity";
+import { hasControlCharacter } from "../../../protocol/src/text";
 
 export const HARD_FILE_BYTES = 100_000_000;
 export const CHUNK_BYTES = 4 * 1024 * 1024;
@@ -11,7 +12,7 @@ export const defaultRules = (): SyncRules => ({ maxMB: 100, suffixes: [], folder
 export interface FileEntry { path: string; size: number; directory?: boolean; reason?: string }
 export function folderPath(input: string): string {
   const path = input.trim().normalize("NFC").replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
-  if (!path || path.startsWith("/") || path.split("/").some(p => !p || p === "." || p === ".." || /[\x00-\x1f<>:"|?*]/.test(p))) throw new Error("请输入有效的仓库相对目录");
+  if (!path || path.startsWith("/") || path.split("/").some(p => !p || p === "." || p === ".." || hasControlCharacter(p) || /[<>:"|?*]/.test(p))) throw new Error("请输入有效的仓库相对目录");
   return path;
 }
 export function parseSuffixes(input: string): string[] {

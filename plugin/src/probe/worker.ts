@@ -1,10 +1,10 @@
 import { cryptoProbe } from "./crypto";
 
-const scope = globalThis as unknown as {
+const scope = self as unknown as {
   onmessage: ((event: MessageEvent) => void) | null;
   postMessage: (value: unknown) => void;
 };
-scope.onmessage = async (event: MessageEvent) => {
+async function handleMessage(event: MessageEvent): Promise<void> {
   try {
     if (event.data === "ping") {
       // Minimal WASM function returning 42; validates actual instantiation/execution.
@@ -17,4 +17,5 @@ scope.onmessage = async (event: MessageEvent) => {
       scope.postMessage({ ok: true, result: await cryptoProbe() });
     } else throw new Error("Unknown worker probe");
   } catch (error) { scope.postMessage({ ok: false, error: error instanceof Error ? error.message : String(error) }); }
-};
+}
+scope.onmessage = event => { void handleMessage(event); };

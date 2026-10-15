@@ -44,6 +44,7 @@ it("probe touches only synthetic fixtures/local reports, honours configDir, pers
     expect(first.report.steps.filter(s => s.status === "fail")).toEqual([]);
     expect(first.report.steps.at(-1)?.status).toBe("unverified");
     expect(first.report.environment.sourceReadMode).toContain("not streaming");
+    expect(first.report.environment.platform).toBe("iOS");
     const second = await new ProbeRunner(app, "session-2").run({ deviceLabel: "iPhone", model: "test", osVersion: "test", sizeMiB: 1 }, () => {});
     expect(second.report.steps[0]?.details?.previousSessionMarkers).toBe(1);
     expect(second.report.interruption).toBe("finished");

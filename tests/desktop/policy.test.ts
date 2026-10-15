@@ -4,7 +4,17 @@ import { SyncPolicy, defaultRules, folderPath, validateRules } from "../../plugi
 import { sharedConfig, mergeConfig } from "../../plugin/src/sync/config-projection";
 import { VaultCrypto } from "../../plugin/src/sync/crypto";
 import { compareLines } from "../../plugin/src/ui/diff-lines";
+import { clientName } from "../../protocol/src/client-profile";
+import { canonicalPath } from "../../plugin/src/sync/crypto";
 const enc = new TextEncoder(), dec = new TextDecoder();
+it("continues rejecting every ASCII control in paths and device names while accepting multilingual names", () => {
+  for (let value=0;value<32;value++) {
+    const text=`before${String.fromCharCode(value)}after`;
+    expect(()=>folderPath(text)).toThrow(); expect(()=>canonicalPath(`${text}.md`)).toThrow(); expect(()=>clientName(text)).toThrow();
+  }
+  expect(()=>clientName(`before${String.fromCharCode(127)}after`)).toThrow();
+  expect(clientName("我的 iPhone 🐇")).toBe("我的 iPhone 🐇"); expect(canonicalPath("资料/Note 🐇.md")).toBe("资料/note 🐇.md");
+});
 it("excludes both xSync and the legacy development plugin, and never accepts remote changes to their enable state", () => {
   const policy = new SyncPolicy(); const path = ".obsidian/community-plugins.json";
   for (const id of ["xsync","obsidian-sync-dev"]) {

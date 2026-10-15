@@ -64,7 +64,7 @@ class ReportModal extends Modal {
     this.contentEl.createEl("p", { text: this.path });
     this.contentEl.createEl("p", { text: "可复制下方 JSON；iPhone 真机结果需要包含机型、系统版本和人工内存/重启证据。" });
     const area = this.contentEl.createEl("textarea"); area.value = this.report; area.readOnly = true;
-    area.rows = 20; area.style.width = "100%";
+    area.rows = 20; area.setCssProps({ width: "100%" });
   }
   onClose(): void { this.contentEl.empty(); }
 }

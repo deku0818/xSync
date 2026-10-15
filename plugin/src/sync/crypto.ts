@@ -1,6 +1,7 @@
 import sodium from "libsodium-wrappers-sumo";
 import { z } from "zod";
 import { canonical } from "../../../protocol/src/model";
+import { hasControlCharacter } from "../../../protocol/src/text";
 import type { Location, Payload, Revision } from "../../../protocol/src/types";
 
 export const MAX_FILE_BYTES = 100_000_000;
@@ -28,7 +29,7 @@ function open(key: Uint8Array, encrypted: string, context: unknown): Uint8Array 
 export function canonicalPath(path: string): string {
   if (!path || path.startsWith("/") || path.includes("\\") || path.length > 1024) throw new Error("UNSAFE_PATH");
   for (const [index, part] of path.split("/").entries()) {
-    if (!part || part === "." || part === ".." || (part.startsWith(".") && !(index === 0 && part === ".obsidian")) || /[\x00-\x1f<>:"|?*]/.test(part) || /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(part)) throw new Error("UNSUPPORTED_PATH");
+    if (!part || part === "." || part === ".." || (part.startsWith(".") && !(index === 0 && part === ".obsidian")) || hasControlCharacter(part) || /[<>:"|?*]/.test(part) || /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(part)) throw new Error("UNSUPPORTED_PATH");
   }
   return path.normalize("NFC").toLowerCase();
 }

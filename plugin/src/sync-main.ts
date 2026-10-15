@@ -1,3 +1,4 @@
+import { timerHost, type TimerHandle } from "./runtime/timers";
 // Based on obsidianmd/obsidian-sample-plugin, commit 07ceb81d1fb3384af611ebf665a1ec42a7e5926d (0BSD).
 import { Modal, Notice, Platform, Plugin, PluginSettingTab, TFile, requestUrl, type App } from "obsidian";
 import { z } from "zod";
@@ -33,7 +34,7 @@ export default class ObsidianSyncPlugin extends Plugin {
   private profileDirty = true;
   private profilePending?: PendingProfile;
   private remote?: Transport;
-  private configTimer?: ReturnType<typeof setInterval>;
+  private configTimer?: TimerHandle;
   private configStamp = "";
   private configScanning = false;
   private config?: z.infer<typeof configSchema>;
@@ -70,9 +71,13 @@ export default class ObsidianSyncPlugin extends Plugin {
     try {
       const root = `${this.app.vault.configDir}/obsidian-sync-local`;
       const adapter = this.app.vault.adapter;
-      const savedData = await this.loadData();
+      const savedData: unknown = await this.loadData();
       const markerPath = `${this.app.vault.configDir}/obsidian-sync-development.json`;
-      const development = await adapter.exists(markerPath) && JSON.parse(await adapter.read(markerPath)).generatedBy === "ObsidianSync desktop test setup";
+      let development = false;
+      if (await adapter.exists(markerPath)) {
+        const marker: unknown = JSON.parse(await adapter.read(markerPath));
+        development = z.object({ generatedBy: z.literal("ObsidianSync desktop test setup") }).safeParse(marker).success;
+      }
       if (!await adapter.exists(root)) await adapter.mkdir(root);
       const identityPath = `${root}/device.json`;
       if (!await adapter.exists(identityPath)) {
@@ -147,7 +152,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     });
   }
   onunload(): void {
-    this.disposed = true; clearInterval(this.configTimer); this.configTimer = undefined; this.automatic?.stop(); this.events?.stop(); this.listeners.clear(); this.engine?.lock();
+    this.disposed = true; timerHost().clearInterval(this.configTimer); this.configTimer = undefined; this.automatic?.stop(); this.events?.stop(); this.listeners.clear(); this.engine?.lock();
     void this.work.idle().finally(() => this.db?.close());
   }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -155,9 +160,9 @@ export default class ObsidianSyncPlugin extends Plugin {
   private updateAutomation(): void {
     if (!this.disposed && this.layoutReady && !this.configuring && this.autoSync && this.engine?.unlocked) {
       this.automatic?.start(); this.events?.start();
-      if (!this.configTimer) this.configTimer = setInterval(() => { void this.pollConfiguration(); }, 2000);
+      if (!this.configTimer) this.configTimer = timerHost().setInterval(() => { void this.pollConfiguration(); }, 2000);
     }
-    else { clearInterval(this.configTimer); this.configTimer = undefined; this.automatic?.stop(); this.events?.stop(); }
+    else { timerHost().clearInterval(this.configTimer); this.configTimer = undefined; this.automatic?.stop(); this.events?.stop(); }
   }
   private showPending(): void {
     if (!this.autoSync) this.statusEl?.setText("xSync · 已暂停同步");

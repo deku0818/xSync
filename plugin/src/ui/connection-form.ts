@@ -1,3 +1,4 @@
+import { timerHost, type TimerHandle } from "../runtime/timers";
 import { Notice } from "obsidian";
 import type ObsidianSyncPlugin from "../sync-main";
 import { mountTemplate, icon } from "./dom";
@@ -10,7 +11,7 @@ const labels: Record<ConnectionStep, string> = { server: "服务器连接", name
 export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugin): () => void {
   container.addClass("oss-app", "oss-settings-host");
   const shell = container.createDiv("shell"); const q = mountTemplate(shell, settingsTemplate);
-  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let refreshTimer: TimerHandle | undefined;
   let closed = false, busy = false, draftRules = structuredClone(plugin.rules), inventory: FileEntry[] = [], selectedClient = "", dirty = false;
   const input = (id: string) => q<HTMLInputElement>(id);
   input("client-name").value = plugin.deviceName; input("endpoint").value = plugin.endpoint; input("max-size").value = String(draftRules.maxMB);
@@ -158,9 +159,9 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
   };
   q("pause").onclick = async () => { if (busy) return; try { await plugin.setAutoSync(!plugin.autoSync); renderStatus(); } catch { new Notice("无法保存暂停状态，请检查本机存储。"); } };
   resetChecks(); renderStatus(); renderRules(); renderTree(); const unsubscribe = plugin.subscribe(() => {
-    renderStatus(); clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => { void plugin.inventory().then(entries => { if (!closed && JSON.stringify(inventory) !== JSON.stringify(entries)) { inventory = entries; renderTree(); } }, () => {}); }, 200);
+    renderStatus(); timerHost().clearTimeout(refreshTimer);
+    refreshTimer = timerHost().setTimeout(() => { void plugin.inventory().then(entries => { if (!closed && JSON.stringify(inventory) !== JSON.stringify(entries)) { inventory = entries; renderTree(); } }, () => {}); }, 200);
   });
   void plugin.inventory().then(entries => { if (!closed) { inventory = entries; renderTree(); } }, () => { if (!closed) q("excluded-tree").setText("仓库索引读取失败，未把缺失内容当成删除。"); });
-  return () => { closed = true; clearTimeout(refreshTimer); input("key").value = ""; unsubscribe(); };
+  return () => { closed = true; timerHost().clearTimeout(refreshTimer); input("key").value = ""; unsubscribe(); };
 }

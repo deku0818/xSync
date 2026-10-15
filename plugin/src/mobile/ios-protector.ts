@@ -27,8 +27,9 @@ const envelopeSchema = z.strictObject({
 });
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
-export function iosProtector(isIos: boolean, identity: UnlockIdentity, runtime: IosRuntime = globalThis as IosRuntime): SecretProtector {
-  const cap = runtime.Capacitor;
+export function iosProtector(isIos: boolean, identity: UnlockIdentity, runtime?: IosRuntime): SecretProtector {
+  const environment = runtime ?? (typeof window === "undefined" ? {} : window as unknown as IosRuntime);
+  const cap = environment.Capacitor;
   const storage = cap?.Plugins.SecureStorage;
   const methods = cap?.PluginHeaders?.find(h => h.name === "SecureStorage")?.methods;
   if (!isIos || !cap || cap.getPlatform() !== "ios" || !cap.isNativePlatform() || !cap.isPluginAvailable("SecureStorage") || !storage

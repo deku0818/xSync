@@ -1,3 +1,4 @@
+import { timerHost, type TimerHandle } from "../runtime/timers";
 import { SYNC_FEATURES } from "../../../protocol/src/wire";
 import { sharedConfig, hasDeviceFields } from "./config-projection";
 import type { Action, Commit, FileState, Revision, Snapshot } from "../../../protocol/src/types";
@@ -433,11 +434,11 @@ export class SyncEngine {
   private async endRun(): Promise<void> { try { await this.release(); } finally { this.ended(); } }
   async sync(): Promise<EngineStatus> {
     if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.crypto(); this.busy = true; this.errors = [];
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let heartbeat: TimerHandle | undefined;
     const renewals = new Set<Promise<void>>();
     try {
       await this.lease(); await this.db.skipped.clear();
-      heartbeat = setInterval(() => {
+      heartbeat = timerHost().setInterval(() => {
         const renewal = this.lease().catch(() => { this.stopping = true; }); renewals.add(renewal);
         void renewal.finally(() => renewals.delete(renewal));
       }, 10000);
@@ -450,7 +451,7 @@ export class SyncEngine {
       await this.apply();
     } catch (error) { this.errors.push(error instanceof Error ? error.message : String(error)); }
     finally {
-      clearInterval(heartbeat); await Promise.all(renewals);
+      timerHost().clearInterval(heartbeat); await Promise.all(renewals);
       try { await this.endRun(); } catch { this.errors.push("LEASE_RELEASE_FAILED"); }
     }
     return this.status();

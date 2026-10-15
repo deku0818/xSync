@@ -1,3 +1,4 @@
+import { timerHost } from "../runtime/timers";
 import { apiVersion, Platform, type App } from "obsidian";
 import { ALLOWED_SIZES, fixture, verifyFixture } from "./fixtures";
 import { ProbeStore } from "./store";
@@ -32,6 +33,11 @@ async function mkdir(app: App, path: string): Promise<void> {
   if (!await app.vault.adapter.exists(path)) await app.vault.adapter.mkdir(path);
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function platformName(): string {
+  if (Platform.isIosApp) return "iOS";
+  if (Platform.isAndroidApp) return "Android";
+  return "Desktop";
+}
 
 export class ProbeRunner {
   private abort = new AbortController();
@@ -59,7 +65,7 @@ export class ProbeRunner {
       format: 1, build: "0.0.1", runId, session: this.session, started: new Date().toISOString(), options,
       environment: {
         apiVersion, isMobile: Platform.isMobile, isIosApp: Platform.isIosApp, isAndroidApp: Platform.isAndroidApp,
-        userAgent: navigator.userAgent,
+        platform: platformName(),
         peakProcessMemory: "unmeasured: requires native profiler; JS heap samples are not process peak memory",
         sourceReadMode: "whole-file ArrayBuffer (not streaming)",
       }, steps: [], interruption: "running-or-interrupted",
@@ -77,7 +83,7 @@ export class ProbeRunner {
       row.elapsedMs = performance.now() - start; await persist(); progress(row);
     };
     let previous = performance.now(); let maxGap = 0;
-    const timer = setInterval(() => { const now = performance.now(); maxGap = Math.max(maxGap, now - previous); previous = now; }, 100);
+    const timer = timerHost().setInterval(() => { const now = performance.now(); maxGap = Math.max(maxGap, now - previous); previous = now; }, 100);
     const store = new ProbeStore(`obsidian-sync-probe-${databaseId}`);
     const fixtureRoot = `ObsidianSync-Probe-${runId}`;
     try {
@@ -144,7 +150,7 @@ export class ProbeRunner {
       report.steps.push({ name: "Native memory / iOS locked-device key protection / force-quit recovery", status: "unverified",
         details: { next: "Follow docs/testing/mobile-probe.md; attach native memory evidence and restart report" } });
     } finally {
-      clearInterval(timer); store.close(); report.maxTimerGapMs = maxGap;
+      timerHost().clearInterval(timer); store.close(); report.maxTimerGapMs = maxGap;
       report.finished = new Date().toISOString(); report.interruption = this.stopped ? "cancelled" : "finished";
       await persist();
     }

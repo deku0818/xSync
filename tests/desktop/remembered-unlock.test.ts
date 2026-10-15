@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { desktopProtector, type SecretProtector } from "../../plugin/src/desktop/protector";
 import { RememberedUnlock, type LocalTextFiles } from "../../plugin/src/desktop/remembered-unlock";
 import { VaultCrypto } from "../../plugin/src/sync/crypto";
+vi.mock("obsidian", () => ({ Platform: { isDesktop: true } }));
 
 async function protector(): Promise<SecretProtector> {
   const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);

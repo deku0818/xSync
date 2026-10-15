@@ -78,7 +78,7 @@
 .oss-app input[data-ui="key"][data-saved-key="true"]::placeholder{color:var(--text);letter-spacing:2px;opacity:1}
 .oss-app input[aria-invalid="true"]{border-color:var(--red)}
 .oss-app input:disabled{opacity:.6}
-.oss-app .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+.oss-app .mono{font-family:var(--font-monospace,monospace);font-size:12px}
 .oss-app .muted{color:var(--muted)}
 .oss-app .small{font-size:12px}
 .oss-app .hidden,.oss-app [hidden]{display:none!important}

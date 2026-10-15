@@ -119,7 +119,7 @@ export class ObsidianVaultPort implements FilePort {
         if (hasDeviceFields(path, raw)) throw new Error("CONFIG_DELETE_HAS_DEVICE_FIELDS");
         await this.app.vault.adapter.trashLocal(physical); return;
       }
-      const file = this.app.vault.getFileByPath(path); if (!file) throw new Error("SOURCE_MISSING"); await this.app.vault.trash(file, false);
+      const file = this.app.vault.getFileByPath(path); if (!file) throw new Error("SOURCE_MISSING"); await this.app.fileManager.trashFile(file);
     });
   }
   private stage(id: string): string { if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID"); return `${this.localRoot}/staging/${id}`; }

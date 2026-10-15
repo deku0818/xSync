@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-14",
+  "scope": "same Mac, real Obsidian 1.14.4 A/B; Electron safeStorage; WebSocket notification + HTTP pull",
+  "files": {
+    "冲突期间继续同步.md": {
+      "bytes": 112,
+      "sha256": "08cc0a59bc2cc0c0e94997cd8c24dcfdc9891463c41612490de4facfd0d8681f",
+      "equal": true
+    },
+    "同步试验-保留电脑B.md": {
+      "bytes": 104,
+      "sha256": "0f75fe0aa85879136fccb50bb16deb033b43402bc1c1821f92cc2598ad5208c9",
+      "equal": true
+    },
+    "同步试验.md": {
+      "bytes": 83,
+      "sha256": "6202df8e323e2f9dcdd13eb15404b57ce589bc982920b6db7354186162357447",
+      "equal": true
+    },
+    "开始使用.md": {
+      "bytes": 1481,
+      "sha256": "875b69b97411d9561003152af2c081f05ac530c1b31cad6a1ba2550af9df562e",
+      "equal": true
+    },
+    "自动实时-保留电脑B.md": {
+      "bytes": 99,
+      "sha256": "ec0d20c1191c4a5c5ac05dc549955a6a614d3ecc3a68958912fa10871b1c68ab",
+      "equal": true
+    }
+  },
+  "unlockRecords": {
+    "ObsidianSync-电脑A": {
+      "provider": "electron-safeStorage:darwin",
+      "ciphertextBytes": 979,
+      "plaintextSecretFields": false,
+      "autoSync": true,
+      "rememberDevice": true
+    },
+    "ObsidianSync-电脑B": {
+      "provider": "electron-safeStorage:darwin",
+      "ciphertextBytes": 979,
+      "plaintextSecretFields": false,
+      "autoSync": true,
+      "rememberDevice": true
+    }
+  },
+  "automaticResults": {
+    "A_pluginReloadNoPassword": true,
+    "B_pluginReloadNoPassword": true,
+    "A_windowReopenNoPassword": true,
+    "bidirectionalBackgroundSync": true,
+    "serverRestartRecovery": true,
+    "overlapPreserved": true,
+    "otherFilesContinue": true,
+    "reviewUpdatesAndClearsOldSelection": true,
+    "keepBothAutomaticallyPropagates": true,
+    "autosaveNoManualSaveOrSync": true
+  }
+}

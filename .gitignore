@@ -21,3 +21,21 @@ backups/
 *.db-*
 *.key
 *.pem
+tests/desktop/vaults/
+
+# Local Obsidian state, editor files and runtime credentials.
+.obsidian/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+__pycache__/
+*.py[cod]
+*.tsbuildinfo
+.npmrc
+postgres.env
+server.json
+device.json
+desktop-unlock.json
+connection-*.json

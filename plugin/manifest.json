@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-sync-probe",
+  "name": "ObsidianSync Platform Probe",
+  "version": "0.0.1",
+  "minAppVersion": "1.8.0",
+  "description": "Development-only mobile feasibility probes using synthetic data in a disposable test vault.",
+  "author": "ObsidianSync",
+  "isDesktopOnly": false
+}

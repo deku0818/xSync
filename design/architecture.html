@@ -38,14 +38,14 @@
   <div class="sidebar-foot">个人多设备 · 自建服务 · 端到端加密<br>设计提案 v0.1 / 2026.10.14<br><br><button class="btn" id="print-btn">打印 / 另存为 PDF</button></div>
 </aside>
 <main id="main">
-<div class="topline"><span>SYSTEM DESIGN / OBSIDIAN PLUGIN</span><span class="status">待评审 · 尚未实现</span></div>
+<div class="topline"><span>SYSTEM DESIGN / OBSIDIAN PLUGIN</span><span class="status">设计提案 · Phase 02 电脑自动同步</span></div>
 <header class="hero">
   <div class="eyebrow">A local-first, encrypted file sync system</div>
   <h1>让多台设备，<br>可靠地共享同一个库。</h1>
   <p>以文件为事实来源，以明确的版本关系保护修改。服务器协调同步与保存密文；设备始终保有完整、可离线使用的 Obsidian 库。</p>
   <div class="hero-tags"><span>macOS / Windows / Linux</span><span>iOS / Android</span><span>笔记 + 附件 + 配置</span><span>独立协议与实现</span></div>
 </header>
-<p class="intro-note"><strong>阅读约定：</strong>本页是一份整体设计提案。推荐选型是基于当前需求的工程判断；功能、性能和平台兼容性尚未经过实现验证。Self-hosted LiveSync 仅作为机制参考。</p>
+<p class="intro-note"><strong>阅读约定：</strong>本页是一份整体设计提案。推荐选型是基于当前需求的工程判断；已推进到 Phase 02 电脑开发闭环：模型/辅助、真实 Docker PostgreSQL 与双客户端集成检查已通过，当前 0.0.6 的真实 Obsidian A/B 已验证自动解锁、配置同步、独立范围规则、客户端快照与准确合并；100 MB 桌面传输已通过，FastCDC/手机资源仍待验证；物理双机、iPhone、整库和生产验收仍待完成。Self-hosted LiveSync 仅作为机制参考。</p>
 <div class="mobile-toc"><label for="jump" class="small">跳转到章节</label><select id="jump"><option value="decision">01 · 目标与架构决策</option><option value="options">02 · 替代方案比较</option><option value="architecture">03 · 推荐整体架构</option><option value="data">04 · 数据库与数据模型</option><option value="protocol">05 · 同步协议与提交</option><option value="conflicts">06 · 冲突、删除与重命名</option><option value="encryption">07 · 加密与设备接入</option><option value="platform">08 · 配置与跨平台行为</option><option value="recovery">09 · 历史、备份与恢复</option><option value="reference">10 · LiveSync 的参考边界</option><option value="validation">11 · 验证与实施顺序</option><option value="sources">12 · 证据与待验证项</option></select></div>
 
 <section id="decision">
@@ -195,7 +195,7 @@
 <h3>新设备接入：授权和解锁是两件事</h3>
 <div class="steps"><div class="step"><strong>批准设备</strong><p>首次部署生成一次性管理员接入方式；已有设备或管理端创建短时、单次使用的邀请码，新设备兑换专属随机 API 令牌。令牌在服务端只存摘要，不使用共享管理员密码做日常同步。</p></div><div class="step"><strong>解锁库</strong><p>新设备取得加密密钥包，本地输入库口令；也可导入离线恢复密钥。邀请码不携带明文主密钥。二维码仅作为接入信息载体，不能让服务器获得解密权。</p></div><div class="step"><strong>选择初始化方式</strong><p>空库下载；已有本地文件则预览合并与冲突。成功校验密钥和库身份后才能创建 outbox、接受删除或自动应用配置。</p></div></div>
 <div class="callout warm"><p><strong>恢复与撤销：</strong>生成可校验的离线恢复密钥，提醒用户保存。重置服务器登录凭据不能恢复加密口令。撤销设备令牌立即阻止 API 访问，但已下载的内容和旧密钥无法追回；完整的加密撤销需要新的密钥时期并重加密需要保护的数据。</p></div>
-<p class="small muted">主密钥默认只在解锁会话内使用；“记住解锁”需在跨平台安全存储验证后提供，不把明文密钥写进插件 data.json。加密真实性不能独自保证恶意服务器不会隐瞒或回放历史；设备保存最高已见进度和版本锚点以检测已知回退，完整抗分叉保证需额外的透明日志 / 设备交叉验证，不在本版承诺范围。</p>
+<p class="small muted">用户已确认填写 server 地址与同步密钥，保存并测试连通性及密钥后自动连接；已保存的密钥可留空复用。日常只提供暂停/恢复同步，暂停保留配置与密钥，重开后仍暂停，恢复不重输密钥；不提供记住解锁开关或锁定入口。当前 Mac 已验证设备保护的解锁材料恢复；不把口令或明文密钥写进插件 data.json。Windows/Linux 与 iPhone 安全存储仍待实测。加密真实性不能独自保证恶意服务器不会隐瞒或回放历史；设备保存最高已见进度和版本锚点以检测已知回退，完整抗分叉保证需额外的透明日志 / 设备交叉验证，不在本版承诺范围。</p>
 </section>
 <section id="platform">
 <div class="section-head"><span class="num">08 /</span><h2>整库同步，也尊重设备差异</h2></div>
@@ -250,6 +250,7 @@
 </section>
 <section id="validation">
 <div class="section-head"><span class="num">11 /</span><h2>先证明规则，再验证体验</h2></div>
+<p class="intro-note"><strong>实施状态 / 2026-10-14：</strong>已有协议模型、移动探针，以及实验同步插件 / Go HTTP / Docker PostgreSQL；普通文件双客户端集成通过，iPhone 真机验证延后。相关文件：<code>protocol/MODEL.md</code>、<code>docs/testing/DEVELOPMENT.md</code>、<code>docs/testing/mobile-probe.md</code>。电脑自动化验收见 <code>docs/testing/desktop-auto-2026-10-14.md</code>；尚无完整生产同步引擎。</p>
 <p>实施顺序按风险展开，不按“先做能演示的正常路径”展开。端到端加密、因果版本、删除保护与恢复能力都是正式版本的核心范围；分阶段只用于尽早暴露问题。</p>
 <div class="roadmap">
 <div class="phase"><span class="phase-no">PHASE 01</span><h4>协议模型与平台探针</h4><p>确定提交和冲突语义；模型 / 属性测试；iOS、Android 的 IndexedDB、Worker、KDF、文件读写和大附件实测。</p></div>
@@ -295,7 +296,7 @@
 <div class="reference" id="s19"><b>19</b><a href="https://www.postgresql.org/docs/current/continuous-archiving.html" target="_blank" rel="noopener noreferrer">PostgreSQL · Continuous Archiving / PITR</a><p>基线备份与 WAL 归档。与外部密文对象联合恢复的清单和保留规则由本系统负责。</p></div>
 <div class="reference" id="s20"><b>20</b><a href="https://github.com/jackc/pgx" target="_blank" rel="noopener noreferrer">pgx · PostgreSQL driver for Go</a><p>Go 服务端驱动候选。具体依赖版本在实现时固定，并由事务与故障测试验证。</p></div>
 </div>
-<details><summary>仍待确认的产品输入与实测结论</summary><div><p>库文件数 / 总容量 / 最大附件、实际电脑和手机型号、服务器环境与备份目的地、期望历史保留、是否接受库内去重关系泄露，以及解锁频率偏好。无需先收齐这些信息才能评审架构，但需要它们确定发布参数与容量承诺。</p><p>尚无本项目性能数据、安全审计或真机兼容性结果。下一步应评审这份协议与数据模型，再按验证顺序实施；本页按钮仅用于阅读设计。</p></div></details>
+<details><summary>仍待确认的产品输入与实测结论</summary><div><p>库文件数 / 总容量 / 最大附件、实际电脑和手机型号、服务器环境与备份目的地、期望历史保留、是否接受库内去重关系泄露，以及解锁频率偏好。无需先收齐这些信息才能评审架构，但需要它们确定发布参数与容量承诺。</p><p>当前有模型、探针和电脑开发闭环；尚无生产性能、安全审计或完整跨平台验收。用户已将 iPhone 验证延后，下一步继续电脑双库/恢复验证；本页按钮仍仅用于阅读设计。</p></div></details>
 </section>
 <footer class="footer"><span>Obsidian Sync · Independent architecture proposal</span><span>v0.1 / 2026.10.14 · 本地单文件，可离线阅读</span></footer>
 </main></div>

@@ -1,0 +1,27 @@
+{
+  "冲突期间继续同步.md": {
+    "sha256": "08cc0a59bc2cc0c0e94997cd8c24dcfdc9891463c41612490de4facfd0d8681f",
+    "bytes": 112,
+    "equal": true
+  },
+  "同步试验-保留电脑B.md": {
+    "sha256": "0f75fe0aa85879136fccb50bb16deb033b43402bc1c1821f92cc2598ad5208c9",
+    "bytes": 104,
+    "equal": true
+  },
+  "同步试验.md": {
+    "sha256": "6202df8e323e2f9dcdd13eb15404b57ce589bc982920b6db7354186162357447",
+    "bytes": 83,
+    "equal": true
+  },
+  "开始使用.md": {
+    "sha256": "4fe8a95166381307d3543b7c5dc610033db8cb216162d57726133ba86964a42b",
+    "bytes": 981,
+    "equal": true
+  },
+  "自动实时-保留电脑B.md": {
+    "sha256": "ec0d20c1191c4a5c5ac05dc549955a6a614d3ecc3a68958912fa10871b1c68ab",
+    "bytes": 99,
+    "equal": true
+  }
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "case": "A_to_background_B",
+    "marker": "自动实时 A01",
+    "fromSourceObservedSeconds": 0.815,
+    "bytes": 98,
+    "equal": true
+  },
+  {
+    "case": "B_to_background_A",
+    "marker": "自动实时 B02",
+    "fromSourceObservedSeconds": 0.818,
+    "bytes": 82,
+    "equal": true
+  }
+]

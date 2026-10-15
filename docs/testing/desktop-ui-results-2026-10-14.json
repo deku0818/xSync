@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-14",
+  "scope": "same Mac, two real Obsidian 1.14.4 vault windows, real IndexedDB and Vault API, Go HTTP, Docker PostgreSQL",
+  "files": {
+    "冲突期间继续同步.md": {
+      "bytes": 105,
+      "sha256": "2d372ab804e7c53b5a16d336edaf62c747a39d0133212d5a2cacda471d4803bb",
+      "equal": true
+    },
+    "同步试验-保留电脑B.md": {
+      "bytes": 104,
+      "sha256": "0f75fe0aa85879136fccb50bb16deb033b43402bc1c1821f92cc2598ad5208c9",
+      "equal": true
+    },
+    "同步试验.md": {
+      "bytes": 95,
+      "sha256": "e18e4e97f336296bb1a5b5687216efa4b561d08a5148ada44e7bdd1822e20d0f",
+      "equal": true
+    },
+    "开始使用.md": {
+      "bytes": 981,
+      "sha256": "4fe8a95166381307d3543b7c5dc610033db8cb216162d57726133ba86964a42b",
+      "equal": true
+    }
+  },
+  "finalBoundary": 13,
+  "finalHeads": [
+    "bf790eb138f0b24e99679f5d2f705fe64a30e2b4d5b14dd82dafe19cf7a83c30"
+  ],
+  "unselectedRevisionRetained": "78b58231b8dd34fb1f6429191107a01fc8e278fe89683b055fce0ce5c7e451d8",
+  "selectedRevision": "228879b1be828cc030a3ecf9969c16e0d1a0b5db0ea78bbba4821cc01fc18f90",
+  "historyRetained": true
+}

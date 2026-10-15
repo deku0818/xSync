@@ -1,0 +1,40 @@
+name: Development checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.1
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - run: npm ci
+      - run: npm run check
+      - name: Prepare isolated Docker database and generated test vaults
+        run: npm run desktop:setup
+      - name: Go vet
+        working-directory: server
+        run: go vet ./...
+      - name: PostgreSQL contracts, race detector and two-client integration
+        run: npm run test:desktop
+      - name: Stop this project's development database
+        if: always()
+        run: docker compose -f server/compose.dev.yaml stop

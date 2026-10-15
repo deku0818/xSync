@@ -1,0 +1,30 @@
+{
+  "version": "0.0.6",
+  "scope": "generated same-machine A/B vaults only",
+  "unitTests": 59,
+  "postgresContractTests": 14,
+  "integrationTests": 16,
+  "exactFileLimitBytes": 100000000,
+  "actualUiMergeHashes": {
+    "ObsidianSync-电脑A": "91e48c900711166d25d5d9a72f0c12435d2eed8e7d461a6e028c86f527a4d630",
+    "ObsidianSync-电脑B": "91e48c900711166d25d5d9a72f0c12435d2eed8e7d461a6e028c86f527a4d630"
+  },
+  "actualHiddenCssAutoPropagated": true,
+  "actualSharedJsonDeviceFieldsPreserved": true,
+  "mobileTested": false,
+  "actualClientNameDuplicateRejected": true,
+  "actualOtherClientSnapshotReadOnly": true,
+  "actualInvalidRegexRejected": true,
+  "actualFolderTreeExpanded": true,
+  "actualPerDeviceRulesIsolated": true,
+  "actualExcludedFolderDidNotBlockOtherFiles": true,
+  "actualRuleRemovalAfterSaveVerified": true,
+  "actualReIncludedFolderAutoBackfilled": true,
+  "finalRules": {
+    "maxMB": 100,
+    "folders": [],
+    "suffixes": [],
+    "regexes": []
+  },
+  "bundleSHA256": "40018bd60a203a9125e7439a4c51eae00cb570c55557ba2a8cc45b2adcef321a"
+}

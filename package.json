@@ -1,0 +1,39 @@
+{
+  "name": "obsidian-sync-development",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:probe": "node plugin/scripts/build-probe.mjs",
+    "package:probe": "npm run build:probe && python3 plugin/scripts/package_probe.py",
+    "build:plugin": "node plugin/esbuild.sync.mjs",
+    "dev:plugin": "node plugin/esbuild.sync.mjs --watch",
+    "desktop:setup": "node tests/desktop/setup.mjs",
+    "desktop:start": "node tests/desktop/start.mjs",
+    "test:desktop": "node tests/desktop/run-tests.mjs",
+    "desktop:stop-db": "docker compose -f server/compose.dev.yaml stop",
+    "check": "npm run typecheck && npm test && npm run build:probe && npm run build:plugin"
+  },
+  "dependencies": {
+    "dexie": "4.4.6",
+    "libsodium-wrappers-sumo": "0.8.4",
+    "re2js": "2.8.6",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.0",
+    "esbuild": "0.28.2",
+    "fake-indexeddb": "6.2.5",
+    "fast-check": "4.10.2",
+    "obsidian": "1.14.4",
+    "typescript": "7.0.2",
+    "vitest": "5.0.4"
+  }
+}

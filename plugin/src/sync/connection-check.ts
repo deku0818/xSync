@@ -6,6 +6,10 @@ export type ConnectionObserver = (check: ConnectionCheck) => void;
 /** Never expose a raw native exception, server response or credential in the configuration UI. */
 export function connectionFailure(error: unknown, step: ConnectionStep): { step: ConnectionStep; message: string } {
   const code = error instanceof Error ? error.message : "";
+  if (code === "ENROLLMENT_CLOSED") return { step: "authorization", message: "服务器已响应，新增设备接入尚未开放。请在服务端临时开放接入后重试。" };
+  if (code === "DEVICE_REVOKED") return { step: "authorization", message: "此设备已被撤销，不能自动重新授权。请联系服务器管理者。" };
+  if (code === "ENROLLMENT_BUSY" || code === "DEVICE_LIMIT") return { step: "authorization", message: "服务器的设备接入容量已满，请稍后重试或检查服务器。" };
+  if (code === "ENROLLMENT_PENDING_MISMATCH" || code === "ENROLLMENT_REPLAY") return { step: "authorization", message: "待确认的设备授权与当前配置不一致，原记录已保留，请先核对。" };
   if (error instanceof RemoteError && (error.status === 401 || error.status === 403 || error.code === "UNAUTHORIZED")) return { step: "authorization", message: "服务器已响应，但设备授权被拒绝。请检查设备授权。" };
   if (code === "DEVICE_NAME_TAKEN") return { step: "name", message: "客户端名称已被占用，请换一个名称。" };
   if (step === "name") return { step, message: "客户端名称无法保存，请检查名称和服务端版本。" };

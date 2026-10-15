@@ -3,6 +3,7 @@ import { commitSchema, changeSchema, handshakeSchema, receiptSchema, snapshotSch
 import type { Commit } from "../../../protocol/src/types";
 import { devicesSchema, deviceProfileSchema } from "../../../protocol/src/client-profile";
 import { fingerprint } from "./crypto";
+import { onboardingSchema, challengeSchema, enrollmentSchema, type Enrollment } from "../../../protocol/src/enrollment";
 
 export interface HTTPRequest { url: string; method: string; headers: Record<string, string>; body?: Uint8Array }
 export interface HTTPResponse { status: number; headers: Record<string, string>; bytes: Uint8Array }
@@ -30,17 +31,21 @@ export class Transport {
   constructor(private endpoint: string, private token: string, private http: HTTP, developmentEndpoint?: string) {
     this.endpoint = normalizeEndpoint(endpoint, developmentEndpoint);
   }
-  private async request(path: string, method = "GET", body?: Uint8Array, extra: Record<string, string> = {}): Promise<HTTPResponse> {
-    const r = await this.http({ url: `${this.endpoint}${path}`, method, body, headers: { Authorization: `Bearer ${this.token}`, ...extra } });
+  setToken(token: string): void { this.token = token; }
+  private async request(path: string, method = "GET", body?: Uint8Array, extra: Record<string, string> = {}, publicRequest = false): Promise<HTTPResponse> {
+    const r = await this.http({ url: `${this.endpoint}${path}`, method, body, headers: { ...(!publicRequest && this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...extra } });
     if (r.status < 200 || r.status >= 300) { let code = `HTTP_${r.status}`; try { code = z.strictObject({ code: z.string().max(128) }).parse(JSON.parse(new TextDecoder().decode(r.bytes))).code; } catch { /* preserve HTTP status */ } throw new RemoteError(code, r.status); }
     return r;
   }
-  private async json(path: string, method = "GET", input?: unknown): Promise<unknown> {
-    const response = await this.request(path, method, input === undefined ? undefined : new TextEncoder().encode(JSON.stringify(input)), { "Content-Type": "application/json" });
+  private async json(path: string, method = "GET", input?: unknown, publicRequest = false): Promise<unknown> {
+    const response = await this.request(path, method, input === undefined ? undefined : new TextEncoder().encode(JSON.stringify(input)), { "Content-Type": "application/json" }, publicRequest);
     if (response.bytes.length > 32 * 1024 * 1024) throw new Error("RESPONSE_TOO_LARGE");
     return JSON.parse(new TextDecoder().decode(response.bytes));
   }
   async devices() { return devicesSchema.parse(await this.json("/devices")).devices; }
+  async onboarding() { return onboardingSchema.parse(await this.json("/onboarding", "GET", undefined, true)); }
+  async challenge() { return challengeSchema.parse(await this.json("/enroll/challenges", "POST", {}, true)); }
+  async enroll(input: Enrollment): Promise<void> { z.strictObject({ enrolled: z.literal(true) }).parse(await this.json("/enroll", "POST", enrollmentSchema.parse(input), true)); }
   async putProfile(input: { name: string; expectedRevision: number; ciphertext: string }) { return deviceProfileSchema.parse(await this.json("/device/profile", "PUT", input)); }
   async handshake() { return handshakeSchema.parse(await this.json("/handshake")); }
   eventURL(): string { const url = new URL(`${this.endpoint}/events`); url.protocol = url.protocol === "https:" ? "wss:" : "ws:"; return url.toString(); }

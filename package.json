@@ -1,6 +1,6 @@
 {
-  "name": "obsidian-sync-development",
-  "version": "0.0.1",
+  "name": "xsync-workspace",
+  "version": "0.1.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -19,7 +19,9 @@
     "desktop:start": "node tests/desktop/start.mjs",
     "test:desktop": "node tests/desktop/run-tests.mjs",
     "desktop:stop-db": "docker compose -f server/compose.dev.yaml stop",
-    "check": "npm run typecheck && npm test && npm run build:probe && npm run build:plugin"
+    "check": "npm run typecheck && npm test && npm run build:probe && npm run build:plugin",
+    "server:init": "node server/scripts/init.mjs",
+    "package:plugin": "npm run build:plugin && node plugin/scripts/package-sync.mjs"
   },
   "dependencies": {
     "dexie": "4.4.6",

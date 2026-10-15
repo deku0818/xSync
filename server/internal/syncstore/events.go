@@ -3,6 +3,7 @@ package syncstore
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -18,8 +19,9 @@ type eventHint struct {
 	Seq   int64  `json:"seq"`
 }
 type eventTicket struct {
-	device  string
-	expires time.Time
+	device    string
+	expires   time.Time
+	tokenHash []byte
 }
 type eventHub struct {
 	mu        sync.Mutex
@@ -31,7 +33,7 @@ type eventHub struct {
 func newEventHub() *eventHub {
 	return &eventHub{tickets: map[string]eventTicket{}, listeners: map[chan eventHint]bool{}}
 }
-func (h *eventHub) ticket(device string) (string, error) {
+func (h *eventHub) ticket(device string, token ...string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := time.Now()
@@ -48,15 +50,24 @@ func (h *eventHub) ticket(device string) (string, error) {
 		return "", e
 	}
 	ticket := hex.EncodeToString(b)
-	h.tickets[ticket] = eventTicket{device, now.Add(time.Minute)}
+	entry := eventTicket{device: device, expires: now.Add(time.Minute)}
+	if len(token) == 1 {
+		hash := sha256.Sum256([]byte(token[0]))
+		entry.tokenHash = hash[:]
+	}
+	h.tickets[ticket] = entry
 	return ticket, nil
 }
 func (h *eventHub) consume(ticket string) bool {
+	_, ok := h.consumeIdentity(ticket)
+	return ok
+}
+func (h *eventHub) consumeIdentity(ticket string) (eventTicket, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	v, ok := h.tickets[ticket]
 	delete(h.tickets, ticket)
-	return ok && !h.closed && v.device != "" && time.Now().Before(v.expires)
+	return v, ok && !h.closed && v.device != "" && time.Now().Before(v.expires)
 }
 func (h *eventHub) subscribe() (chan eventHint, func()) {
 	h.mu.Lock()
@@ -123,7 +134,18 @@ func (s *Store) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	var auth struct {
 		Ticket string `json:"ticket"`
 	}
-	if e != nil || typ != websocket.MessageText || json.Unmarshal(body, &auth) != nil || !s.events.consume(auth.Ticket) {
+	identity, valid := eventTicket{}, false
+	if e == nil && typ == websocket.MessageText && json.Unmarshal(body, &auth) == nil {
+		identity, valid = s.events.consumeIdentity(auth.Ticket)
+	}
+	active := func() bool {
+		check, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		var ok bool
+		err := s.Pool.QueryRow(check, "SELECT EXISTS(SELECT 1 FROM devices WHERE vault_id=$1 AND id=$2 AND token_hash=$3 AND revoked_at IS NULL)", s.Config.VaultID, identity.device, identity.tokenHash).Scan(&ok)
+		return err == nil && ok
+	}
+	if !valid || !active() {
 		_ = conn.Close(websocket.StatusPolicyViolation, "invalid event ticket")
 		return
 	}
@@ -136,6 +158,9 @@ func (s *Store) eventsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	send := func(h eventHint) error {
+		if !active() {
+			return code("UNAUTHORIZED")
+		}
 		data, err := json.Marshal(h)
 		if err != nil {
 			return err
@@ -161,6 +186,9 @@ func (s *Store) eventsHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ticker.C:
+			if !active() {
+				return
+			}
 			pingCtx, done := context.WithTimeout(ctx, 5*time.Second)
 			e = conn.Ping(pingCtx)
 			done()

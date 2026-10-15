@@ -27,7 +27,7 @@ it("publishes completion immediately after explicit resolution, without a second
   instance.engine = { resolve, sync, status: async () => status } as unknown as SyncEngine;
   await instance.resolveConflict(review, "A", "copy.md");
   expect(resolve).toHaveBeenCalledWith(review, "A", "copy.md");
-  expect(host.labels.at(-1)).toBe("ObsidianSync · 所选范围同步完成"); expect(sync).not.toHaveBeenCalled();
+  expect(host.labels.at(-1)).toBe("xSync · 所选范围同步完成"); expect(sync).not.toHaveBeenCalled();
 });
 it("keeps needs-attention on stale choice and releases the host gate for later work", async () => {
   const instance = await plugin(); const stale = new Error("REVIEW_STALE");
@@ -35,9 +35,9 @@ it("keeps needs-attention on stale choice and releases the host gate for later w
   const status: EngineStatus = { state: "needs-attention", outbox: 0, inbox: 2, conflicts: 1, errors: [] };
   instance.engine = { resolve, status: async () => status } as unknown as SyncEngine;
   await expect(instance.resolveConflict(review, "A")).rejects.toBe(stale);
-  expect(host.labels.at(-1)).toBe("ObsidianSync · 需处理");
+  expect(host.labels.at(-1)).toBe("xSync · 需处理");
   status.state = "complete"; status.conflicts = 0; status.inbox = 0;
-  await instance.resolveConflict(review, "B"); expect(host.labels.at(-1)).toBe("ObsidianSync · 所选范围同步完成");
+  await instance.resolveConflict(review, "B"); expect(host.labels.at(-1)).toBe("xSync · 所选范围同步完成");
 });
 it("pause retains the active key and prevents queued sync and explicit resolution from reaching the engine", async () => {
   const instance = await plugin();
@@ -48,6 +48,6 @@ it("pause retains the active key and prevents queued sync and explicit resolutio
   const queued = instance.sync(false); await instance.setAutoSync(false); await queued;
   await instance.sync(false); await expect(instance.resolveConflict(review, "A")).rejects.toThrow("请先恢复同步");
   expect(sync).not.toHaveBeenCalled(); expect(resolve).not.toHaveBeenCalled(); expect(lock).not.toHaveBeenCalled();
-  expect(instance.engine.unlocked).toBe(true); expect(host.labels.at(-1)).toBe("ObsidianSync · 已暂停同步");
+  expect(instance.engine.unlocked).toBe(true); expect(host.labels.at(-1)).toBe("xSync · 已暂停同步");
   await instance.setAutoSync(true); expect(lock).not.toHaveBeenCalled(); expect(instance.autoSync).toBe(true);
 });

@@ -19,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func contractStore(t *testing.T) *Store {
+func contractStore(t *testing.T, configure ...func(*Config)) *Store {
 	t.Helper()
 	ctx := context.Background()
 	path := os.Getenv("OBSIDIAN_SYNC_TEST_CONFIG")
@@ -55,6 +55,9 @@ func contractStore(t *testing.T) *Store {
 	c.Epoch = "epoch-1"
 	c.KeyPackage = json.RawMessage(`{"fixture":true}`)
 	c.Devices = []Device{{"computer-a", "电脑 A", strings.Repeat("a", 64)}, {"computer-b", "电脑 B", strings.Repeat("b", 64)}}
+	for _, change := range configure {
+		change(&c)
+	}
 	s, e := Open(ctx, c)
 	if e != nil {
 		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaName+" CASCADE")

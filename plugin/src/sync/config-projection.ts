@@ -1,4 +1,5 @@
 import { canonical } from "../../../protocol/src/model";
+import { isSelfPlugin } from "./plugin-identity";
 const encoder = new TextEncoder(); const decoder = new TextDecoder("utf-8", { fatal: true });
 const deviceField = (key: string) => /^(?:.*(?:password|passphrase|privatekey|apikey|token|secret|credentials?|deviceid|installationid|sessionkey|encryptionkey|masterkey|vaultkey|synckey|recoverykey)|token|secret|secrets|credentials?|deviceid|installationid|sessionkey|encryptionkey)$/i.test(key.replace(/[^a-z0-9]/gi, ""));
 function containsDeviceField(value: unknown): boolean {
@@ -22,17 +23,17 @@ function merge(local: unknown, shared: unknown): unknown {
 export function sharedConfig(path: string, bytes: Uint8Array): Uint8Array {
   if (!path.startsWith(".obsidian/") || !path.endsWith(".json")) return bytes;
   const value = JSON.parse(decoder.decode(bytes)) as unknown;
-  const clean = path === ".obsidian/community-plugins.json" && Array.isArray(value) ? value.filter(v => v !== "obsidian-sync-dev") : project(value);
+  const clean = path === ".obsidian/community-plugins.json" && Array.isArray(value) ? value.filter(v => !isSelfPlugin(v)) : project(value);
   return encoder.encode(canonical(clean));
 }
 export function mergeConfig(path: string, local: Uint8Array | null, desired: Uint8Array): Uint8Array {
   if (!path.startsWith(".obsidian/") || !path.endsWith(".json")) return desired;
   const incoming = JSON.parse(decoder.decode(desired)) as unknown;
-  if (path === ".obsidian/community-plugins.json" && Array.isArray(incoming) && incoming.includes("obsidian-sync-dev")) throw new Error("REMOTE_CONFIG_CONTAINS_DEVICE_FIELDS");
+  if (path === ".obsidian/community-plugins.json" && Array.isArray(incoming) && incoming.some(isSelfPlugin)) throw new Error("REMOTE_CONFIG_CONTAINS_DEVICE_FIELDS");
   if (canonical(project(incoming)) !== canonical(incoming)) throw new Error("REMOTE_CONFIG_CONTAINS_DEVICE_FIELDS");
   const own = local ? JSON.parse(decoder.decode(local)) as unknown : {};
   let result = merge(own, incoming);
-  if (path === ".obsidian/community-plugins.json" && Array.isArray(incoming) && Array.isArray(own) && own.includes("obsidian-sync-dev")) result = [...incoming.filter(v => v !== "obsidian-sync-dev"), "obsidian-sync-dev"];
+  if (path === ".obsidian/community-plugins.json" && Array.isArray(incoming) && Array.isArray(own) && own.some(isSelfPlugin)) result = [...incoming.filter(v => !isSelfPlugin(v)), ...own.filter(isSelfPlugin)];
   return encoder.encode(JSON.stringify(result, null, 2));
 }
 export function hasDeviceFields(path: string, local: Uint8Array): boolean {

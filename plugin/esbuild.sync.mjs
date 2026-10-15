@@ -4,10 +4,11 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 process.chdir(fileURLToPath(new URL("../", import.meta.url)));
-const out = "plugin/dist/obsidian-sync-dev";
+const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
+const out = `plugin/dist/${manifest.id}`;
 await mkdir(out, { recursive: true });
 const context = await esbuild.context({
-  banner: { js: "/* GENERATED FILE. ObsidianSync experimental development plugin; based on obsidianmd/obsidian-sample-plugin (0BSD). */" },
+  banner: { js: "/* GENERATED FILE. xSync plugin; based on obsidianmd/obsidian-sample-plugin (0BSD). */" },
   entryPoints: ["plugin/src/sync-main.ts"], bundle: true, external: ["obsidian", "@electron/remote", "node:buffer"],
   platform: "browser", format: "cjs", target: "es2021", logLevel: "info",
   sourcemap: process.argv.includes("--watch") ? "inline" : false,
@@ -20,7 +21,7 @@ for (const o of Object.values(result.metafile.outputs)) {
 for (const [name, input] of Object.entries(result.metafile.inputs)) {
   for (const dep of input.imports) if (["@electron/remote", "node:buffer"].includes(dep.path) && !name.startsWith("plugin/src/desktop/")) throw new Error(`Desktop dependency leaked into ${name}`);
 }
-await copyFile("plugin/sync-manifest.json", `${out}/manifest.json`);
+await copyFile("manifest.json", `${out}/manifest.json`);
 await copyFile("LICENSE", `${out}/LICENSE`);
 await copyFile("plugin/styles.css", `${out}/styles.css`);
 await copyFile("plugin/licenses/obsidian-sample-plugin-0BSD.txt", `${out}/TEMPLATE-LICENSE.txt`);

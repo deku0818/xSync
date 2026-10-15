@@ -5,6 +5,17 @@ import { sharedConfig, mergeConfig } from "../../plugin/src/sync/config-projecti
 import { VaultCrypto } from "../../plugin/src/sync/crypto";
 import { compareLines } from "../../plugin/src/ui/diff-lines";
 const enc = new TextEncoder(), dec = new TextDecoder();
+it("excludes both xSync and the legacy development plugin, and never accepts remote changes to their enable state", () => {
+  const policy = new SyncPolicy(); const path = ".obsidian/community-plugins.json";
+  for (const id of ["xsync","obsidian-sync-dev"]) {
+    expect(policy.reason(`.obsidian/plugins/${id}/main.js`)).toBeDefined(); expect(policy.reason(`.obsidian/plugins/${id}/data.json`)).toBeDefined();
+    expect(policy.reason(`.obsidian/plugins/${id}-other/main.js`)).toBeUndefined();
+    const local = enc.encode(JSON.stringify(["calendar",id]));
+    expect(JSON.parse(dec.decode(sharedConfig(path,local)))).toEqual(["calendar"]);
+    expect(JSON.parse(dec.decode(mergeConfig(path,local,enc.encode('["dataview"]'))))).toEqual(["dataview",id]);
+    expect(() => mergeConfig(path,local,enc.encode(JSON.stringify([id])))).toThrow("REMOTE_CONFIG_CONTAINS_DEVICE_FIELDS");
+  }
+});
 it("always keeps the core-plugin enable list device-local without excluding other shared configuration", () => {
   for (const policy of [new SyncPolicy(), new SyncPolicy({ ...defaultRules(), maxMB: 100, folders: [], suffixes: [], regexes: [] })]) {
     expect(policy.reason(".obsidian/core-plugins.json")).toContain("每台设备独立");

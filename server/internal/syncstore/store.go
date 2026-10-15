@@ -28,7 +28,7 @@ func (s *Store) fault(point string) error {
 	return nil
 }
 func Open(ctx context.Context, c Config) (*Store, error) {
-	if !validID(c.VaultID) || !validID(c.Epoch) || len(c.Devices) < 1 || !json.Valid(c.KeyPackage) {
+	if !validID(c.VaultID) || !validID(c.Epoch) || (len(c.Devices) < 1 && !blobPattern.MatchString(c.EnrollmentPublicKey)) || (c.EnrollmentPublicKey != "" && (!blobPattern.MatchString(c.EnrollmentPublicKey) || len(c.Devices) != 0)) || !json.Valid(c.KeyPackage) {
 		return nil, code("INVALID_CONFIG")
 	}
 	p, e := pgxpool.New(ctx, c.DSN)
@@ -56,12 +56,13 @@ func Open(ctx context.Context, c Config) (*Store, error) {
 		return nil, e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, "INSERT INTO vaults(id,epoch,key_package) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", c.VaultID, c.Epoch, c.KeyPackage); e != nil {
+	if _, e = tx.Exec(ctx, "INSERT INTO vaults(id,epoch,key_package,enrollment_key) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", c.VaultID, c.Epoch, c.KeyPackage, c.EnrollmentPublicKey); e != nil {
 		return nil, e
 	}
 	var epoch string
+	var enrollmentKey string
 	var pkg []byte
-	if e = tx.QueryRow(ctx, "SELECT epoch,key_package FROM vaults WHERE id=$1 FOR UPDATE", c.VaultID).Scan(&epoch, &pkg); e != nil {
+	if e = tx.QueryRow(ctx, "SELECT epoch,key_package,enrollment_key FROM vaults WHERE id=$1 FOR UPDATE", c.VaultID).Scan(&epoch, &pkg, &enrollmentKey); e != nil {
 		return nil, e
 	}
 	var v1, v2 any
@@ -69,7 +70,7 @@ func Open(ctx context.Context, c Config) (*Store, error) {
 	_ = json.Unmarshal(c.KeyPackage, &v2)
 	j1, _ := json.Marshal(v1)
 	j2, _ := json.Marshal(v2)
-	if epoch != c.Epoch || !bytes.Equal(j1, j2) {
+	if epoch != c.Epoch || !bytes.Equal(j1, j2) || enrollmentKey != c.EnrollmentPublicKey {
 		return nil, code("CONFIG_IDENTITY_MISMATCH")
 	}
 	// Preserve existing names and migrate canonical keys explicitly. Never choose a winner for duplicate names.
@@ -134,7 +135,7 @@ func Open(ctx context.Context, c Config) (*Store, error) {
 func (s *Store) Authorize(ctx context.Context, token string) (string, error) {
 	h := sha256.Sum256([]byte(token))
 	var id string
-	e := s.Pool.QueryRow(ctx, "SELECT id FROM devices WHERE vault_id=$1 AND token_hash=$2", s.Config.VaultID, h[:]).Scan(&id)
+	e := s.Pool.QueryRow(ctx, "SELECT id FROM devices WHERE vault_id=$1 AND token_hash=$2 AND revoked_at IS NULL", s.Config.VaultID, h[:]).Scan(&id)
 	if e != nil {
 		return "", code("UNAUTHORIZED")
 	}

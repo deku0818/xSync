@@ -22,16 +22,16 @@ catch (error) {
 const vaultRoot = join(root, "tests/desktop/vaults");
 for (const [index, name] of ["ObsidianSync-电脑A", "ObsidianSync-电脑B"].entries()) {
   const vault = join(vaultRoot, name); const obsidian = join(vault, ".obsidian");
-  const plugin = join(obsidian, "plugins/obsidian-sync-dev");
+  const plugin = join(obsidian, "plugins/xsync");
   await mkdir(plugin, { recursive: true }); await mkdir(join(obsidian, "obsidian-sync-local"), { recursive: true });
   const putIfAbsent = async (path: string, content: string, mode = 0o600) => {
     try { await access(path); } catch { await writeFile(path, content, { mode, flag: "wx" }); }
   };
   await putIfAbsent(join(obsidian, "obsidian-sync-development.json"), JSON.stringify({ generatedBy: "ObsidianSync desktop test setup" }));
-  await putIfAbsent(join(obsidian, "community-plugins.json"), JSON.stringify(["obsidian-sync-dev"]));
+  await putIfAbsent(join(obsidian, "community-plugins.json"), JSON.stringify(["xsync"]));
   const device = config.devices[index]!;
   await putIfAbsent(join(obsidian, "obsidian-sync-local/device.json"), JSON.stringify({ endpoint: "http://127.0.0.1:8873", token: device.token, deviceId: device.id, deviceName: device.name, vaultId: config.vaultId, databaseId: randomId() }, null, 2));
-  for (const file of ["main.js", "manifest.json", "styles.css", "LICENSE", "TEMPLATE-LICENSE.txt", "THIRD-PARTY-NOTICES.txt"]) await copyFile(join(root, "plugin/dist/obsidian-sync-dev", file), join(plugin, file));
+  for (const file of ["main.js", "manifest.json", "styles.css", "LICENSE", "TEMPLATE-LICENSE.txt", "THIRD-PARTY-NOTICES.txt"]) await copyFile(join(root, "plugin/dist/xsync", file), join(plugin, file));
   await putIfAbsent(join(vault, "开始使用.md"), (await readFile(join(root, "tests/desktop/start-note.md"), "utf8")).replace("<TEST_PASSPHRASE>", TEST_PASSPHRASE), 0o644);
   await putIfAbsent(join(vault, "同步试验.md"), "# 同步试验\n\n共同版本 A。\n\n可以在两端修改这一段测试并发。\n", 0o644);
   console.log(`Prepared development vault: ${vault}`);

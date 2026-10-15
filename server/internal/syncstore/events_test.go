@@ -13,6 +13,53 @@ import (
 	"github.com/coder/websocket"
 )
 
+func TestRevokedDeviceCannotUseExistingEventsOrTickets(t *testing.T) {
+	s := contractStore(t)
+	defer s.CloseEvents()
+	server := httptest.NewServer(s.Handler())
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	token := strings.Repeat("a", 64)
+	ticket, e := s.events.ticket("computer-a", token)
+	if e != nil {
+		t.Fatal(e)
+	}
+	unused, e := s.events.ticket("computer-a", token)
+	if e != nil {
+		t.Fatal(e)
+	}
+	dial := func(ticket string) *websocket.Conn {
+		t.Helper()
+		conn, _, e := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/events", nil)
+		if e != nil {
+			t.Fatal(e)
+		}
+		body, _ := json.Marshal(map[string]string{"ticket": ticket})
+		if e = conn.Write(ctx, websocket.MessageText, body); e != nil {
+			t.Fatal(e)
+		}
+		return conn
+	}
+	conn := dial(ticket)
+	defer conn.CloseNow()
+	if _, _, e = conn.Read(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.RevokeDevice(ctx, "computer-a"); e != nil {
+		t.Fatal(e)
+	}
+	s.events.publish(Receipt{Epoch: s.Config.Epoch, Seq: 1, OpID: "revocation-fixture"})
+	if _, _, e = conn.Read(ctx); e == nil {
+		t.Fatal("revoked connection received a hint")
+	}
+	blocked := dial(unused)
+	defer blocked.CloseNow()
+	if _, _, e = blocked.Read(ctx); websocket.CloseStatus(e) != websocket.StatusPolicyViolation {
+		t.Fatal("old ticket accepted after revocation", e)
+	}
+}
+
 func TestEventTicketsAndDurableHints(t *testing.T) {
 	s := contractStore(t)
 	defer s.CloseEvents()
@@ -149,7 +196,7 @@ func TestEventHubCoalescingAndDisconnect(t *testing.T) {
 		t.Fatal(e)
 	}
 	h.mu.Lock()
-	h.tickets[ticket] = eventTicket{"device", time.Now().Add(-time.Second)}
+	h.tickets[ticket] = eventTicket{device: "device", expires: time.Now().Add(-time.Second)}
 	h.mu.Unlock()
 	if h.consume(ticket) {
 		t.Fatal("expired ticket accepted")

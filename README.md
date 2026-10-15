@@ -1,12 +1,13 @@
-# ObsidianSync
+# xSync
 
 个人多设备 Obsidian 同步插件与自建服务，目标是电脑与手机间的端到端加密整库同步。重叠修改展示差异，由用户明确选择版本、保留双方或手动合并。
 
-**当前为 0.0.10 实验开发版，仅允许生成的独立测试库。** 尚未实现普通库初始化、正式设备接入/撤销、联合备份还原和完整生产安全验收，不用于真实主库。
+**当前为 0.1.0 预发布源码，插件 ID 为 `xsync`。** 已支持普通库初始化、设备接入/撤销和本地发布包；尚未发布 GitHub Release 或上架社区目录。新接入流程仍需 Mac/iPhone 真机复验，联合备份还原与生产安全验收尚未完成，请先在独立测试库验证。
 
 ## 当前实现
 
 - TypeScript 插件、IndexedDB/Dexie 本地状态，Go HTTP/WebSocket 服务、Docker PostgreSQL 元数据和不可变密文对象。
+- 所有者本机生成随机同步密钥与公开服务初始化包；无需测试标记或预置设备令牌。首次设备证明持有密钥后接入，后续设备需服务端临时开放窗口；支持本机管理命令撤销和令牌恢复。
 - 名称、地址、同步密钥“保存并测试”后自动连接；Mac 使用 Electron safeStorage，已适配的 iOS 宿主使用原生 Keychain。暂停/恢复保留配置与密钥，重开后仍暂停。
 - 已保存密钥显示固定圆点占位，实际输入值为空；留空复用，新密钥验证成功才替换。
 - 普通文件和可共享配置；本机独立的 1–100 MB、目录、后缀和 RE2 正则规则。凭据、身份、布局、队列/暂存、本插件及 core-plugins.json 固定排除。
@@ -14,6 +15,14 @@
 - 持久化队列、应用 journal、幂等回执、日志过期快照恢复及前台自动补齐。回到前台补齐不等于持续后台同步。
 
 大附件源文件仍整读，分块传输不等于源文件流式读取。未知第三方配置中的私密字段仍需适配；iOS 内部桥接兼容、资源和迁移边界需继续验证。详细合同见[决策](docs/DECISIONS.md)。
+
+## 安装与自建
+
+先阅读[安装与接入](docs/SETUP.md)和[服务部署](docs/DEPLOYMENT.md)。`npm run server:init -- --out .local/xsync-owner` 在所有者电脑生成初始化文件，只把 `server.json` 送到服务器，`sync-key.txt` 留在自己的设备与离线备份中。
+
+`npm run package:plugin` 生成 `dist/release/xsync-0.1.0.zip` 及插件文件，解压到独立测试库的 `.obsidian/plugins/xsync/` 并启用。填写名称、HTTPS 地址、同步密钥，保存并测试后前台自动同步。后续新增设备需管理者临时开放接入。最低宿主版本暂设为 1.14.5；Android 尚无安全存储适配，Windows/Linux 未完成真机验收。
+
+插件会连接用户配置的自建服务，上传文件/路径/配置的密文、文件身份、长度和同步版本元数据；服务端可见设备名称与授权摘要。没有分析统计、广告或插件自动更新器。暂停会保留本机配置；凭据、身份、布局、核心插件启用状态及 xSync/旧开发插件自身固定排除。其他第三方配置中的未知秘密字段仍可能未被识别，应使用本机排除规则。网络和本机存储边界见[安装说明](docs/SETUP.md)。
 
 ## 开发
 
@@ -24,7 +33,7 @@ npm ci
 npm run check
 ```
 
-check 执行类型检查、默认自动测试和两个插件构建，生成物位于 plugin/dist/ 与 tests/probe/dist/。默认测试不运行需后端或原生浏览器的集成。
+check 执行类型检查、默认自动测试和两个插件构建，生成物位于 plugin/dist/ 与 tests/probe/dist/。同步插件的唯一 manifest 位于根目录，探针独立。默认测试不运行需后端或原生浏览器的集成。
 
 后端验证另需 Go >=1.27、运行中的 Docker/Compose v2：
 
@@ -36,10 +45,11 @@ npm run desktop:start
 
 Go 依次取 OBSIDIAN_SYNC_GO、项目本地编译器、PATH 中的 go。PostgreSQL 只使用本项目 Docker 资源，不需要宿主 PG。test:desktop 包含数据库/race、双客户端、恢复和独立 Chrome 原生 IndexedDB 强杀套件；缺少浏览器会报告未执行，可用 OBSIDIAN_SYNC_CHROME 指定路径。已有服务运行时不要重复启动。
 
-本地测试库、凭据、数据库、旧验收报告和构建产物已清理，自动化测试源码与 HTML 保留。再次测试需重新 setup；不得将旧客户端当成新服务的同一身份。开发与清理方式见[测试流程](docs/testing/DEVELOPMENT.md)。
+生成的本地测试库、凭据、数据库、报告和构建产物不纳入 Git，自动化测试源码与 HTML 保留。每轮清理后需重新 setup；不得将旧客户端当成新服务的同一身份。开发与清理方式见[测试流程](docs/testing/DEVELOPMENT.md)。
 
 ## 文档
 
+- [安装](docs/SETUP.md)、[自建服务](docs/DEPLOYMENT.md)、[发布准备](docs/RELEASING.md)。
 - [更新记录](CHANGELOG.md)、[交接](docs/HANDOFF.md)、[文档索引](docs/README.md)、[贡献指南](CONTRIBUTING.md)。
 - [架构](design/architecture.html)、[连接与规则](design/connection-settings.html)、[冲突处理](design/sync-conflicts.html)：普通本地 HTML，保留为设计演示，不连接真实服务。
 - [协议模型](protocol/MODEL.md)、[电脑开发](docs/testing/desktop.md)、[移动验证](docs/testing/mobile-probe.md)。

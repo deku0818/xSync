@@ -2,6 +2,19 @@ package main
 
 import "testing"
 
+func TestProductionTLSBoundary(t *testing.T) {
+	for _, test := range []struct {
+		address      string
+		tls, allowed bool
+	}{
+		{"0.0.0.0:8873", false, false}, {"0.0.0.0:8873", true, true}, {"[::]:8873", true, true}, {"192.168.1.10:8873", false, false}, {"localhost:8873", true, false}, {"127.0.0.1:8873", false, true},
+	} {
+		if got := validateServerListen(test.address, "", false, test.tls) == nil; got != test.allowed {
+			t.Errorf("%+v: allowed=%v", test, got)
+		}
+	}
+}
+
 func TestDevelopmentListenBoundary(t *testing.T) {
 	for _, test := range []struct {
 		address string

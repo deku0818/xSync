@@ -1,12 +1,12 @@
 # 当前交接
 
-项目 /Users/y-pc/Cocoon/ObsidianSync，源码版本 **0.0.10**。不修改 PalletTruck3D，不操作用户真实笔记库。
+项目 /Users/y-pc/Cocoon/xSync，源码版本 **0.1.0**，正式名称 **xSync**，ID **xsync**。不修改 PalletTruck3D，不操作用户真实笔记库。
 
 ## 状态
 
-实验开发初版已有加密双向同步、安全保存、暂停恢复、冲突处理和恢复队列。已保存密钥圆点方案已获批准并落地，真实输入值保持空。已有部分 Mac/iPhone 验证，不能推导所有平台、资源或生产场景均已验收。
+0.1.0 已补普通库初始化、所有者本地初始化包、挑战签名设备接入、临时接入窗口、令牌恢复和永久撤销，以及标准发布包结构。已有加密双向同步、安全保存、暂停恢复、冲突处理和恢复队列。已保存密钥圆点方案已获批准并落地，真实输入值保持空。旧版 Mac/iPhone 验证不能代替新版本真机验收。
 
-用户最新要求清理中间文件、测试结果与冗余，保留 HTML；手机上的 Mobile-Test 由用户自行清理。电脑生成的 A/B、Mac 配对库、本地配置/对象/备份、构建与临时脚本、历史验收报告，以及专属 Docker 测试数据库均已移除。自动测试源码、HTML、开发依赖和本地 Go 工具链保留。不要再使用旧 PID、端口、设备身份、密钥或 schema 恢复已清理的配对服务。
+此前已按用户要求清理中间文件、测试结果与冗余，保留 HTML；手机上的 Mobile-Test 由用户自行清理。旧电脑测试库、配对配置/对象/备份和历史验收报告均已移除。自动测试源码、HTML、开发依赖和本地 Go 工具链保留。本轮验证只重建隔离测试资源，完成后清理；发布包保留为本轮交付物，不提交生成物。不要使用旧 PID、身份或 schema 恢复已清理的配对服务。
 
 Mac 上三个旧测试库入口、各自窗口状态文件和对应的三个同步 IndexedDB 已精确移除，其他库/插件的应用存储保留；未整体清除系统钥匙串或 Git 历史。手机部分由用户处理，本轮未复核原生钥匙串；清理说明见[移动说明](testing/mobile-probe.md)。
 
@@ -21,19 +21,23 @@ Mac 上三个旧测试库入口、各自窗口状态文件和对应的三个同�
 
 ## 实现入口
 
-- plugin/src/sync-main.ts：宿主生命周期、串行队列、保存/恢复、前台重试和自动同步，仍限制生成测试库。
+- plugin/src/sync-main.ts：宿主生命周期、串行队列、保存/恢复、前台重试和自动同步，不再要求测试标记；普通身份文件无令牌，令牌进入受保护记录。
 - plugin/src/ui/、plugin/styles.css：批准的 HTML 对应真实界面，不打包演示脚本。
 - plugin/src/sync/engine.ts：不可变 outbox、幂等回执优先、密文认证、接收/游标事务、应用 journal、租约和保守快照恢复。
 - vault-port.ts、policy.ts、config-projection.ts：Vault/Adapter、configDir 映射、规则与已识别本机字段隔离。
 - desktop/remembered-unlock.ts：跨平台受保护记录封装；desktop/protector.ts 为 safeStorage；mobile/ios-protector.ts 为原生 Keychain 桥接，无明文回退。
 - server/internal/syncstore/：元数据、不可变密文对象、幂等/CAS、事件票据和加密设备快照。
+- server/scripts/init.ts、protocol/src/enrollment.ts、plugin/src/sync/enrollment.ts：所有者本地初始化与跨语言接入；本机管理命令在 server/cmd/obsidiansync。
+- manifest.json、versions.json、plugin/scripts/package-sync.mjs：发布元数据与包；手动 Actions 只生成构建产物。
 - tests/：模型/属性、宿主/核心、真实数据库、多客户端与原生浏览器恢复测试；不是测试结果目录。
 
 ## 后续
 
-1. 普通库初始化和正式设备授权/撤销，替代预置身份与测试标记；正式部署需另行授权。
+1. 0.1.0 xSync 新安装与普通库接入的 Mac/iPhone 真机复验；新保护记录包含令牌，旧移动验收不能代替本轮。正式部署/发布/上架需另行授权。
 2. 数据库与密文对象联合备份、实际还原及旧设备重连核对。
 3. iPhone 传输中系统终止、实际 move 应用中断、低存储/大附件峰值内存、网络切换、锁屏 Keychain 实效与重启/迁移。
 4. Android、Windows/Linux 安全存储、物理双机、未知第三方私密字段、空目录/批量移动、高级附件/多头审阅、历史/GC 和安全审查。
 
-100 MB 源文件仍整读；iOS 保护器依赖宿主内部桥接，须按版本验证。开发重建步骤见[电脑说明](testing/desktop.md)，测试边界见[流程](testing/DEVELOPMENT.md)。用户已授权将当前整理后的源码提交并推送到 GitHub deku0818/ObsidianSync；提交与推送状态以 Git 记录为准，不创建发布或部署。
+本轮已在真实 Go HTTP、Docker PG 上验证新设备双向同步、接入窗口、回执重试、令牌更换和撤销后重启；宿主测试覆盖无标记初始化、原身份恢复和安全存储/设置指针失败。默认、数据库/race 与原生 IndexedDB 恢复套件保留，不重建历史结果文档。安装、运维和发布说明见 [SETUP](SETUP.md)、[DEPLOYMENT](DEPLOYMENT.md)、[RELEASING](RELEASING.md)。
+
+100 MB 源文件仍整读；iOS 保护器依赖宿主内部桥接，须按版本验证。开发重建步骤见[电脑说明](testing/desktop.md)，测试边界见[流程](testing/DEVELOPMENT.md)。此前 0.0.10 整理提交已推送 GitHub；用户现已明确要求将本轮 0.1.0 与项目改名整理提交并推送至 deku0818/xSync 的 codex/project-init 分支，完成状态以 Git 记录为准。不创建 Release、部署或上架。

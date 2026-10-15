@@ -1,0 +1,21 @@
+import { mkdir, readFile, copyFile, writeFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+process.chdir(fileURLToPath(new URL("../../", import.meta.url)));
+const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
+const versions = JSON.parse(await readFile("versions.json", "utf8"));
+if (!/^[a-z][a-z0-9-]*$/.test(manifest.id) || /obsidian/i.test(manifest.id + manifest.name) || !/^\d+\.\d+\.\d+$/.test(manifest.version) || versions[manifest.version] !== manifest.minAppVersion) throw new Error("Invalid release manifest/version mapping");
+const source = `plugin/dist/${manifest.id}`; const target = "dist/release";
+const assets = ["main.js","manifest.json","styles.css","LICENSE","TEMPLATE-LICENSE.txt","THIRD-PARTY-NOTICES.txt"];
+await rm(target, { recursive: true, force: true });
+await mkdir(target, { recursive: true });
+for (const file of assets) await copyFile(`${source}/${file}`,`${target}/${file}`);
+const zip = `${manifest.id}-${manifest.version}.zip`;
+const result = spawnSync("python3", ["-c", "import sys,zipfile,pathlib; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); z=zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED); [z.write(root/name,sys.argv[3]+'/'+name) for name in sys.argv[4:]]; z.close()", source, `${target}/${zip}`, manifest.id, ...assets], { stdio: "inherit" });
+if (result.error) throw result.error; if (result.status !== 0) throw new Error("Release archive failed");
+const files = ["main.js","manifest.json","styles.css",zip];
+const sums = await Promise.all(files.map(async file => `${createHash("sha256").update(await readFile(`${target}/${file}`)).digest("hex")}  ${file}`));
+await writeFile(`${target}/SHA256SUMS`, sums.join("\n")+"\n");
+console.log(`Prepared ${manifest.name} ${manifest.version} in ${target}; no tag, release or upload created.`);

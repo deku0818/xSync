@@ -39,6 +39,8 @@ server.json
 device.json
 desktop-unlock.json
 connection-*.json
+pending-*.json
+sync-key.txt
 
 # Generated verification output belongs in ignored local folders, not documentation.
 test-results/

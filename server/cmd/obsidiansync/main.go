@@ -19,11 +19,25 @@ import (
 )
 
 func main() {
-	file := flag.String("config", "", "development config JSON path")
+	file := flag.String("config", "", "server config JSON path")
+	enrollFor := flag.Duration("enroll-for", 0, "open device enrollment for up to 1h; 0 closes it; local admin command")
+	revoke := flag.String("revoke-device", "", "revoke a device ID; local admin command")
+	listDevices := flag.Bool("list-devices", false, "list device IDs, names and revocation state; local admin command")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate file (required for non-loopback listeners)")
+	tlsKey := flag.String("tls-key", "", "TLS private key file")
 	testSchema := flag.String("test-schema", "", "isolated e2e test namespace (development only)")
 	resumeTestSchema := flag.Bool("resume-test-schema", false, "resume and retain an existing isolated test namespace for interactive device tests")
 	developmentLAN := flag.Bool("dev-lan-listen", false, "allow a literal private IP only with an isolated --test-schema; synthetic tests only")
 	flag.Parse()
+	enrollmentCommand := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "enroll-for" {
+			enrollmentCommand = true
+		}
+	})
+	if enrollmentCommand && (*enrollFor < 0 || *enrollFor > time.Hour) {
+		log.Fatal("--enroll-for must be between 0 and 1h")
+	}
 	if *resumeTestSchema && *testSchema == "" {
 		log.Fatal("--resume-test-schema requires --test-schema")
 	}
@@ -38,17 +52,45 @@ func main() {
 	if e = json.Unmarshal(b, &c); e != nil {
 		log.Fatal("invalid config")
 	}
+	if dsn := os.Getenv("XSYNC_DATABASE_URL"); dsn != "" {
+		c.DSN = dsn
+	}
+	if c.DSN == "" {
+		log.Fatal("database URL required in XSYNC_DATABASE_URL or config")
+	}
+	if (*tlsCert == "") != (*tlsKey == "") {
+		log.Fatal("--tls-cert and --tls-key must be supplied together")
+	}
+	commands := 0
+	if enrollmentCommand {
+		commands++
+	}
+	if *revoke != "" {
+		commands++
+	}
+	if *listDevices {
+		commands++
+	}
+	if commands > 1 {
+		log.Fatal("use one admin command at a time")
+	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8873"
 	}
-	if e = validateListen(c.Listen, *testSchema, *developmentLAN); e != nil {
+	if commands == 0 {
+		e = validateServerListen(c.Listen, *testSchema, *developmentLAN, *tlsCert != "")
+	}
+	if e != nil {
 		log.Fatal(e)
 	}
 	c.ObjectDir, e = filepath.Abs(c.ObjectDir)
 	if e != nil {
 		log.Fatal(e)
 	}
-	if e = os.MkdirAll(c.ObjectDir, 0700); e != nil {
+	if commands == 0 {
+		e = os.MkdirAll(c.ObjectDir, 0700)
+	}
+	if e != nil {
 		log.Fatal(e)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -84,6 +126,34 @@ func main() {
 		log.Fatal("store startup failed: ", e)
 	}
 	defer s.Pool.Close()
+	if *listDevices {
+		rows, err := s.Devices(ctx)
+		if err != nil {
+			log.Fatal("device listing failed")
+		}
+		result := []map[string]any{}
+		for _, row := range rows {
+			result = append(result, map[string]any{"id": row.ID, "name": row.Name, "revoked": row.Revoked})
+		}
+		if e = json.NewEncoder(os.Stdout).Encode(result); e != nil {
+			log.Fatal("device output failed")
+		}
+		return
+	}
+	if enrollmentCommand {
+		if e = s.OpenEnrollment(ctx, *enrollFor); e != nil {
+			log.Fatal("enrollment window update failed: ", e)
+		}
+		log.Print("device enrollment window updated")
+		return
+	}
+	if *revoke != "" {
+		if e = s.RevokeDevice(ctx, *revoke); e != nil {
+			log.Fatal("device revocation failed: ", e)
+		}
+		log.Print("device revoked")
+		return
+	}
 	srv := &http.Server{Addr: c.Listen, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {
 		<-ctx.Done()
@@ -92,10 +162,26 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
-	log.Print("ObsidianSync development server on ", c.Listen, "; public listeners disabled")
-	if e = srv.ListenAndServe(); e != nil && e != http.ErrServerClosed {
+	log.Print("xSync server on ", c.Listen)
+	if *tlsCert != "" {
+		e = srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+	} else {
+		e = srv.ListenAndServe()
+	}
+	if e != nil && e != http.ErrServerClosed {
 		log.Fatal(e)
 	}
+}
+
+func validateServerListen(listen, testSchema string, developmentLAN, tls bool) error {
+	if tls && testSchema == "" && !developmentLAN {
+		host, port, e := net.SplitHostPort(listen)
+		if e == nil && net.ParseIP(host) != nil && port != "" {
+			return nil
+		}
+		return fmt.Errorf("TLS listener requires a literal IP and port")
+	}
+	return validateListen(listen, testSchema, developmentLAN)
 }
 
 func validateListen(listen, testSchema string, developmentLAN bool) error {

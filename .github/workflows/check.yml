@@ -28,6 +28,8 @@ jobs:
           cache-dependency-path: server/go.sum
       - run: npm ci
       - run: npm run check
+      - name: Validate xSync release packaging
+        run: npm run package:plugin
       - name: Prepare isolated Docker database and generated test vaults
         run: npm run desktop:setup
       - name: Go vet

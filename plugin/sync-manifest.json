@@ -1,9 +1,0 @@
-{
-  "id": "obsidian-sync-dev",
-  "name": "ObsidianSync Dev",
-  "version": "0.0.10",
-  "minAppVersion": "1.8.0",
-  "description": "Experimental encrypted sync for generated desktop and iOS development vaults only.",
-  "author": "ObsidianSync",
-  "isDesktopOnly": false
-}

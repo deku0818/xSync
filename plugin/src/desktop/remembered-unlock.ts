@@ -1,12 +1,15 @@
 import { z } from "zod";
 import type { SecretProtector } from "./protector";
 import type { RememberedMaterial } from "../sync/engine";
+import { enrollmentSchema, type Enrollment } from "../../../protocol/src/enrollment";
+export interface StoredMaterial extends RememberedMaterial { token?: string; enrollment?: Enrollment }
 
 export interface UnlockIdentity { vaultId: string; deviceId: string; databaseId: string; endpoint: string }
 export interface LocalTextFiles { exists(path: string): Promise<boolean>; read(path: string): Promise<string>; write(path: string, text: string): Promise<void> }
 const secretHex = z.string().regex(/^[a-f0-9]{64}$/);
 const materialSchema = z.strictObject({ format: z.literal(0), vaultId: z.string(), keyPackageFingerprint: secretHex,
   session: z.strictObject({ format: z.literal(0), vaultId: z.string(), content: secretHex, metadata: secretHex, paths: secretHex, local: secretHex, auth: secretHex }),
+  token: z.string().min(32).max(128).optional(), enrollment: enrollmentSchema.optional(),
 });
 const identitySchema = z.strictObject({ vaultId: z.string(), deviceId: z.string(), databaseId: z.string(), endpoint: z.string() });
 const envelopeSchema = z.strictObject({ format: z.literal(0), provider: z.string(), ciphertext: z.array(z.number().int().min(0).max(255)).min(1).max(8192) });
@@ -20,7 +23,7 @@ export class RememberedUnlock {
     try { return envelopeSchema.safeParse(JSON.parse(text)).success; }
     catch { return false; }
   }
-  async save(material: RememberedMaterial): Promise<void> {
+  async save(material: StoredMaterial): Promise<void> {
     const validated = materialSchema.parse(material);
     if (validated.vaultId !== this.identity.vaultId || validated.session.vaultId !== this.identity.vaultId) throw new Error("WRONG_VAULT");
     const ciphertext = await this.protector.protect(JSON.stringify({ format: 0, identity: this.identity, material: validated }));
@@ -28,7 +31,7 @@ export class RememberedUnlock {
     await this.files.write(this.path, record);
     if (await this.files.read(this.path) !== record) throw new Error("UNLOCK_WRITE_INCOMPLETE");
   }
-  async load(): Promise<RememberedMaterial | null> {
+  async load(): Promise<StoredMaterial | null> {
     if (!await this.files.exists(this.path)) return null;
     const raw = JSON.parse(await this.files.read(this.path)) as unknown;
     if (z.strictObject({ format: z.literal(0), disabled: z.literal(true) }).safeParse(raw).success) return null;

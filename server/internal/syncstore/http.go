@@ -96,6 +96,12 @@ func writeError(w http.ResponseWriter, e error) {
 	switch c {
 	case "UNAUTHORIZED":
 		status = 401
+	case "ENROLLMENT_CLOSED", "DEVICE_REVOKED":
+		status = 403
+	case "ENROLLMENT_BUSY", "DEVICE_LIMIT":
+		status = 429
+	case "ENROLLMENT_EXPIRED", "ENROLLMENT_REPLAY":
+		status = 409
 	case "INVALID_REQUEST", "UNSUPPORTED_PROTOCOL", "WRONG_VAULT", "DIGEST_MISMATCH", "DEVICE_NAME_INVALID":
 		status = 400
 	case "OBJECT_MISSING", "FILE_MISSING":
@@ -138,7 +144,7 @@ func (s *Store) Handler() http.Handler {
 			writeError(w, e)
 			return
 		}
-		ticket, e := s.events.ticket(device)
+		ticket, e := s.events.ticket(device, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		if e != nil {
 			writeError(w, e)
 			return
@@ -243,6 +249,9 @@ func (s *Store) Handler() http.Handler {
 		_, _ = w.Write(b)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.enrollmentHandler(w, r) {
+			return
+		}
 		if r.Method == http.MethodGet && r.URL.Path == "/events" {
 			s.eventsHandler(w, r)
 			return

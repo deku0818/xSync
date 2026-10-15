@@ -18,7 +18,9 @@ npm run desktop:setup
 npm run test:desktop
 ```
 
-PostgreSQL 只使用 obsidiansync-dev 专属 Docker 项目。test:desktop 执行 Go 合同/race、双客户端与故障恢复；找到 Chrome/Chromium 后运行独立 profile 的真实 IndexedDB/SIGKILL 套件，不操作已有浏览器会话。可用 OBSIDIAN_SYNC_CHROME 指定路径；CI 要求浏览器存在。
+PostgreSQL 只使用 obsidiansync-dev 专属 Docker 项目。test:desktop 执行 Go 合同/race、双客户端、普通设备接入与故障恢复；找到 Chrome/Chromium 后运行独立 profile 的真实 IndexedDB/SIGKILL 套件，不操作已有浏览器会话。可用 OBSIDIAN_SYNC_CHROME 指定路径；CI 要求浏览器存在。
+
+接入测试覆盖所有者本地初始化、不覆盖原身份、无标记宿主初始化、密钥/本地修订核对、保护存储失败、接入回执与设置指针丢失、重复请求、并发名称、挑战过期/容量、接入窗口、同身份令牌恢复、撤销及事件票据/连接。实际 Go HTTP/PG 互通不代表原生安全存储或新版手机安装已验收。`npm run package:plugin` 另验证标准包元数据；产物只收录固定插件文件，不收录运行配置。
 
 模型测试验证因果、幂等、分支、位置 CAS 和过期选择；文件/HTTP/PG 集成使用 fake IndexedDB；原生浏览器套件验证真实桌面 IndexedDB 的进程恢复。这些均不能替代 iOS/Android 的 Vault API、安全存储、系统终止和资源验收。错误注入、进程强杀、物理断电及联合备份实际还原须分别记录。
 

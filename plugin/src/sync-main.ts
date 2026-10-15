@@ -1,7 +1,7 @@
 // Based on obsidianmd/obsidian-sample-plugin, commit 07ceb81d1fb3384af611ebf665a1ec42a7e5926d (0BSD).
 import { Modal, Notice, Platform, Plugin, PluginSettingTab, TFile, requestUrl, type App } from "obsidian";
 import { z } from "zod";
-import buildManifest from "../sync-manifest.json";
+import buildManifest from "../../manifest.json";
 import { SyncEngine, type EngineStatus, type Review } from "./sync/engine";
 import { SyncDB } from "./sync/store";
 import { ObsidianVaultPort } from "./sync/vault-port";
@@ -10,8 +10,9 @@ import { SyncOverview } from "./ui/sync-panels";
 import { AutomaticSync, RemoteEvents, SerialWork } from "./sync/realtime";
 import { desktopProtector } from "./desktop/protector";
 import { iosProtector } from "./mobile/ios-protector";
-import { RememberedUnlock } from "./desktop/remembered-unlock";
-import { randomId } from "./sync/crypto";
+import { RememberedUnlock, type StoredMaterial } from "./desktop/remembered-unlock";
+import { randomId, fingerprint, VaultCrypto } from "./sync/crypto";
+import { enrollConnection } from "./sync/enrollment";
 import { connectionSettings } from "./sync/connection-settings";
 import { connectionFailure, type ConnectionObserver, type ConnectionStep } from "./sync/connection-check";
 import { connectionForm } from "./ui/connection-form";
@@ -20,7 +21,7 @@ import { decodeProfile, type ClientView, type ClientConfiguration, type PendingP
 import { clientName } from "../../protocol/src/client-profile";
 import { canonical } from "../../protocol/src/model";
 
-const configSchema = z.strictObject({ endpoint: z.string(), developmentEndpoint: z.string().optional(), token: z.string().min(32), deviceId: z.string(), deviceName: z.string(), vaultId: z.string(), databaseId: z.string().regex(/^[a-f0-9]{64}$/) });
+const configSchema = z.strictObject({ endpoint: z.string().default(""), developmentEndpoint: z.string().optional(), token: z.union([z.string().min(32).max(128), z.literal("")]).default(""), deviceId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/), deviceName: z.string().default(""), vaultId: z.string().default(""), databaseId: z.string().regex(/^[a-f0-9]{64}$/) });
 export default class ObsidianSyncPlugin extends Plugin {
   engine?: SyncEngine;
   autoSync = true;
@@ -60,34 +61,46 @@ export default class ObsidianSyncPlugin extends Plugin {
   private listeners = new Set<() => void>();
   deviceName = "";
   async onload(): Promise<void> {
-    this.statusEl = this.addStatusBarItem(); this.statusEl.setText("ObsidianSync · 正在连接");
-    this.addRibbonIcon("refresh-cw", "ObsidianSync 同步面板", () => new SyncOverview(this.app, this, () => new ConnectionModal(this.app, this).open()).open());
+    this.statusEl = this.addStatusBarItem(); this.statusEl.setText("xSync · 正在连接");
+    this.addRibbonIcon("refresh-cw", "xSync 同步面板", () => new SyncOverview(this.app, this, () => new ConnectionModal(this.app, this).open()).open());
     this.addCommand({ id: "open-sync-panel", name: "打开同步面板", callback: () => new SyncOverview(this.app, this, () => new ConnectionModal(this.app, this).open()).open() });
     this.addCommand({ id: "configure-sync", name: "配置服务器与同步密钥", callback: () => new ConnectionModal(this.app, this).open() });
     this.addCommand({ id: "toggle-sync", name: "暂停 / 恢复同步", callback: () => { void this.setAutoSync(!this.autoSync).catch(error => new Notice(String(error))); } });
     this.addSettingTab(new SyncSettingTab(this.app, this));
     try {
       const root = `${this.app.vault.configDir}/obsidian-sync-local`;
-      const marker = JSON.parse(await this.app.vault.adapter.read(`${this.app.vault.configDir}/obsidian-sync-development.json`)) as { generatedBy?: string };
-      if (marker.generatedBy !== "ObsidianSync desktop test setup") throw new Error("DEVELOPMENT_VAULT_REQUIRED");
-      const config = configSchema.parse(JSON.parse(await this.app.vault.adapter.read(`${root}/device.json`)));
+      const adapter = this.app.vault.adapter;
+      const savedData = await this.loadData();
+      const markerPath = `${this.app.vault.configDir}/obsidian-sync-development.json`;
+      const development = await adapter.exists(markerPath) && JSON.parse(await adapter.read(markerPath)).generatedBy === "ObsidianSync desktop test setup";
+      if (!await adapter.exists(root)) await adapter.mkdir(root);
+      const identityPath = `${root}/device.json`;
+      if (!await adapter.exists(identityPath)) {
+        if (savedData && typeof savedData === "object" && "endpoint" in savedData && savedData.endpoint) throw new Error("LOCAL_IDENTITY_MISSING");
+        const identity = JSON.stringify({ deviceId: randomId(), databaseId: randomId() });
+        await adapter.write(identityPath, identity);
+        if (await adapter.read(identityPath) !== identity) throw new Error("IDENTITY_WRITE_INCOMPLETE");
+      }
+      const config = configSchema.parse(JSON.parse(await adapter.read(identityPath)));
+      if (!development && (config.developmentEndpoint || config.token)) throw new Error("DEVELOPMENT_FIXTURE_REQUIRES_MARKER");
       this.config = config; this.root = root; this.deviceName = config.deviceName;
-      const saved = connectionSettings(await this.loadData(), config.endpoint, config.developmentEndpoint);
+      const saved = connectionSettings(savedData, config.endpoint, config.developmentEndpoint);
+      config.vaultId = saved.vaultId ?? config.vaultId;
       this.endpoint = saved.endpoint; this.autoSync = saved.autoSync;
       this.rules = saved.rules; this.policy = new SyncPolicy(this.rules); this.deviceName = saved.clientName ?? config.deviceName;
       this.profileRevision = saved.profileRevision; this.profileDirty = saved.profileDirty; this.profilePending = saved.profilePending;
       this.connectionRecord = saved.record; this.restoreAllowed = saved.restoreAllowed;
       this.db = new SyncDB(`obsidian-sync-dev-${config.databaseId}`); await this.db.open();
-      const remote = this.transport(this.endpoint); this.remote = remote;
+      const remote = this.endpoint ? this.transport(this.endpoint) : undefined; this.remote = remote;
       const port = new ObsidianVaultPort(this.app, root, () => this.policy); this.port = port;
-      this.engine = new SyncEngine(this.db, remote, port, config.deviceId, config.vaultId, this.policy);
+      if (remote && config.vaultId) this.engine = new SyncEngine(this.db, remote, port, config.deviceId, config.vaultId, this.policy);
       try {
-        this.remembered = this.unlockStore(this.endpoint, this.connectionRecord);
-        this.hasSavedKey = this.restoreAllowed && await this.remembered.hasRecord();
+        if (this.endpoint && config.vaultId) this.remembered = this.unlockStore(this.endpoint, this.connectionRecord);
+        this.hasSavedKey = this.restoreAllowed && (this.remembered ? await this.remembered.hasRecord() : false);
         this.storageState = "请填写服务器地址和同步密钥并保存";
       } catch (error) { this.storageState = `无法安全保存密钥：${String(error)}`; }
       this.automatic = new AutomaticSync(() => this.sync(false), error => { this.hostError = String(error); this.emit(); });
-      this.connectEvents(remote);
+      if (remote) this.connectEvents(remote);
       const changed = (file: { path: string }) => {
         if (port.isOwnWrite(file.path)) return;
         if (!port.inScope(file.path)) { this.emit(); return; }
@@ -109,8 +122,9 @@ export default class ObsidianSyncPlugin extends Plugin {
       this.registerDomEvent(window, "online", () => { this.events?.reconnect(); this.wake("online"); });
       this.registerDomEvent(window, "focus", () => this.wake("focus"));
       this.registerDomEvent(document, "visibilitychange", () => { if (!document.hidden) this.wake("foreground"); });
+      if (!this.engine) this.statusEl.setText("xSync · 请配置同步");
       this.app.workspace.onLayoutReady(() => { this.layoutReady = true; this.wake("startup"); });
-    } catch (error) { this.statusEl.setText("ObsidianSync · 测试库配置未就绪"); new Notice(`ObsidianSync 未启动：${String(error)}`); }
+    } catch (error) { this.statusEl.setText("xSync · 配置未就绪"); new Notice(`xSync 未启动：${String(error)}`); }
   }
   private wake(reason: string): void {
     if (this.disposed || !this.layoutReady) return;
@@ -124,7 +138,7 @@ export default class ObsidianSyncPlugin extends Plugin {
       if (!this.engine.unlocked && this.restoreAllowed && this.remembered) {
         try {
           const material = await this.remembered.load();
-          if (material && !this.disposed) { await this.engine.restoreRemembered(material); this.hasSavedKey = true; this.storageState = "配置已保存"; }
+          if (material && !this.disposed) { this.config!.token = material.token ?? this.config!.token; this.remote?.setToken(this.config!.token); await this.engine.restoreRemembered(material); this.hasSavedKey = true; this.storageState = "配置已保存"; }
           else if (!material) this.hasSavedKey = false;
         } catch { this.storageState = "暂时无法读取保存的密钥；回到前台后重试，原记录保留。持续失败时请重新填写并保存"; }
       }
@@ -146,22 +160,22 @@ export default class ObsidianSyncPlugin extends Plugin {
     else { clearInterval(this.configTimer); this.configTimer = undefined; this.automatic?.stop(); this.events?.stop(); }
   }
   private showPending(): void {
-    if (!this.autoSync) this.statusEl?.setText("ObsidianSync · 已暂停同步");
-    else if (this.lastStatus?.state === "needs-attention") this.statusEl?.setText("ObsidianSync · 需处理");
-    else this.statusEl?.setText(this.engine?.unlocked ? "ObsidianSync · 有变更待核对" : "ObsidianSync · 请配置同步");
+    if (!this.autoSync) this.statusEl?.setText("xSync · 已暂停同步");
+    else if (this.lastStatus?.state === "needs-attention") this.statusEl?.setText("xSync · 需处理");
+    else this.statusEl?.setText(this.engine?.unlocked ? "xSync · 有变更待核对" : "xSync · 请配置同步");
     this.emit();
   }
   private transport(endpoint: string): Transport {
-    if (!this.config) throw new Error("DEVELOPMENT_VAULT_REQUIRED");
+    if (!this.config) throw new Error("LOCAL_IDENTITY_NOT_READY");
     return new Transport(endpoint, this.config.token, async r => {
       const response = await boundedRequest(requestUrl({ url: r.url, method: r.method, headers: r.headers, body: r.body?.slice().buffer, throw: false }));
       return { status: response.status, headers: Object.fromEntries(Object.entries(response.headers).map(([k, v]) => [k.toLowerCase(), v])), bytes: new Uint8Array(response.arrayBuffer) };
     }, this.config.developmentEndpoint);
   }
-  private unlockStore(endpoint: string, record: string): RememberedUnlock {
-    if (!this.config) throw new Error("DEVELOPMENT_VAULT_REQUIRED");
+  private unlockStore(endpoint: string, record: string, vaultId = this.config?.vaultId ?? ""): RememberedUnlock {
+    if (!this.config) throw new Error("LOCAL_IDENTITY_NOT_READY");
     const identity = {
-      vaultId: this.config.vaultId, deviceId: this.config.deviceId, databaseId: this.config.databaseId, endpoint,
+      vaultId, deviceId: this.config.deviceId, databaseId: this.config.databaseId, endpoint,
     };
     const protector = Platform.isDesktop ? desktopProtector(true) : iosProtector(Platform.isIosApp, identity);
     return new RememberedUnlock(this.app.vault.adapter, `${this.root}/${record}`, identity, protector);
@@ -179,26 +193,59 @@ export default class ObsidianSyncPlugin extends Plugin {
     try {
       const endpoint = normalizeEndpoint(inputEndpoint.trim(), this.config?.developmentEndpoint); const name = clientName(proposedName);
       await this.work.run(async () => {
-        if (!this.config || !this.db || !this.port || this.disposed) throw new Error("DEVELOPMENT_VAULT_REQUIRED");
+        if (!this.config || !this.db || !this.port || this.disposed) throw new Error("LOCAL_IDENTITY_NOT_READY");
         this.configuring = true; this.updateAutomation();
         const remote = this.transport(endpoint);
-        const candidate = new SyncEngine(this.db, remote, this.port, this.config.deviceId, this.config.vaultId, this.policy);
+        let candidate: SyncEngine | undefined;
         let installed = false;
+        let vaultId = this.config.vaultId;
+        let token = this.config.token;
         try {
-          // Reuse a protected session when the saved-key input is left empty; never recover a plaintext passphrase.
-          if (!key) {
-            step = "key";
-            const material = this.engine?.unlocked ? this.engine.rememberedMaterial() : this.restoreAllowed ? await this.remembered?.load() : null;
-            if (!material) throw new Error("CONNECTION_KEY_REQUIRED");
-            await candidate.restoreRemembered(material);
+          if (!key && !this.hasSavedKey && !this.engine?.unlocked) { step = "key"; throw new Error("CONNECTION_KEY_REQUIRED"); }
+          if (!token || !this.config.endpoint) {
+            let previous: StoredMaterial | null = this.engine?.unlocked ? { ...this.engine.rememberedMaterial(), token: token || undefined } : null;
+            if (!previous && this.restoreAllowed && this.remembered) {
+              try { previous = await this.remembered.load(); } catch (error) { if (!key) { step = "storage"; throw error; } }
+            }
+            const enrollment = await enrollConnection({ remote, vaultId, key, name, deviceId: this.config.deviceId, previous,
+              assertActive: () => { if (this.disposed) throw new Error("PLUGIN_UNLOADED"); },
+              stage: next => {
+                if (next === "key") observe?.({ step: "server", state: "passed" });
+                if (next === "authorization") observe?.({ step: "key", state: "passed" });
+                step = next; observe?.({ step, state: "running" });
+              },
+              pendingStore: async id => this.unlockStore(endpoint, `pending-${await fingerprint(new TextEncoder().encode(canonical({ endpoint, vaultId: id, deviceId: this.config!.deviceId, databaseId: this.config!.databaseId })))}.json`, id),
+              validate: async (material, epoch) => {
+                const progress = await this.db!.progress.get("progress");
+                if (progress && (progress.vaultId !== material.vaultId || progress.epoch !== epoch)) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
+                const keys = await VaultCrypto.restore(material.vaultId, material.session);
+                try { for (const revision of await this.db!.revisions.toArray()) keys.manifest(revision); }
+                catch { throw new Error("LOCAL_KEY_ANCHOR_MISMATCH"); } finally { keys.close(); }
+              },
+            });
+            if (this.disposed) throw new Error("PLUGIN_UNLOADED");
+            vaultId = enrollment.vaultId; token = enrollment.material.token!;
+            candidate = new SyncEngine(this.db, remote, this.port, this.config.deviceId, vaultId, this.policy);
+            await candidate.restoreRemembered(enrollment.material);
+            await candidate.validateConnection();
+            observe?.({ step: "authorization", state: "passed" });
+          } else {
+            candidate = new SyncEngine(this.db, remote, this.port, this.config.deviceId, vaultId, this.policy);
+            // Reuse a protected session when the saved-key input is left empty; never recover a plaintext passphrase.
+            if (!key) {
+              step = "key";
+              const material = this.engine?.unlocked ? this.engine.rememberedMaterial() : this.restoreAllowed ? await this.remembered?.load() : null;
+              if (!material) throw new Error("CONNECTION_KEY_REQUIRED");
+              await candidate.restoreRemembered(material);
+            }
+            step = "server"; observe?.({ step, state: "running" });
+            const authenticated = () => {
+              observe?.({ step: "server", state: "passed" }); observe?.({ step: "authorization", state: "passed" });
+              step = "key"; observe?.({ step, state: "running" });
+            };
+            // Legacy generated fixtures retain their pre-authorized handshake path.
+            if (key) await candidate.unlock(key, authenticated); else await candidate.validateConnection(authenticated);
           }
-          step = "server"; observe?.({ step, state: "running" });
-          const authenticated = () => {
-            observe?.({ step: "server", state: "passed" }); observe?.({ step: "authorization", state: "passed" });
-            step = "key"; observe?.({ step, state: "running" });
-          };
-          // Only the handshake and local crypto are tested here. No files/queues/remote objects are changed.
-          if (key) await candidate.unlock(key, authenticated); else await candidate.validateConnection(authenticated);
           if (this.engine?.unlocked && this.engine.rememberedMaterial().keyPackageFingerprint !== candidate.rememberedMaterial().keyPackageFingerprint) throw new Error("KEY_PACKAGE_CHANGED");
           observe?.({ step: "key", state: "passed" });
           if (this.disposed) throw new Error("PLUGIN_UNLOADED");
@@ -211,19 +258,19 @@ export default class ObsidianSyncPlugin extends Plugin {
           observe?.({ step: "name", state: "passed" });
           step = "storage"; observe?.({ step, state: "running" });
           const record = `connection-${randomId()}.json`;
-          const remembered = this.unlockStore(endpoint, record);
-          await remembered.save(candidate.rememberedMaterial());
+          const remembered = this.unlockStore(endpoint, record, vaultId);
+          await remembered.save({ ...candidate.rememberedMaterial(), token });
           if (this.disposed) throw new Error("PLUGIN_UNLOADED");
           // Immutable protected records keep the previous configuration usable if saving the pointer fails.
-          await this.saveData({ format: 3, autoSync: this.autoSync, endpoint, record, clientName: name, rules: this.rules, profileRevision: receipt.revision, profileDirty: false });
+          await this.saveData({ format: 4, vaultId, autoSync: this.autoSync, endpoint, record, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: receipt.revision, profileDirty: false });
           if (this.disposed) throw new Error("PLUGIN_UNLOADED");
-          this.engine?.lock(); this.engine = candidate; installed = true;
+          this.engine?.lock(); this.engine = candidate; installed = true; this.config.vaultId = vaultId; this.config.token = token;
           this.endpoint = endpoint; this.remote = remote; this.deviceName = name; this.profileRevision = receipt.revision; this.profileDirty = false; this.profilePending = undefined; this.connectionRecord = record; this.restoreAllowed = true; this.remembered = remembered;
           this.hasSavedKey = true;
           this.storageState = "配置已保存"; this.hostError = ""; this.connectEvents(remote);
           observe?.({ step: "storage", state: "passed" });
         } finally {
-          if (!installed) candidate.lock();
+          if (!installed) candidate?.lock();
           this.configuring = false; this.updateAutomation();
           if (!this.disposed && this.engine) this.publishStatus(await this.engine.status(), false);
         }
@@ -252,13 +299,13 @@ export default class ObsidianSyncPlugin extends Plugin {
     this.lastStatus = status;
     const label = !this.autoSync ? "已暂停同步" : this.localPending && status.state === "complete" ? "有变更待核对"
       : { locked: "请配置同步", pending: "同步进行中", "needs-attention": "需处理", complete: "所选范围同步完成" }[status.state];
-    this.statusEl?.setText(`ObsidianSync · ${label}`);
+    this.statusEl?.setText(`xSync · ${label}`);
     if (notify) new Notice(`${label} · 待上传 ${status.outbox} · 待应用 ${status.inbox} · 冲突 ${status.conflicts}`);
     this.emit();
   }
   async resolveConflict(review: Review, selectedRevision: string, companionPath?: string, mergedBytes?: Uint8Array): Promise<void> {
     await this.work.run(async () => {
-      if (!this.engine || this.disposed) throw new Error("DEVELOPMENT_VAULT_REQUIRED");
+      if (!this.engine || this.disposed) throw new Error("LOCAL_IDENTITY_NOT_READY");
       if (!this.autoSync || this.configuring) throw new Error("请先恢复同步");
       try { if (mergedBytes) await this.engine.resolve(review, selectedRevision, companionPath, mergedBytes); else await this.engine.resolve(review, selectedRevision, companionPath); }
       finally { this.publishStatus(await this.engine.status(), false); }
@@ -283,7 +330,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     const own = rows.find(row => row.id === this.config?.deviceId); if (own && !this.configuring) this.deviceName = own.name;
     this.clients = rows.map(row => {
       try { return { ...row, configuration: row.ciphertext ? decodeProfile(this.engine!.openProfile(row.id, row.revision, row.ciphertext), row.name) : undefined }; }
-      catch { return { id: row.id, name: row.name, revision: row.revision, reportedAt: row.reportedAt, error: "此配置快照无法验证，原数据保留" }; }
+      catch { return { id: row.id, name: row.name, revision: row.revision, reportedAt: row.reportedAt, revoked: row.revoked, error: "此配置快照无法验证，原数据保留" }; }
     });
     return this.clients;
   }
@@ -326,7 +373,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     finally { this.configScanning = false; }
   }
   async saveSettings(): Promise<void> {
-    await this.saveData({ format: 3, autoSync: this.autoSync, endpoint: this.endpoint, record: this.connectionRecord, restoreAllowed: this.restoreAllowed, clientName: this.deviceName, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty, ...(this.profilePending ? { profilePending: this.profilePending } : {}) });
+    await this.saveData({ format: 4, vaultId: this.config?.vaultId ?? "", autoSync: this.autoSync, endpoint: this.endpoint, record: this.connectionRecord, restoreAllowed: this.restoreAllowed, clientName: this.deviceName, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty, ...(this.profilePending ? { profilePending: this.profilePending } : {}) });
   }
 
 }

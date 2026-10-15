@@ -50,3 +50,11 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS name_key text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS profile_revision bigint NOT NULL DEFAULT 0;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS profile_ciphertext text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS profile_reported_at timestamptz;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
+ALTER TABLE vaults ADD COLUMN IF NOT EXISTS enrollment_key text NOT NULL DEFAULT '';
+ALTER TABLE vaults ADD COLUMN IF NOT EXISTS enrollment_until timestamptz;
+CREATE TABLE IF NOT EXISTS enrollment_challenges (
+ vault_id text REFERENCES vaults(id), id text, nonce text NOT NULL,
+ expires_at timestamptz NOT NULL, accepted_digest bytea, device_id text,
+ PRIMARY KEY(vault_id,id)
+);

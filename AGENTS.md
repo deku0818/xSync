@@ -1,8 +1,8 @@
-# ObsidianSync 工作约定
+# xSync 工作约定
 
 ## 项目范围
 
-- 本项目根目录为 `/Users/y-pc/Cocoon/ObsidianSync`。
+- 本项目根目录为 `/Users/y-pc/Cocoon/xSync`。
 - `/Users/y-pc/Cocoon/PalletTruck3D` 是此前聊天绑定的另一个项目；不要为本项目修改该目录。
 - 首先阅读 `README.md`、`docs/HANDOFF.md` 和 `docs/DECISIONS.md`。
 - 已获用户明确要求进入实现，当前已有 Phase 01 模型/探针和 Phase 02 电脑开发闭环。继续按设计中的验证顺序推进，状态以 docs/HANDOFF.md 为准。

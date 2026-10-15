@@ -19,6 +19,7 @@ type DeviceProfile struct {
 	Revision   int64  `json:"revision"`
 	Ciphertext string `json:"ciphertext,omitempty"`
 	ReportedAt string `json:"reportedAt,omitempty"`
+	Revoked    bool   `json:"revoked,omitempty"`
 }
 type ProfileUpdate struct {
 	Name             string `json:"name"`
@@ -41,7 +42,7 @@ func profileError(err error) error {
 	return err
 }
 func (s *Store) Devices(ctx context.Context) ([]DeviceProfile, error) {
-	rows, e := s.Pool.Query(ctx, "SELECT id,name,profile_revision,COALESCE(profile_ciphertext,''),profile_reported_at FROM devices WHERE vault_id=$1 ORDER BY name_key,id", s.Config.VaultID)
+	rows, e := s.Pool.Query(ctx, "SELECT id,name,profile_revision,COALESCE(profile_ciphertext,''),profile_reported_at,revoked_at IS NOT NULL FROM devices WHERE vault_id=$1 ORDER BY name_key,id", s.Config.VaultID)
 	if e != nil {
 		return nil, e
 	}
@@ -50,7 +51,7 @@ func (s *Store) Devices(ctx context.Context) ([]DeviceProfile, error) {
 	for rows.Next() {
 		var r DeviceProfile
 		var at *time.Time
-		if e = rows.Scan(&r.ID, &r.Name, &r.Revision, &r.Ciphertext, &at); e != nil {
+		if e = rows.Scan(&r.ID, &r.Name, &r.Revision, &r.Ciphertext, &at, &r.Revoked); e != nil {
 			return nil, e
 		}
 		if at != nil {
@@ -103,5 +104,5 @@ func (s *Store) PutProfile(ctx context.Context, device string, input ProfileUpda
 	if e = s.fault("after-profile-commit"); e != nil {
 		return zero, e
 	}
-	return DeviceProfile{device, name, input.ExpectedRevision + 1, input.Ciphertext, committed.UTC().Format(time.RFC3339Nano)}, nil
+	return DeviceProfile{ID: device, Name: name, Revision: input.ExpectedRevision + 1, Ciphertext: input.Ciphertext, ReportedAt: committed.UTC().Format(time.RFC3339Nano)}, nil
 }

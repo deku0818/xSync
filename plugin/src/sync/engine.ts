@@ -24,7 +24,7 @@ export interface ReviewVersion { revision: string; device: string; deviceId?: st
 export interface Review { fileId: string; path: string; heads: string[]; versions: ReviewVersion[]; location: FileState["location"] }
 export interface RememberedMaterial { format: 0; vaultId: string; keyPackageFingerprint: string; session: SessionMaterial }
 
-/** Experimental foreground engine, deliberately restricted to generated development vaults by the host plugin. */
+/** Foreground engine; host credentials and device enrollment remain outside this mobile-compatible core. */
 export class SyncEngine {
   private keys?: VaultCrypto;
   private devices = new Map<string, string>();
@@ -79,6 +79,8 @@ export class SyncEngine {
     const progress = await this.db.progress.get("progress");
     if (progress && progress.vaultId !== this.vaultId) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
     const keys = await VaultCrypto.restore(this.vaultId, input.session);
+    try { for (const revision of await this.db.revisions.toArray()) keys.manifest(revision); }
+    catch { keys.close(); throw new Error("LOCAL_KEY_ANCHOR_MISMATCH"); }
     this.keys?.close(); this.keys = keys; this.keyPackageFingerprint = input.keyPackageFingerprint;
     // Offline restore is allowed. sync() authenticates the remote identity/epoch/key-package before any I/O intent.
   }

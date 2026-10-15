@@ -1,6 +1,16 @@
 import { expect, it } from "vitest";
 import { connectionSettings } from "../../plugin/src/sync/connection-settings";
 import { normalizeEndpoint } from "../../plugin/src/sync/transport";
+import { defaultRules } from "../../plugin/src/sync/policy";
+
+it("supports an unconfigured ordinary vault and binds a published connection to its vault identity without storing credentials", () => {
+  expect(connectionSettings(null,"")).toMatchObject({ endpoint:"",autoSync:true });
+  const empty = { format:4,endpoint:"",vaultId:"",record:"desktop-unlock.json",autoSync:false,restoreAllowed:true,clientName:"",rules:defaultRules(),profileRevision:0,profileDirty:true };
+  expect(connectionSettings(empty,"")).toMatchObject({ endpoint:"",vaultId:"",autoSync:false });
+  expect(() => connectionSettings({...empty,endpoint:"https://sync.example.com"},"")).toThrow("INVALID_CONNECTION_IDENTITY");
+  expect(() => connectionSettings({...empty,token:"secret"},"")).toThrow();
+  expect(connectionSettings({...empty,endpoint:"https://sync.example.com/",vaultId:"vault",record:`connection-${"a".repeat(64)}.json`},"")).toMatchObject({ endpoint:"https://sync.example.com",vaultId:"vault" });
+});
 
 it("retains saved server and pause state, accepting only local protected-record names", () => {
   const saved = { format: 2, endpoint: "https://sync.example.com/", record: `connection-${"a".repeat(64)}.json`, autoSync: false };

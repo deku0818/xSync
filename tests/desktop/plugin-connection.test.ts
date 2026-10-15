@@ -6,8 +6,9 @@ import type { ConnectionCheck } from "../../plugin/src/sync/connection-check";
 import { VaultCrypto, randomId } from "../../plugin/src/sync/crypto";
 import { SyncDB } from "../../plugin/src/sync/store";
 import { AutomaticSync, RemoteEvents } from "../../plugin/src/sync/realtime";
+import { RememberedUnlock } from "../../plugin/src/desktop/remembered-unlock";
 
-const host = vi.hoisted(() => ({ saved: null as unknown, failSave: false, failUnprotect: false, reads: 0, status: 200, files: new Map<string, string>(), handshake: {} as unknown, profile: { id: "device", name: "Fixture", revision: 0, ciphertext: "" }, handlers: new Map<string, (...args: unknown[]) => void>() }));
+const host = vi.hoisted(() => ({ saved: null as unknown, failSave: false, failProtect: false, failUnprotect: false, loseEnrollment: false, enrollments: [] as unknown[], modern: false, onboarding: {} as unknown, reads: 0, status: 200, files: new Map<string, string>(), handshake: {} as unknown, profile: { id: "device", name: "Fixture", revision: 0, ciphertext: "" }, handlers: new Map<string, (...args: unknown[]) => void>() }));
 vi.mock("obsidian", () => ({
   Plugin: class {
     constructor(public app: unknown, public manifest: unknown) {}
@@ -19,38 +20,90 @@ vi.mock("obsidian", () => ({
   Modal: class {}, PluginSettingTab: class {}, Setting: class {}, Notice: class {}, TFile: class {}, Platform: { isDesktop: true },
   requestUrl: vi.fn(async (request: { url: string; body?: ArrayBuffer }) => {
     let response = host.handshake;
+    if (host.modern && request.url.endsWith("/onboarding")) response = host.onboarding;
+    if (host.modern && request.url.endsWith("/enroll/challenges")) response = { id: "c".repeat(64), nonce: "d".repeat(64) };
+    if (host.modern && request.url.endsWith("/enroll")) {
+      const body = JSON.parse(new TextDecoder().decode(request.body)); host.enrollments.push(body);
+      host.profile = { ...host.profile, id: body.deviceId, name: body.name };
+      host.handshake = { ...(host.handshake as object), devices: [{ id: body.deviceId, name: body.name }] }; response = { enrolled: true };
+      if (host.loseEnrollment) { host.loseEnrollment = false; throw new Error("RECEIPT_LOST"); }
+    }
     if (request.url.endsWith("/devices")) response = { devices: [host.profile] };
-    if (request.url.endsWith("/device/profile")) { const body = JSON.parse(new TextDecoder().decode(request.body)); if (body.expectedRevision !== host.profile.revision) throw new Error("PROFILE_STALE"); host.profile = { id: "device", name: body.name, revision: body.expectedRevision + 1, ciphertext: body.ciphertext }; response = host.profile; }
+    if (request.url.endsWith("/device/profile")) { const body = JSON.parse(new TextDecoder().decode(request.body)); if (body.expectedRevision !== host.profile.revision) throw new Error("PROFILE_STALE"); host.profile = { id: host.profile.id, name: body.name, revision: body.expectedRevision + 1, ciphertext: body.ciphertext }; response = host.profile; }
     return { status: host.status, headers: {}, arrayBuffer: new TextEncoder().encode(JSON.stringify(host.status === 200 ? response : { code: "UNAUTHORIZED" })).buffer };
   }),
 }));
 // The separate remembered-unlock tests exercise actual encryption and corruption. This fixture isolates host commit boundaries.
-vi.mock("../../plugin/src/desktop/protector", () => ({ desktopProtector: () => ({ name: "host-test-only", protect: async (text: string) => new TextEncoder().encode(text), unprotect: async (bytes: Uint8Array) => { host.reads++; if (host.failUnprotect) throw new Error("PROTECTED_STORE_TEMPORARILY_UNAVAILABLE"); return new TextDecoder().decode(bytes); } }) }));
+vi.mock("../../plugin/src/desktop/protector", () => ({ desktopProtector: () => ({ name: "host-test-only", protect: async (text: string) => { if (host.failProtect) throw new Error("OS_STORE_FAILED"); return new TextEncoder().encode(text); }, unprotect: async (bytes: Uint8Array) => { host.reads++; if (host.failUnprotect) throw new Error("PROTECTED_STORE_TEMPORARILY_UNAVAILABLE"); return new TextDecoder().decode(bytes); } }) }));
 import ObsidianSyncPlugin from "../../plugin/src/sync-main";
 let instance: ObsidianSyncPlugin | undefined;
 let databaseId: string;
 let keyPackage: unknown;
 const endpoint = "http://127.0.0.1:8873";
 beforeEach(async () => {
-  host.profile = { id: "device", name: "Fixture", revision: 0, ciphertext: "" }; host.saved = null; host.failSave = false; host.failUnprotect = false; host.reads = 0; host.status = 200; host.files.clear(); host.handlers.clear(); databaseId = randomId(); vi.mocked(requestUrl).mockClear();
+  host.profile = { id: "device", name: "Fixture", revision: 0, ciphertext: "" }; host.saved = null; host.failSave = false; host.failProtect = false; host.failUnprotect = false; host.modern = false; host.loseEnrollment = false; host.enrollments = []; host.reads = 0; host.status = 200; host.files.clear(); host.handlers.clear(); databaseId = randomId(); vi.mocked(requestUrl).mockClear();
   vi.stubGlobal("window", {}); vi.stubGlobal("document", {});
-  const created = await VaultCrypto.create("host-test-vault", "test-sync-key"); keyPackage = created.keyPackage; created.crypto.close();
+  const created = await VaultCrypto.create("host-test-vault", "test-sync-key"); keyPackage = created.keyPackage;
+  host.onboarding = { format: 1, vaultId: "host-test-vault", epoch: "epoch", keyPackage, publicKey: created.crypto.enrollmentPublicKey() }; created.crypto.close();
   host.handshake = { protocol: 0, vaultId: "host-test-vault", epoch: "epoch", seq: 0, features: [...SYNC_FEATURES], keyPackage, devices: [{ id: "device", name: "Fixture" }], maxObjectBytes: 8388608 };
   host.files.set(".obsidian/obsidian-sync-development.json", JSON.stringify({ generatedBy: "ObsidianSync desktop test setup" }));
   host.files.set(".obsidian/obsidian-sync-local/device.json", JSON.stringify({ endpoint, token: "x".repeat(64), vaultId: "host-test-vault", deviceId: "device", deviceName: "Fixture", databaseId }));
 });
 afterEach(async () => { instance?.onunload(); instance = undefined; await new SyncDB(`obsidian-sync-dev-${databaseId}`).delete(); vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks(); });
 async function load() {
-  const adapter = { exists: async (p: string) => host.files.has(p), read: async (p: string) => host.files.get(p)!, write: async (p: string, s: string) => { host.files.set(p, s); } };
+  const adapter = { mkdir: async (p: string) => { host.files.set(p, ""); }, exists: async (p: string) => host.files.has(p), read: async (p: string) => host.files.get(p)!, write: async (p: string, s: string) => { host.files.set(p, s); } };
   const app = { vault: { configDir: ".obsidian", adapter, on: (name: string, callback: (...args: unknown[]) => void) => { host.handlers.set(name, callback); } }, workspace: { onLayoutReady(callback: () => void) { host.handlers.set("layout", callback); } } } as unknown as App;
-  instance = new ObsidianSyncPlugin(app, { version: "0.0.6" } as PluginManifest); await instance.onload(); return instance;
+  instance = new ObsidianSyncPlugin(app, { version: "0.1.0" } as PluginManifest); await instance.onload();
+  databaseId = JSON.parse(host.files.get(".obsidian/obsidian-sync-local/device.json")!).databaseId;
+  return instance;
 }
+function ordinaryVault() { host.modern = true; host.files.delete(".obsidian/obsidian-sync-development.json"); host.files.delete(".obsidian/obsidian-sync-local/device.json"); }
+it("initializes an ordinary vault without a marker, and reloads its protected credential with the same identity and pause state", async () => {
+  ordinaryVault(); const plugin = await load(); const identity = host.files.get(".obsidian/obsidian-sync-local/device.json")!;
+  expect(Object.keys(JSON.parse(identity)).sort()).toEqual(["databaseId","deviceId"]); expect(plugin.engine).toBeUndefined(); expect(plugin.endpoint).toBe("");
+  await plugin.saveConnection(endpoint,"test-sync-key",undefined,"我的电脑"); await plugin.setAutoSync(false);
+  expect(host.enrollments).toHaveLength(1); expect(host.saved).toMatchObject({format:4,vaultId:"host-test-vault",autoSync:false});
+  expect(host.files.get(".obsidian/obsidian-sync-local/device.json")).toBe(identity);
+  expect(JSON.stringify(host.saved)).not.toContain("token"); expect(identity).not.toContain("token");
+  plugin.onunload(); await Promise.resolve(); const reloaded = await load();
+  await (reloaded as unknown as {startup():Promise<void>}).startup(); expect(reloaded.engine?.unlocked).toBe(true); expect(reloaded.autoSync).toBe(false);
+  await reloaded.saveConnection(endpoint,"",undefined,"我的电脑"); expect(host.enrollments).toHaveLength(1);
+});
+it.each(["receipt","pointer"])("recovers an ordinary first connection after losing the %s without changing identity or token",async boundary => {
+  ordinaryVault(); const plugin = await load(); const identity = host.files.get(".obsidian/obsidian-sync-local/device.json");
+  if (boundary === "receipt") host.loseEnrollment = true; else host.failSave = true;
+  await expect(plugin.saveConnection(endpoint,"test-sync-key",undefined,"手机")).rejects.toThrow(); expect(host.saved).toBeNull(); expect(plugin.engine).toBeUndefined();
+  const draft = host.enrollments[0]; plugin.onunload(); await Promise.resolve(); host.failSave = false;
+  const reloaded = await load(); await reloaded.saveConnection(endpoint,"test-sync-key",undefined,"手机的新名称");
+  expect(host.enrollments).toHaveLength(2); expect(host.enrollments[1]).toEqual(draft); expect(reloaded.engine?.unlocked).toBe(true); expect(reloaded.deviceName).toBe("手机的新名称");
+  expect(host.files.get(".obsidian/obsidian-sync-local/device.json")).toBe(identity);
+});
+it("refuses to authorize an ordinary device before safe local persistence succeeds",async () => {
+  ordinaryVault(); const plugin = await load(); host.failProtect = true;
+  await expect(plugin.saveConnection(endpoint,"test-sync-key",undefined,"手机")).rejects.toThrow("OS_STORE_FAILED");
+  expect(host.enrollments).toHaveLength(0); expect(host.saved).toBeNull(); expect(plugin.engine).toBeUndefined();
+});
+it("does not start enrollment after unloading while the pending credential is being persisted",async () => {
+  ordinaryVault(); const plugin = await load(); const save = RememberedUnlock.prototype.save;
+  vi.spyOn(RememberedUnlock.prototype,"save").mockImplementationOnce(async function(this: RememberedUnlock, material) { await save.call(this,material); plugin.onunload(); });
+  await expect(plugin.saveConnection(endpoint,"test-sync-key",undefined,"手机")).rejects.toThrow("PLUGIN_UNLOADED");
+  expect(host.enrollments).toHaveLength(0); expect(host.saved).toBeNull(); expect(plugin.engine).toBeUndefined();
+});
+it("does not silently create a new identity when a configured ordinary vault loses its identity file",async () => {
+  ordinaryVault(); const plugin = await load(); await plugin.saveConnection(endpoint,"test-sync-key",undefined,"手机");
+  plugin.onunload(); await Promise.resolve(); host.files.delete(".obsidian/obsidian-sync-local/device.json");
+  const saved = structuredClone(host.saved);
+  const adapter = {exists:async(p:string)=>host.files.has(p),read:async(p:string)=>host.files.get(p)!,mkdir:async()=>{},write:async(p:string,v:string)=>{host.files.set(p,v);}};
+  const reloaded = new ObsidianSyncPlugin({vault:{configDir:".obsidian",adapter}} as unknown as App,{version:"0.1.0"} as PluginManifest);
+  instance = reloaded; await reloaded.onload();
+  expect(reloaded.engine).toBeUndefined(); expect(host.files.has(".obsidian/obsidian-sync-local/device.json")).toBe(false); expect(host.saved).toEqual(saved);
+});
 it("saves an entered address with an immutable protected-key reference; pause and reload keep the key", async () => {
   const plugin = await load(); expect(plugin.hasSavedKey).toBe(false); await plugin.saveConnection(" http://localhost:8873/ ", "test-sync-key");
   expect(plugin.hasSavedKey).toBe(true);
   expect(plugin.endpoint).toBe("http://localhost:8873"); expect(plugin.engine?.unlocked).toBe(true);
   const saved = host.saved as { format: number; endpoint: string; record: string; autoSync: boolean };
-  expect(saved).toMatchObject({ format: 3, endpoint: "http://localhost:8873", autoSync: true });
+  expect(saved).toMatchObject({ format: 4, endpoint: "http://localhost:8873", autoSync: true });
   expect(saved.record).toMatch(/^connection-[a-f0-9]{64}\.json$/); expect(JSON.stringify(saved)).not.toContain("test-sync-key");
   const encryptedRecord = host.files.get(`.obsidian/obsidian-sync-local/${saved.record}`);
   await plugin.setAutoSync(false); expect(host.saved).toMatchObject({ autoSync: false, record: saved.record });
@@ -106,7 +159,7 @@ it("does not install live keys if the plugin unloads while publishing the saved 
   plugin.saveData = vi.fn(async value => { host.saved = value; plugin.onunload(); });
   await expect(plugin.saveConnection("http://localhost:8873", "test-sync-key")).rejects.toThrow("PLUGIN_UNLOADED");
   expect(plugin.engine).toBe(previousEngine); expect(plugin.engine?.unlocked).toBe(false);
-  expect(host.saved).toMatchObject({ format: 3, endpoint: "http://localhost:8873" });
+  expect(host.saved).toMatchObject({ format: 4, endpoint: "http://localhost:8873" });
 });
 it("reuses the protected key for save-and-test and reads the remote handshake and saves only an encrypted device profile, retaining pause state", async () => {
   const plugin = await load(); await plugin.saveConnection(endpoint, "test-sync-key"); await plugin.setAutoSync(false);

@@ -95,6 +95,19 @@ export class VaultCrypto {
     return new VaultCrypto(vaultId, null, material);
   }
   close(): void { this.closed = true; for (const k of [this.content, this.metadata, this.paths, this.local]) sodium.memzero(k); }
+  private enrollmentKeys() {
+    if (this.closed) throw new Error("LOCKED");
+    const seed = sodium.crypto_generichash(32, text.encode(`device-enrollment-v1:${this.vaultId}`), this.metadata);
+    try { return sodium.crypto_sign_seed_keypair(seed); } finally { sodium.memzero(seed); }
+  }
+  enrollmentPublicKey(): string {
+    const pair = this.enrollmentKeys();
+    try { return sodium.to_hex(pair.publicKey); } finally { sodium.memzero(pair.privateKey); }
+  }
+  signEnrollment(message: Uint8Array): string {
+    const pair = this.enrollmentKeys();
+    try { return sodium.to_hex(sodium.crypto_sign_detached(message, pair.privateKey)); } finally { sodium.memzero(pair.privateKey); }
+  }
   pathKey(path: string): string { return sodium.to_hex(sodium.crypto_generichash(32, text.encode(canonicalPath(path)), this.paths)); }
   location(fileId: string, path: string): Location {
     const revision = randomId(); const pathKey = this.pathKey(path);

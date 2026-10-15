@@ -1,8 +1,8 @@
 # 插件
 
-当前同步源码版本 0.0.10，入口 src/sync-main.ts；能力探针入口 src/main.ts，两者独立构建。模板来源与许可见 [TEMPLATE.md](TEMPLATE.md)。
+当前 xSync 同步源码版本 0.1.0，入口 src/sync-main.ts，唯一同步 manifest 位于仓库根目录；能力探针入口 src/main.ts，两者独立构建。模板来源与许可见 [TEMPLATE.md](TEMPLATE.md)。
 
-npm run build:plugin 生成 dist/obsidian-sync-dev/；npm run build:probe 生成探针。desktop:setup 为独立电脑假库安装开发插件；启动仍要求自有测试标记与预置身份，不用于真实主库。
+npm run build:plugin 生成 dist/xsync/；npm run build:probe 生成探针。desktop:setup 为独立电脑假库安装插件；普通库自行初始化本机身份，通过服务器挑战证明持有同步密钥，不要求测试标记。实验 fixture 仅用于隔离回归。安装与平台限制见[说明](../docs/SETUP.md)。
 
 src/sync/ 为移动兼容的加密、状态机、持久化任务、恢复与文件适配；src/ui/ 提供连接/规则/客户端快照/冲突界面。已保存密钥固定圆点仅为占位，输入值为空，存在检查不解密记录。
 

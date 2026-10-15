@@ -81,13 +81,14 @@ type Device struct {
 	Token string `json:"token,omitempty"`
 }
 type Config struct {
-	DSN        string          `json:"dsn"`
-	Listen     string          `json:"listen"`
-	ObjectDir  string          `json:"objectDir"`
-	VaultID    string          `json:"vaultId"`
-	Epoch      string          `json:"epoch"`
-	Devices    []Device        `json:"devices"`
-	KeyPackage json.RawMessage `json:"keyPackage"`
+	DSN                 string          `json:"dsn"`
+	Listen              string          `json:"listen"`
+	ObjectDir           string          `json:"objectDir"`
+	VaultID             string          `json:"vaultId"`
+	Epoch               string          `json:"epoch"`
+	Devices             []Device        `json:"devices"`
+	KeyPackage          json.RawMessage `json:"keyPackage"`
+	EnrollmentPublicKey string          `json:"enrollmentPublicKey,omitempty"`
 }
 
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)

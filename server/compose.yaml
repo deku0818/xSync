@@ -1,0 +1,27 @@
+name: xsync-server
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xsync
+      POSTGRES_DB: xsync
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    ports:
+      - "127.0.0.1:55439:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xsync -d xsync"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    labels:
+      com.xsync.purpose: self-hosted-server
+secrets:
+  postgres_password:
+    file: ${XSYNC_POSTGRES_SECRET_FILE:?Set XSYNC_POSTGRES_SECRET_FILE to a private password file}
+volumes:
+  postgres-data:

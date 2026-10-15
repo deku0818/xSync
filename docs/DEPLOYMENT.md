@@ -1,0 +1,54 @@
+# 自建 xSync 服务
+
+本文是可执行的配置说明，不表示已替用户部署或完成生产验收。服务端单进程管理一个同步库；多实例事件通知和生产容量尚未验收。设备接入见[安装说明](SETUP.md)。
+
+## 数据与进程
+
+需要 Go >=1.27、Docker/Compose v2、HTTPS 域名与有效证书。PostgreSQL 只在 Docker 中运行。仓库提供 `server/compose.yaml`，使用专属 `xsync-server` 项目、volume，数据库只绑定服务器 loopback 的 `55439` 端口；开发环境是另一个项目和 `55438` 端口，不混用。
+
+先在自己的电脑生成初始化材料，仅将 `server.json` 送到服务器的 `/srv/xsync/server.json`。不要在托管服务器生成或存放 `sync-key.txt`。在服务器用私有文件保存随机数据库密码，例如：
+
+```sh
+umask 077
+mkdir -p /srv/xsync
+openssl rand -hex 32 > /srv/xsync/postgres-password.txt
+export XSYNC_POSTGRES_SECRET_FILE=/srv/xsync/postgres-password.txt
+docker compose -f server/compose.yaml up -d --wait
+```
+
+将密码以 URL 编码形式填入服务进程的私有环境文件，配置 `XSYNC_DATABASE_URL=postgres://xsync:<password>@127.0.0.1:55439/xsync?sslmode=disable`。上面的十六进制密码不需要额外编码。不要把真实密码写入 README、命令历史或 Git；服务与本机管理命令都从相同的进程环境读取。PG 端口不对公网开放。
+
+在 `server.json` 中配置绝对 `objectDir`，例如 `/srv/xsync/objects`。它保存不可变密文对象，必须是持久磁盘，与数据库一起备份；不能只备份其中一项。不要随意改变 vault ID、epoch、密钥包或验证公钥；服务启动会核对已有数据库身份并拒绝不一致配置。
+
+从仓库根目录构建：
+
+```sh
+mkdir -p dist
+cd server
+go build -o ../dist/xsync-server ./cmd/obsidiansync
+```
+
+## HTTPS
+
+可使用已有反向代理：保持 `listen` 为 `127.0.0.1:8873`，服务只接受本机 HTTP，由代理提供有效的公网 HTTPS。代理必须转发 `/events` WebSocket 升级，以及其他原样路径；不得记录 Authorization 头或请求体。设置合适的请求速率、连接数和磁盘配额，单个密文对象请求上限为 16 MiB。客户端地址填 `https://sync.example.com`，不带路径、用户信息或查询参数。
+
+也可直接让服务提供 TLS：把 `listen` 设置为 `0.0.0.0:8873` 或明确的 IP，运行：
+
+```sh
+./dist/xsync-server --config /srv/xsync/server.json \
+  --tls-cert /path/to/fullchain.pem --tls-key /path/to/privkey.pem
+```
+
+非 loopback 正式监听必须同时提供证书和私钥。自签证书不应通过跳过校验解决；手机和电脑需要信任证书链。证书续期后需按进程管理方式重新加载/重启服务。公网 HTTP 不开放，`--dev-lan-listen` 仅用于隔离假库测试，不能作为正式部署替代。
+
+使用服务管理器配置工作目录、非特权用户、重启策略、私有环境文件、持久目录与日志轮转。服务需要数据库 schema 权限和对象目录读写权限；公开静态文件服务不得暴露配置、对象目录或密钥文件。CLI 管理命令使用相同配置和环境，不开放 HTTP 管理口。
+
+## 接入、撤销与恢复
+
+首次接入需要客户端持有同步密钥。第一台成功后默认关闭接入，用 `--enroll-for 10m` 临时开放其他设备；用 `--enroll-for 0` 提前关闭。`--list-devices` 查看 ID，`--revoke-device` 撤销访问。挑战有效 90 秒，未完成挑战最多 128 个；设备记录最多 256 个，撤销记录也计入，避免删除历史身份。成功回执保留至该设备下一次令牌更换，重试不会生成第二个身份。
+
+网络断开时客户端保留队列；服务事件只是提示，HTTP 拉取负责补齐。单实例重启后的设备授权、撤销和数据依赖 PostgreSQL 持久化。对象内容不可变，不能手动替换成其他密文。
+
+备份必须联合保存数据库、对象和相匹配的公开初始化包；同步密钥另由所有者离线保存。恢复旧备份后客户端可能拒绝回退/epoch 不一致状态，这是保护机制，不能通过重置客户端游标绕过。联合备份的实际还原流程尚未验收，当前没有自动修复或迁移工具。源码包可用于独立环境预发布验证，不应把这些未验收项当成生产保障。
+
+不运行 `docker system prune`，不删除其他项目容器/volume。生产数据的 `down -v` 会删除数据库；开发清理只操作 `server/compose.dev.yaml`。

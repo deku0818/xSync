@@ -77,14 +77,15 @@ export class RecoveryFixture {
   clients: RecoveryClient[] = [];
   httpHook?: (request: HTTPRequest, next: () => ReturnType<HTTP>) => ReturnType<HTTP>;
   private resumed = false;
-  async open(): Promise<void> {
+  async open(onboarding = false): Promise<void> {
     await mkdir(".local", { recursive: true }); this.root = await mkdtemp(join(process.cwd(), ".local/recovery-"));
     const base = JSON.parse(await readFile(".local/desktop/server.json", "utf8"));
     if (!base.dsn.includes("127.0.0.1:55438")) throw new Error("DEDICATED_DOCKER_DATABASE_REQUIRED");
     const probe = createServer(); await new Promise<void>(resolve => probe.listen(0, "127.0.0.1", resolve));
     const port = (probe.address() as { port: number }).port; await new Promise<void>(resolve => probe.close(() => resolve())); this.endpoint = `http://127.0.0.1:${port}`;
-    const vaultId = randomId(); const created = await VaultCrypto.create(vaultId, RECOVERY_PASSPHRASE); created.crypto.close();
-    this.config = { ...base, vaultId, epoch: randomId(), devices: [0, 1].map(i => ({ id: randomId(), name: `Recovery ${i}`, token: randomId() })), keyPackage: created.keyPackage, listen: `127.0.0.1:${port}`, objectDir: join(this.root, "objects") };
+    const vaultId = randomId(); const created = await VaultCrypto.create(vaultId, RECOVERY_PASSPHRASE);
+    const enrollmentPublicKey = onboarding ? created.crypto.enrollmentPublicKey() : undefined; created.crypto.close();
+    this.config = { ...base, vaultId, epoch: randomId(), devices: onboarding ? [] : [0, 1].map(i => ({ id: randomId(), name: `Recovery ${i}`, token: randomId() })), keyPackage: created.keyPackage, enrollmentPublicKey, listen: `127.0.0.1:${port}`, objectDir: join(this.root, "objects") };
     await writeFile(join(this.root, "server.json"), JSON.stringify(this.config), { mode: 0o600 });
     await this.startServer(false);
   }
@@ -99,7 +100,7 @@ export class RecoveryFixture {
     const deadline = Date.now() + 10000;
     for (;;) {
       if (this.server.exitCode !== null) throw new Error(`Recovery service failed: ${logs}`);
-      try { await this.transport(0).handshake(); return; } catch { if (Date.now() >= deadline) throw new Error("RECOVERY_SERVICE_START_TIMEOUT"); await new Promise(resolve => setTimeout(resolve, 25)); }
+      try { if (this.config.devices.length) await this.transport(0).handshake(); else await new Transport(this.endpoint,"",recoveryHTTP).onboarding(); return; } catch { if (Date.now() >= deadline) throw new Error("RECOVERY_SERVICE_START_TIMEOUT"); await new Promise(resolve => setTimeout(resolve, 25)); }
     }
   }
   async client(index: number): Promise<RecoveryClient> {

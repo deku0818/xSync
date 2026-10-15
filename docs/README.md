@@ -2,6 +2,7 @@
 
 - [当前交接](HANDOFF.md)：实现状态、运行边界和下一步。
 - [需求与决策](DECISIONS.md)：用户确认的合同、技术选择与限制。
+- [安装与接入](SETUP.md)、[自建服务](DEPLOYMENT.md)、[发布准备](RELEASING.md)。
 - [更新记录](../CHANGELOG.md)、[贡献指南](../CONTRIBUTING.md)。
 - [架构 HTML](../design/architecture.html)、[连接与规则 HTML](../design/connection-settings.html)、[冲突 HTML](../design/sync-conflicts.html)。
 - [协议模型](../protocol/MODEL.md)、[LiveSync 参考调研](research/self-hosted-livesync.md)。

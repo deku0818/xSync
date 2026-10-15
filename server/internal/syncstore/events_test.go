@@ -94,6 +94,38 @@ func TestEventTicketsAndDurableHints(t *testing.T) {
 	if e == nil || resp == nil || resp.StatusCode != 401 {
 		t.Fatal("untrusted browser origin accepted")
 	}
+	// iOS WKWebView uses the Capacitor origin, but still needs a fresh one-use ticket.
+	r, _ = http.NewRequest("POST", server.URL+"/events/tickets", nil)
+	r.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 64))
+	response, e = http.DefaultClient.Do(r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	e = json.NewDecoder(response.Body).Decode(&auth)
+	response.Body.Close()
+	if e != nil {
+		t.Fatal(e)
+	}
+	mobile, _, e := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"capacitor://localhost"}}})
+	if e != nil {
+		t.Fatal("mobile origin rejected: ", e)
+	}
+	defer mobile.CloseNow()
+	body, _ = json.Marshal(auth)
+	if e = mobile.Write(ctx, websocket.MessageText, body); e != nil {
+		t.Fatal(e)
+	}
+	_, body, e = mobile.Read(ctx)
+	var mobileReady eventHint
+	if e != nil || json.Unmarshal(body, &mobileReady) != nil || mobileReady.Type != "ready" {
+		t.Fatal("mobile did not authenticate and receive ready")
+	}
+	for _, origin := range []string{"capacitor://example.com", "capacitor://localhost.evil", "null"} {
+		_, resp, e = websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{origin}}})
+		if e == nil || resp == nil || resp.StatusCode != 401 {
+			t.Fatal("untrusted mobile origin accepted: ", origin)
+		}
+	}
 }
 func TestEventHubCoalescingAndDisconnect(t *testing.T) {
 	h := newEventHub()

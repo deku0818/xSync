@@ -1,13 +1,11 @@
-# 插件职责
+# 插件
 
-当前有两个独立构建：`src/main.ts` 为能力探针，`src/sync-main.ts` 为官方 sample-plugin 骨架上的实验同步插件，`src/sync/` 为可测试的加密、持久化任务、恢复和 Vault API 适配。模板来源见 [TEMPLATE.md](TEMPLATE.md)。
+当前同步源码版本 0.0.10，入口 src/sync-main.ts；能力探针入口 src/main.ts，两者独立构建。模板来源与许可见 [TEMPLATE.md](TEMPLATE.md)。
 
-`npm run build:plugin` 生成 `dist/obsidian-sync-dev/`，`npm run desktop:setup` 更新两个生成的电脑测试库。开发插件启动必须有自有测试库标记/本地配置，支持普通文件与可共享配置。
+npm run build:plugin 生成 dist/obsidian-sync-dev/；npm run build:probe 生成探针。desktop:setup 为独立电脑假库安装开发插件；启动仍要求自有测试标记与预置身份，不用于真实主库。
 
-当前 0.0.6 已按审阅 HTML 接入 `src/ui/connection-form.ts`、`src/ui/sync-panels.ts` 和作用域 CSS，提供唯一名称、设备规则/加密快照、真实排除树、同步概览、准确冲突和手动合并。1–100 MB、文件夹/后缀/RE2 正则按设备独立；配置由 Adapter 访问。桌面 safeStorage 与移动兼容核心分离。证据与限制见 [0.0.6 验收](../docs/testing/desktop-v006-2026-10-15.md)，手机、物理双机和生产安全审查仍待完成。
+src/sync/ 为移动兼容的加密、状态机、持久化任务、恢复与文件适配；src/ui/ 提供连接/规则/客户端快照/冲突界面。已保存密钥固定圆点仅为占位，输入值为空，存在检查不解密记录。
 
-运行 `npm run build:probe` 生成 `dist/obsidian-sync-probe/`。iPhone 安装与验收见 [移动探针说明](../docs/testing/mobile-probe.md)。仅安装到独立空白测试库，当前尚无真机结果。
+桌面 safeStorage 与 iOS 原生 Keychain 保护器分离。iOS 依赖宿主内部桥接，缺少时拒绝保存，不回退明文；锁屏/迁移和资源合同仍需专项验收。普通文件使用 Vault API，配置使用 Adapter 和 configDir 映射。
 
-预期负责 Obsidian 生命周期、Vault / Adapter 文件访问、IndexedDB 本地状态、加密暂存、同步状态机、冲突选择、设备配置与状态 UI。核心需兼容电脑和手机。
-
-实施前先阅读 `../AGENTS.md`、`../docs/DECISIONS.md`，并验证移动平台能力。
+本地安装包、测试库和旧验收结果已清理，构建时重新生成。开发方式见[电脑说明](../docs/testing/desktop.md)、[移动说明](../docs/testing/mobile-probe.md)，产品合同见[决策](../docs/DECISIONS.md)。

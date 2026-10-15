@@ -9,6 +9,7 @@ import { Transport, boundedRequest, normalizeEndpoint } from "./sync/transport";
 import { SyncOverview } from "./ui/sync-panels";
 import { AutomaticSync, RemoteEvents, SerialWork } from "./sync/realtime";
 import { desktopProtector } from "./desktop/protector";
+import { iosProtector } from "./mobile/ios-protector";
 import { RememberedUnlock } from "./desktop/remembered-unlock";
 import { randomId } from "./sync/crypto";
 import { connectionSettings } from "./sync/connection-settings";
@@ -19,7 +20,7 @@ import { decodeProfile, type ClientView, type ClientConfiguration, type PendingP
 import { clientName } from "../../protocol/src/client-profile";
 import { canonical } from "../../protocol/src/model";
 
-const configSchema = z.strictObject({ endpoint: z.string(), token: z.string().min(32), deviceId: z.string(), deviceName: z.string(), vaultId: z.string(), databaseId: z.string().regex(/^[a-f0-9]{64}$/) });
+const configSchema = z.strictObject({ endpoint: z.string(), developmentEndpoint: z.string().optional(), token: z.string().min(32), deviceId: z.string(), deviceName: z.string(), vaultId: z.string(), databaseId: z.string().regex(/^[a-f0-9]{64}$/) });
 export default class ObsidianSyncPlugin extends Plugin {
   engine?: SyncEngine;
   autoSync = true;
@@ -40,6 +41,7 @@ export default class ObsidianSyncPlugin extends Plugin {
   private connectionRecord = "desktop-unlock.json";
   private restoreAllowed = true;
   private configuring = false;
+  hasSavedKey = false;
   storageState = "未检查";
   eventState = "stopped";
   lastSyncAt = "";
@@ -70,7 +72,7 @@ export default class ObsidianSyncPlugin extends Plugin {
       if (marker.generatedBy !== "ObsidianSync desktop test setup") throw new Error("DEVELOPMENT_VAULT_REQUIRED");
       const config = configSchema.parse(JSON.parse(await this.app.vault.adapter.read(`${root}/device.json`)));
       this.config = config; this.root = root; this.deviceName = config.deviceName;
-      const saved = connectionSettings(await this.loadData(), config.endpoint);
+      const saved = connectionSettings(await this.loadData(), config.endpoint, config.developmentEndpoint);
       this.endpoint = saved.endpoint; this.autoSync = saved.autoSync;
       this.rules = saved.rules; this.policy = new SyncPolicy(this.rules); this.deviceName = saved.clientName ?? config.deviceName;
       this.profileRevision = saved.profileRevision; this.profileDirty = saved.profileDirty; this.profilePending = saved.profilePending;
@@ -81,6 +83,7 @@ export default class ObsidianSyncPlugin extends Plugin {
       this.engine = new SyncEngine(this.db, remote, port, config.deviceId, config.vaultId, this.policy);
       try {
         this.remembered = this.unlockStore(this.endpoint, this.connectionRecord);
+        this.hasSavedKey = this.restoreAllowed && await this.remembered.hasRecord();
         this.storageState = "请填写服务器地址和同步密钥并保存";
       } catch (error) { this.storageState = `无法安全保存密钥：${String(error)}`; }
       this.automatic = new AutomaticSync(() => this.sync(false), error => { this.hostError = String(error); this.emit(); });
@@ -103,20 +106,27 @@ export default class ObsidianSyncPlugin extends Plugin {
           }).then(() => this.automatic?.trigger("rename"), error => { this.hostError = String(error); this.emit(); });
         }
       }));
-      this.registerDomEvent(window, "online", () => { this.events?.reconnect(); this.automatic?.trigger("online", true); });
-      this.registerDomEvent(window, "focus", () => this.automatic?.trigger("focus", true));
-      this.registerDomEvent(document, "visibilitychange", () => { if (!document.hidden) this.automatic?.trigger("foreground", true); });
-      this.app.workspace.onLayoutReady(() => { this.layoutReady = true; void this.startup(); });
+      this.registerDomEvent(window, "online", () => { this.events?.reconnect(); this.wake("online"); });
+      this.registerDomEvent(window, "focus", () => this.wake("focus"));
+      this.registerDomEvent(document, "visibilitychange", () => { if (!document.hidden) this.wake("foreground"); });
+      this.app.workspace.onLayoutReady(() => { this.layoutReady = true; this.wake("startup"); });
     } catch (error) { this.statusEl.setText("ObsidianSync · 测试库配置未就绪"); new Notice(`ObsidianSync 未启动：${String(error)}`); }
+  }
+  private wake(reason: string): void {
+    if (this.disposed || !this.layoutReady) return;
+    void this.startup().then(() => { if (!this.disposed) this.automatic?.trigger(reason, true); }, error => {
+      this.hostError = String(error); this.emit();
+    });
   }
   private async startup(): Promise<void> {
     await this.work.run(async () => {
       if (this.disposed || !this.engine) return;
-      if (this.restoreAllowed && this.remembered) {
+      if (!this.engine.unlocked && this.restoreAllowed && this.remembered) {
         try {
           const material = await this.remembered.load();
-          if (material && !this.disposed) { await this.engine.restoreRemembered(material); this.storageState = "配置已保存"; }
-        } catch { this.storageState = "保存的密钥不可用，请重新填写并保存；原记录保留"; }
+          if (material && !this.disposed) { await this.engine.restoreRemembered(material); this.hasSavedKey = true; this.storageState = "配置已保存"; }
+          else if (!material) this.hasSavedKey = false;
+        } catch { this.storageState = "暂时无法读取保存的密钥；回到前台后重试，原记录保留。持续失败时请重新填写并保存"; }
       }
       if (this.disposed) { this.engine.lock(); return; }
       this.publishStatus(await this.engine.status(), false); this.updateAutomation();
@@ -146,13 +156,15 @@ export default class ObsidianSyncPlugin extends Plugin {
     return new Transport(endpoint, this.config.token, async r => {
       const response = await boundedRequest(requestUrl({ url: r.url, method: r.method, headers: r.headers, body: r.body?.slice().buffer, throw: false }));
       return { status: response.status, headers: Object.fromEntries(Object.entries(response.headers).map(([k, v]) => [k.toLowerCase(), v])), bytes: new Uint8Array(response.arrayBuffer) };
-    });
+    }, this.config.developmentEndpoint);
   }
   private unlockStore(endpoint: string, record: string): RememberedUnlock {
     if (!this.config) throw new Error("DEVELOPMENT_VAULT_REQUIRED");
-    return new RememberedUnlock(this.app.vault.adapter, `${this.root}/${record}`, {
+    const identity = {
       vaultId: this.config.vaultId, deviceId: this.config.deviceId, databaseId: this.config.databaseId, endpoint,
-    }, desktopProtector(Platform.isDesktop));
+    };
+    const protector = Platform.isDesktop ? desktopProtector(true) : iosProtector(Platform.isIosApp, identity);
+    return new RememberedUnlock(this.app.vault.adapter, `${this.root}/${record}`, identity, protector);
   }
   private connectEvents(remote: Transport): void {
     this.events?.stop();
@@ -165,7 +177,7 @@ export default class ObsidianSyncPlugin extends Plugin {
   async saveConnection(inputEndpoint: string, key: string, observe?: ConnectionObserver, proposedName = this.deviceName): Promise<void> {
     let step: ConnectionStep = "server";
     try {
-      const endpoint = normalizeEndpoint(inputEndpoint.trim()); const name = clientName(proposedName);
+      const endpoint = normalizeEndpoint(inputEndpoint.trim(), this.config?.developmentEndpoint); const name = clientName(proposedName);
       await this.work.run(async () => {
         if (!this.config || !this.db || !this.port || this.disposed) throw new Error("DEVELOPMENT_VAULT_REQUIRED");
         this.configuring = true; this.updateAutomation();
@@ -207,6 +219,7 @@ export default class ObsidianSyncPlugin extends Plugin {
           if (this.disposed) throw new Error("PLUGIN_UNLOADED");
           this.engine?.lock(); this.engine = candidate; installed = true;
           this.endpoint = endpoint; this.remote = remote; this.deviceName = name; this.profileRevision = receipt.revision; this.profileDirty = false; this.profilePending = undefined; this.connectionRecord = record; this.restoreAllowed = true; this.remembered = remembered;
+          this.hasSavedKey = true;
           this.storageState = "配置已保存"; this.hostError = ""; this.connectEvents(remote);
           observe?.({ step: "storage", state: "passed" });
         } finally {

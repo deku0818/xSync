@@ -39,3 +39,12 @@ server.json
 device.json
 desktop-unlock.json
 connection-*.json
+
+# Generated verification output belongs in ignored local folders, not documentation.
+test-results/
+playwright-report/
+docs/testing/*-20??-??-??.md
+docs/testing/*.json
+docs/testing/*.jpg
+docs/testing/*.jpeg
+docs/testing/*.png

@@ -1,6 +1,6 @@
 # 协议语义模型 v0
 
-状态：2026-10-14，实验性可执行参考模型。已有配套的实验 HTTP 校验、Go/PostgreSQL 服务和客户端，最新证据见 `docs/testing/desktop.md`；下文的“不实现持久化”等限制专指这个内存参考模型。`src/types.ts` 是内部类型，不是冻结的 HTTP / JSON Schema / 加密格式。`VaultModel` 只有内存状态；没有鉴权、SQL、文件耐久、对象上传、GC 或网络服务。
+状态：2026-10-14，实验性可执行参考模型。已有配套的实验 HTTP 校验、Go/PostgreSQL 服务和客户端，开发步骤见 `docs/testing/desktop.md`；下文的“不实现持久化”等限制专指这个内存参考模型。`src/types.ts` 是内部类型，不是冻结的 HTTP / JSON Schema / 加密格式。`VaultModel` 只有内存状态；没有鉴权、SQL、文件耐久、对象上传、GC 或网络服务。
 
 ## 本轮固定的可测试语义
 

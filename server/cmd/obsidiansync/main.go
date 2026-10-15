@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"net"
@@ -20,7 +21,12 @@ import (
 func main() {
 	file := flag.String("config", "", "development config JSON path")
 	testSchema := flag.String("test-schema", "", "isolated e2e test namespace (development only)")
+	resumeTestSchema := flag.Bool("resume-test-schema", false, "resume and retain an existing isolated test namespace for interactive device tests")
+	developmentLAN := flag.Bool("dev-lan-listen", false, "allow a literal private IP only with an isolated --test-schema; synthetic tests only")
 	flag.Parse()
+	if *resumeTestSchema && *testSchema == "" {
+		log.Fatal("--resume-test-schema requires --test-schema")
+	}
 	if *file == "" {
 		log.Fatal("--config is required")
 	}
@@ -35,10 +41,8 @@ func main() {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8873"
 	}
-	host, _, e := net.SplitHostPort(c.Listen)
-	ip := net.ParseIP(host)
-	if e != nil || ip == nil || !ip.IsLoopback() {
-		log.Fatal("development server binds to a literal loopback address only; use an SSH tunnel for another computer")
+	if e = validateListen(c.Listen, *testSchema, *developmentLAN); e != nil {
+		log.Fatal(e)
 	}
 	c.ObjectDir, e = filepath.Abs(c.ObjectDir)
 	if e != nil {
@@ -58,14 +62,21 @@ func main() {
 			log.Fatal("test DB connection failed")
 		}
 		defer admin.Close()
-		if _, err = admin.Exec(ctx, "CREATE SCHEMA "+*testSchema); err != nil {
-			log.Fatal("test namespace creation failed")
+		if *resumeTestSchema {
+			var exists bool
+			if err = admin.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1)", *testSchema).Scan(&exists); err != nil || !exists {
+				log.Fatal("isolated namespace to resume does not exist")
+			}
+		} else {
+			if _, err = admin.Exec(ctx, "CREATE SCHEMA "+*testSchema); err != nil {
+				log.Fatal("test namespace creation failed")
+			}
+			defer func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, _ = admin.Exec(cleanup, "DROP SCHEMA "+*testSchema+" CASCADE")
+			}()
 		}
-		defer func() {
-			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, _ = admin.Exec(cleanup, "DROP SCHEMA "+*testSchema+" CASCADE")
-		}()
 		c.DSN += "&search_path=" + *testSchema
 	}
 	s, e := syncstore.Open(ctx, c)
@@ -81,8 +92,22 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
-	log.Print("ObsidianSync development server on ", c.Listen, "; no public listener")
+	log.Print("ObsidianSync development server on ", c.Listen, "; public listeners disabled")
 	if e = srv.ListenAndServe(); e != nil && e != http.ErrServerClosed {
 		log.Fatal(e)
 	}
+}
+
+func validateListen(listen, testSchema string, developmentLAN bool) error {
+	host, _, err := net.SplitHostPort(listen)
+	ip := net.ParseIP(host)
+	if err == nil && ip != nil {
+		if ip.IsLoopback() {
+			return nil
+		}
+		if developmentLAN && ip.IsPrivate() && regexp.MustCompile(`^e2e_[a-f0-9]{16}$`).MatchString(testSchema) {
+			return nil
+		}
+	}
+	return fmt.Errorf("development server requires a literal loopback IP; private LAN requires --dev-lan-listen and an isolated --test-schema")
 }

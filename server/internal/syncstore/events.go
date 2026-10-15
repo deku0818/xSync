@@ -107,7 +107,7 @@ func (s *Store) CloseEvents() {
 func (s *Store) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	// Ticket is sent in the first frame, never in URLs, browser history, or access logs.
 	origin := r.Header.Get("Origin")
-	if origin != "" && origin != "app://obsidian.md" && origin != "http://"+r.Host && origin != "https://"+r.Host {
+	if origin != "" && origin != "app://obsidian.md" && origin != "capacitor://localhost" && origin != "http://"+r.Host && origin != "https://"+r.Host {
 		writeError(w, code("UNAUTHORIZED"))
 		return
 	}

@@ -14,6 +14,7 @@ export function connectionFailure(error: unknown, step: ConnectionStep): { step:
   if (code === "KEY_PACKAGE_CHANGED") return { step: "key", message: "服务器的密钥信息已变化，需要先核对，无法覆盖现有配置。" };
   if (code === "CONNECTION_KEY_REQUIRED") return { step: "key", message: "请输入同步密钥；首次配置需要填写密钥。" };
   if (code === "PLUGIN_UNLOADED") return { step, message: "插件已关闭，请重新打开设置后测试。" };
+  if (code.startsWith("IOS_")) return { step: "storage", message: "无法访问此设备的系统钥匙串，配置尚未保存。请解锁设备后重试；凭据不可用时需重新配置。" };
   if (step === "server") {
     if (code === "HTTPS_REQUIRED") return { step, message: "请使用 HTTPS 地址；本机测试服务可以使用 HTTP。" };
     if (code === "INVALID_ENDPOINT") return { step, message: "请输入完整的服务器地址，不要包含账号、路径或查询参数。" };

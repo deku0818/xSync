@@ -13,6 +13,13 @@ const envelopeSchema = z.strictObject({ format: z.literal(0), provider: z.string
 const secretSchema = z.strictObject({ format: z.literal(0), identity: identitySchema, material: materialSchema });
 export class RememberedUnlock {
   constructor(private files: LocalTextFiles, private path: string, private identity: UnlockIdentity, private protector: SecretProtector) {}
+  /** Presence for the UI only; never invoke native decryption or expose secret material. */
+  async hasRecord(): Promise<boolean> {
+    if (!await this.files.exists(this.path)) return false;
+    const text = await this.files.read(this.path);
+    try { return envelopeSchema.safeParse(JSON.parse(text)).success; }
+    catch { return false; }
+  }
   async save(material: RememberedMaterial): Promise<void> {
     const validated = materialSchema.parse(material);
     if (validated.vaultId !== this.identity.vaultId || validated.session.vaultId !== this.identity.vaultId) throw new Error("WRONG_VAULT");

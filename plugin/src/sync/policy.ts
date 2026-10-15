@@ -29,6 +29,7 @@ export function validateRules(input: unknown): SyncRules {
 }
 export function fixedExclusion(path: string): string | undefined {
   const p = path.toLowerCase();
+  if (p === ".obsidian/core-plugins.json") return "核心插件启用状态（每台设备独立）";
   if (/^\.obsidian\/(obsidian-sync-local|plugins\/obsidian-sync-dev)(\/|$)/.test(p)) return "同步凭据、设备身份与内部状态";
   if (/^\.obsidian\/(workspace(?:-mobile|s)?\.json|obsidian-sync-development\.json)$/.test(p)) return "窗口布局或本机开发标记";
   if (p.split("/").some((part, i) => part.startsWith(".") && !(i === 0 && part === ".obsidian"))) return "隐藏文件或缓存";

@@ -59,8 +59,14 @@ it("diff exposes a replacement while retaining common context", () => {
   expect(textDiff("header\n电脑 A\nfooter", "header\n电脑 B\nfooter")).toEqual({ prefix: ["header"], removed: ["电脑 A"], added: ["电脑 B"], suffix: ["footer"] });
 });
 it("maps the actual configDir into shared configuration while excluding credentials and staging", async () => {
-  const app = { vault: { configDir: "custom-config", adapter: { exists: async () => true, list: async () => ({ files: ["custom-config/appearance.json"], folders: ["custom-config/obsidian-sync-local"] }), stat: async () => ({ type: "file", size: 10 }) }, getFiles: () => [
+  const app = { vault: { configDir: "custom-config", adapter: { exists: async () => true, list: async () => ({ files: ["custom-config/appearance.json", "custom-config/core-plugins.json"], folders: ["custom-config/obsidian-sync-local"] }), stat: async () => ({ type: "file", size: 10 }) }, getFiles: () => [
     "note.md", "folder/note.md", "custom-config/obsidian-sync-local/device.json", "custom-config/obsidian-sync-local/staging/ciphertext", ".obsidian/data.json", ".trash/note.md", "custom-config-public/note.md",
   ].map(path => ({ path })) } } as unknown as App;
-  expect(await new ObsidianVaultPort(app, "custom-config/obsidian-sync-local").list()).toEqual([".obsidian/appearance.json", "custom-config-public/note.md", "folder/note.md", "note.md"]);
+  const port = new ObsidianVaultPort(app, "custom-config/obsidian-sync-local");
+  expect(await port.list()).toEqual([".obsidian/appearance.json", "custom-config-public/note.md", "folder/note.md", "note.md"]);
+  expect(port.inScope("custom-config/core-plugins.json")).toBe(false);
+  expect((await port.inventory()).find(e => e.path === ".obsidian/core-plugins.json")?.reason).toContain("每台设备独立");
+  await expect(port.read(".obsidian/core-plugins.json")).rejects.toThrow("DEVICE_LOCAL_PATH");
+  await expect(port.write(".obsidian/core-plugins.json", new Uint8Array(), null)).rejects.toThrow("DEVICE_LOCAL_PATH");
+  await expect(port.remove(".obsidian/core-plugins.json", new Uint8Array())).rejects.toThrow("DEVICE_LOCAL_PATH");
 });

@@ -11,6 +11,19 @@ async function protector(): Promise<SecretProtector> {
   };
 }
 const identity = { vaultId: "remembered-vault", deviceId: "device-a", databaseId: "database-a", endpoint: "http://127.0.0.1:8873" };
+it("reports protected-record presence without native decryption, excluding tombstones and malformed records", async () => {
+  let disk: string | undefined;
+  const unprotect = vi.fn(async () => { throw new Error("NATIVE_STORE_LOCKED"); });
+  const adapter: LocalTextFiles = { exists: async () => disk !== undefined, read: async () => disk!, write: async (_path, value) => { disk = value; } };
+  const remember = new RememberedUnlock(adapter, "local/unlock", identity, { name: "test-provider", protect: async () => new Uint8Array([1]), unprotect });
+  expect(await remember.hasRecord()).toBe(false);
+  disk = JSON.stringify({ format: 0, provider: "test-provider", ciphertext: [1, 2, 3] });
+  expect(await remember.hasRecord()).toBe(true); expect(unprotect).not.toHaveBeenCalled();
+  await expect(remember.load()).rejects.toThrow("NATIVE_STORE_LOCKED"); expect(await remember.hasRecord()).toBe(true);
+  await remember.clear(); expect(await remember.hasRecord()).toBe(false);
+  disk = "{truncated"; expect(await remember.hasRecord()).toBe(false);
+  disk = JSON.stringify({ format: 0, provider: "test-provider", ciphertext: [] }); expect(await remember.hasRecord()).toBe(false);
+});
 it("persists only protected session material, restores exact keys and leaves no passphrase", async () => {
   const files = new Map<string, string>(); const adapter: LocalTextFiles = { exists: async p => files.has(p), read: async p => files.get(p)!, write: async (p, s) => { files.set(p, s); } };
   const os = await protector(); const remember = new RememberedUnlock(adapter, "local/unlock", identity, os);

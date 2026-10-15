@@ -14,16 +14,21 @@ export async function boundedRequest<T>(request: PromiseLike<T>, milliseconds = 
   } finally { clearTimeout(timer); }
 }
 export class RemoteError extends Error { constructor(readonly code: string, readonly status?: number) { super(code); } }
-export function normalizeEndpoint(endpoint: string): string {
+/** Explicit, exact-origin opt-in carried only by a generated development device fixture. */
+export function normalizeEndpoint(endpoint: string, developmentEndpoint?: string): string {
   let url: URL;
   try { url = new URL(endpoint); } catch { throw new Error("INVALID_ENDPOINT"); }
   if (url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new Error("INVALID_ENDPOINT");
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))) throw new Error("HTTPS_REQUIRED");
+  const parts = url.hostname.split(".").map(Number);
+  const privateIPv4 = /^\d+\.\d+\.\d+\.\d+$/.test(url.hostname) && parts.length === 4 && parts.every(n => Number.isInteger(n) && n >= 0 && n <= 255)
+    && (parts[0] === 10 || parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31 || parts[0] === 192 && parts[1] === 168);
+  const developmentLAN = privateIPv4 && url.origin === developmentEndpoint;
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && (["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || developmentLAN))) throw new Error("HTTPS_REQUIRED");
   return url.origin;
 }
 export class Transport {
-  constructor(private endpoint: string, private token: string, private http: HTTP) {
-    this.endpoint = normalizeEndpoint(endpoint);
+  constructor(private endpoint: string, private token: string, private http: HTTP, developmentEndpoint?: string) {
+    this.endpoint = normalizeEndpoint(endpoint, developmentEndpoint);
   }
   private async request(path: string, method = "GET", body?: Uint8Array, extra: Record<string, string> = {}): Promise<HTTPResponse> {
     const r = await this.http({ url: `${this.endpoint}${path}`, method, body, headers: { Authorization: `Bearer ${this.token}`, ...extra } });

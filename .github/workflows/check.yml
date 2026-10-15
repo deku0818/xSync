@@ -33,7 +33,15 @@ jobs:
       - name: Go vet
         working-directory: server
         run: go vet ./...
-      - name: PostgreSQL contracts, race detector and two-client integration
+      - name: Require browser for native IndexedDB crash tests
+        run: |
+          chrome_binary="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$chrome_binary" ]; then
+            echo "Chrome/Chromium is required for the native IndexedDB suite."
+            exit 1
+          fi
+          echo "OBSIDIAN_SYNC_CHROME=$chrome_binary" >> "$GITHUB_ENV"
+      - name: PostgreSQL contracts, race detector, recovery and native IndexedDB
         run: npm run test:desktop
       - name: Stop this project's development database
         if: always()

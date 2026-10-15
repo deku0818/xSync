@@ -5,12 +5,14 @@ import { SYNC_FEATURES } from "../../protocol/src/wire";
 import type { ConnectionCheck } from "../../plugin/src/sync/connection-check";
 import { VaultCrypto, randomId } from "../../plugin/src/sync/crypto";
 import { SyncDB } from "../../plugin/src/sync/store";
+import { AutomaticSync, RemoteEvents } from "../../plugin/src/sync/realtime";
 
-const host = vi.hoisted(() => ({ saved: null as unknown, failSave: false, status: 200, files: new Map<string, string>(), handshake: {} as unknown, profile: { id: "device", name: "Fixture", revision: 0, ciphertext: "" }, handlers: new Map<string, (...args: unknown[]) => void>() }));
+const host = vi.hoisted(() => ({ saved: null as unknown, failSave: false, failUnprotect: false, reads: 0, status: 200, files: new Map<string, string>(), handshake: {} as unknown, profile: { id: "device", name: "Fixture", revision: 0, ciphertext: "" }, handlers: new Map<string, (...args: unknown[]) => void>() }));
 vi.mock("obsidian", () => ({
   Plugin: class {
     constructor(public app: unknown, public manifest: unknown) {}
-    addStatusBarItem() { return { setText() {} }; } addRibbonIcon() {} addCommand() {} addSettingTab() {} registerEvent() {} registerDomEvent() {}
+    addStatusBarItem() { return { setText() {} }; } addRibbonIcon() {} addCommand() {} addSettingTab() {} registerEvent() {}
+    registerDomEvent(_target: unknown, name: string, callback: () => void) { host.handlers.set(name, callback); }
     async loadData() { return host.saved; }
     async saveData(value: unknown) { if (host.failSave) throw new Error("SETTINGS_WRITE_FAILED"); host.saved = structuredClone(value); }
   },
@@ -23,28 +25,29 @@ vi.mock("obsidian", () => ({
   }),
 }));
 // The separate remembered-unlock tests exercise actual encryption and corruption. This fixture isolates host commit boundaries.
-vi.mock("../../plugin/src/desktop/protector", () => ({ desktopProtector: () => ({ name: "host-test-only", protect: async (text: string) => new TextEncoder().encode(text), unprotect: async (bytes: Uint8Array) => new TextDecoder().decode(bytes) }) }));
+vi.mock("../../plugin/src/desktop/protector", () => ({ desktopProtector: () => ({ name: "host-test-only", protect: async (text: string) => new TextEncoder().encode(text), unprotect: async (bytes: Uint8Array) => { host.reads++; if (host.failUnprotect) throw new Error("PROTECTED_STORE_TEMPORARILY_UNAVAILABLE"); return new TextDecoder().decode(bytes); } }) }));
 import ObsidianSyncPlugin from "../../plugin/src/sync-main";
 let instance: ObsidianSyncPlugin | undefined;
 let databaseId: string;
 let keyPackage: unknown;
 const endpoint = "http://127.0.0.1:8873";
 beforeEach(async () => {
-  host.profile = { id: "device", name: "Fixture", revision: 0, ciphertext: "" }; host.saved = null; host.failSave = false; host.status = 200; host.files.clear(); host.handlers.clear(); databaseId = randomId(); vi.mocked(requestUrl).mockClear();
+  host.profile = { id: "device", name: "Fixture", revision: 0, ciphertext: "" }; host.saved = null; host.failSave = false; host.failUnprotect = false; host.reads = 0; host.status = 200; host.files.clear(); host.handlers.clear(); databaseId = randomId(); vi.mocked(requestUrl).mockClear();
   vi.stubGlobal("window", {}); vi.stubGlobal("document", {});
   const created = await VaultCrypto.create("host-test-vault", "test-sync-key"); keyPackage = created.keyPackage; created.crypto.close();
   host.handshake = { protocol: 0, vaultId: "host-test-vault", epoch: "epoch", seq: 0, features: [...SYNC_FEATURES], keyPackage, devices: [{ id: "device", name: "Fixture" }], maxObjectBytes: 8388608 };
   host.files.set(".obsidian/obsidian-sync-development.json", JSON.stringify({ generatedBy: "ObsidianSync desktop test setup" }));
   host.files.set(".obsidian/obsidian-sync-local/device.json", JSON.stringify({ endpoint, token: "x".repeat(64), vaultId: "host-test-vault", deviceId: "device", deviceName: "Fixture", databaseId }));
 });
-afterEach(async () => { instance?.onunload(); instance = undefined; await new SyncDB(`obsidian-sync-dev-${databaseId}`).delete(); vi.unstubAllGlobals(); });
+afterEach(async () => { instance?.onunload(); instance = undefined; await new SyncDB(`obsidian-sync-dev-${databaseId}`).delete(); vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks(); });
 async function load() {
   const adapter = { exists: async (p: string) => host.files.has(p), read: async (p: string) => host.files.get(p)!, write: async (p: string, s: string) => { host.files.set(p, s); } };
-  const app = { vault: { configDir: ".obsidian", adapter, on: (name: string, callback: (...args: unknown[]) => void) => { host.handlers.set(name, callback); } }, workspace: { onLayoutReady() {} } } as unknown as App;
+  const app = { vault: { configDir: ".obsidian", adapter, on: (name: string, callback: (...args: unknown[]) => void) => { host.handlers.set(name, callback); } }, workspace: { onLayoutReady(callback: () => void) { host.handlers.set("layout", callback); } } } as unknown as App;
   instance = new ObsidianSyncPlugin(app, { version: "0.0.6" } as PluginManifest); await instance.onload(); return instance;
 }
 it("saves an entered address with an immutable protected-key reference; pause and reload keep the key", async () => {
-  const plugin = await load(); await plugin.saveConnection(" http://localhost:8873/ ", "test-sync-key");
+  const plugin = await load(); expect(plugin.hasSavedKey).toBe(false); await plugin.saveConnection(" http://localhost:8873/ ", "test-sync-key");
+  expect(plugin.hasSavedKey).toBe(true);
   expect(plugin.endpoint).toBe("http://localhost:8873"); expect(plugin.engine?.unlocked).toBe(true);
   const saved = host.saved as { format: number; endpoint: string; record: string; autoSync: boolean };
   expect(saved).toMatchObject({ format: 3, endpoint: "http://localhost:8873", autoSync: true });
@@ -54,10 +57,33 @@ it("saves an entered address with an immutable protected-key reference; pause an
   expect(host.files.get(`.obsidian/obsidian-sync-local/${saved.record}`)).toBe(encryptedRecord);
   plugin.onunload(); await Promise.resolve();
   const reloaded = await load();
+  expect(reloaded.hasSavedKey).toBe(true); expect(reloaded.engine?.unlocked).toBe(false);
   // Startup is normally invoked by Obsidian's layout callback, deliberately held by this fixture.
   await (reloaded as unknown as { startup(): Promise<void> }).startup();
   expect(reloaded.autoSync).toBe(false); expect(reloaded.engine?.unlocked).toBe(true);
   await reloaded.setAutoSync(true); expect(reloaded.engine?.unlocked).toBe(true);
+});
+it.each([false, true])("retries transient protected-store failure on foreground while preserving autoSync=%s", async autoSync => {
+  const plugin = await load(); await plugin.saveConnection(endpoint, "test-sync-key"); await plugin.setAutoSync(autoSync);
+  const saved = structuredClone(host.saved); const records = new Map(host.files); plugin.onunload(); await Promise.resolve();
+  vi.spyOn(AutomaticSync.prototype, "start").mockImplementation(() => {}); vi.spyOn(RemoteEvents.prototype, "start").mockImplementation(() => {});
+  host.failUnprotect = true; const reloaded = await load();
+  const idle = () => (reloaded as unknown as { work: { idle(): Promise<void> } }).work.idle();
+  host.handlers.get("layout")!(); await idle(); expect(reloaded.engine?.unlocked).toBe(false);
+  expect(reloaded.hasSavedKey).toBe(true);
+  expect(reloaded.storageState).toContain("回到前台后重试"); expect(host.saved).toEqual(saved); expect(host.files).toEqual(records);
+  host.failUnprotect = false; const reads = host.reads;
+  host.handlers.get("focus")!(); host.handlers.get("online")!(); host.handlers.get("visibilitychange")!(); await idle();
+  expect(reloaded.engine?.unlocked).toBe(true); expect(host.reads).toBe(reads + 1); expect(reloaded.autoSync).toBe(autoSync);
+  if (autoSync) expect(AutomaticSync.prototype.start).toHaveBeenCalled(); else expect(AutomaticSync.prototype.start).not.toHaveBeenCalled();
+  expect(host.saved).toEqual(saved); expect(host.files).toEqual(records);
+});
+it("does not retry protected reads or unlock after unload receives a late foreground event", async () => {
+  const plugin = await load(); await plugin.saveConnection(endpoint, "test-sync-key"); plugin.onunload(); await Promise.resolve();
+  host.failUnprotect = true; const reloaded = await load();
+  host.handlers.get("layout")!(); await (reloaded as unknown as { work: { idle(): Promise<void> } }).work.idle();
+  reloaded.onunload(); host.failUnprotect = false; const reads = host.reads; host.handlers.get("focus")!(); await Promise.resolve();
+  expect(host.reads).toBe(reads); expect(reloaded.engine?.unlocked).toBe(false);
 });
 it("wrong key, wrong vault and settings-write failure preserve the previous server and exact saved record", async () => {
   const plugin = await load(); await plugin.saveConnection(endpoint, "test-sync-key"); const previous = structuredClone(host.saved); const engine = plugin.engine;

@@ -1,59 +1,42 @@
-# 开发阶段怎么测试
+# 开发与验证流程
 
-当前已推进到 Phase 02 的电脑开发闭环。当前自动解锁/实时同步证据见 [自动化验收](desktop-auto-2026-10-14.md)，Docker 操作见 [电脑双库验证](desktop.md)；iPhone 验收延后，仍保留为发布门槛。以下明确区分已运行检查与后续验收。
-
-当前 0.0.6 实现与完整最新检查范围见 [本轮验收](desktop-v006-2026-10-15.md)：59 默认测试、14 Docker PG/事件/profile 合同和 16 双客户端集成。早期记录保留作历史证据。
-
-## 日常工作循环
-
-开发环境 Node >=22.12，当前验证环境 Node 22.22.1 / npm 10.9.4。依赖版本由 `package-lock.json` 固定。
+## 日常检查
 
 ```sh
 npm ci
 npm run check
 ```
 
-`check` 顺序执行 TypeScript 检查、Vitest 测试、浏览器目标探针和同步开发插件构建。开发中可用 `npm run test:watch`。变更规则时先补一个能暴露问题的场景，再改模型；修改移动代码时还要在 iPhone 重跑对应步骤。GitHub Actions 配置另执行 Go vet 与真实 Docker PostgreSQL/双客户端测试，远端结果以上传后的运行记录为准。
+check 执行类型检查、默认测试与探针/同步插件构建。默认跳过需要真实后端或原生浏览器的集成；不得将跳过统计成通过。文件事件开发可用 npm run dev:plugin，回归可用 npm run test:watch。
 
-## 分阶段验收
+## 后端与恢复
 
-| 阶段 | 运行环境 | 检查重点 | 证据与通过边界 |
-| --- | --- | --- | --- |
-| Phase 01 协议模型 | Node + fast-check | 因果头、幂等、删除/编辑、重命名/编辑、过期审阅、组提交、游标、epoch | 可复现 seed/path、失败缩减、定向回归；只是内存语义 |
-| Phase 01 平台探针 | 独立测试库 + iPhone | IndexedDB、Worker/WASM、64 MiB KDF、文件整块读写、重启、SecretStorage | JSON 报告 + 机型/系统/Obsidian 版本 + 人工验收；不宣布附件上限 |
-| Phase 02 存储合同 | 真实 PostgreSQL + 临时对象目录 | 同 op 重试、行锁提交顺序、引用存在、事务回滚、日志/快照 | 真实数据库结果；mock 不代替事务验证；已有开发合同，完整生产合同待做 |
-| Phase 02 故障恢复 | 同一真实存储 + 客户端临时库 | 对象落盘前后、SQL 提交前后、inbox/cursor 登记、文件写入前后退出 | 重启后无丢失分支、无悬空引用、无虚假完成；尚未实现 |
-| Phase 03 多设备 E2E | 电脑测试库 + iPhone 测试库 | 离线双方改同段/不同段、删除/编辑、改名/编辑、同路径创建、过期选择、保留双方 | 已有普通文件双客户端集成和冲突选择；完整多设备体验待做 |
-| Phase 04 恢复/资源 | 真机 + 独立测试服务 | 错误口令、损坏密文、撤销设备、旧备份新 epoch、长期离线、弱网、系统挂起 | 恢复内容指纹一致、参数和支持范围有实测数据；尚未实现 |
+需要 Go >=1.27、Docker/Compose v2：
 
-## 测试库如何准备
+```sh
+npm run desktop:setup
+npm run test:desktop
+```
 
-1. 在电脑和 iPhone 分别新建专用空白库，名字可用 `ObsidianSync-Test-Mac` / `ObsidianSync-Test-iPhone`。
-2. 只放生成的假数据：中文/emoji 文件名、空文件、嵌套空目录、Markdown/frontmatter、JSON、图片/PDF、逐级增大的附件。Windows/Linux 加入大小写、保留名、Unicode NFC/NFD 组合。
-3. 探针阶段不需要服务器。同步引擎接入后使用专用测试服务和数据库，保留清空/重建方式；重建测试数据不能影响真实库。
-4. 每轮保存测试版本、设备名称、复现操作、预期与实际、JSON/日志/截图和错误信息。日志默认不记录笔记正文、真实路径、口令或密钥。
-5. 先验证双方离线修改都能保存，再测断网、重复请求、丢响应、后台/前台、强制退出和旧设备接入。恢复测试在正常路径稳定后持续加入，不能留到发布前一次性做。
+PostgreSQL 只使用 obsidiansync-dev 专属 Docker 项目。test:desktop 执行 Go 合同/race、双客户端与故障恢复；找到 Chrome/Chromium 后运行独立 profile 的真实 IndexedDB/SIGKILL 套件，不操作已有浏览器会话。可用 OBSIDIAN_SYNC_CHROME 指定路径；CI 要求浏览器存在。
 
-## Phase 01 初次验证（2026-10-14，早期结果）
+模型测试验证因果、幂等、分支、位置 CAS 和过期选择；文件/HTTP/PG 集成使用 fake IndexedDB；原生浏览器套件验证真实桌面 IndexedDB 的进程恢复。这些均不能替代 iOS/Android 的 Vault API、安全存储、系统终止和资源验收。错误注入、进程强杀、物理断电及联合备份实际还原须分别记录。
 
-- TypeScript 类型检查通过。
-- 24 项 Vitest 测试通过，其中两项为 fast-check 属性测试（200 + 120 条生成历史，固定种子）。
-- Dexie 测试使用 fake-indexeddb：覆盖任务/游标回滚及连接重开；不能证明 iPhone 持久化。
-- Node 中候选 Argon2id + XChaCha20-Poly1305 探针通过，错误密钥、密文损坏和 AAD 改动被拒绝；不是生产加密合同或安全审计。
-- 桌面 Codex 内置浏览器中真实 IndexedDB、连接重开、Worker、最小 WASM 及 Worker 内候选加密包冒烟通过。截图见 [浏览器证据](browser-smoke-2026-10-14.jpg)。桌面 KDF 耗时不作手机指标。
-- 移动探针打包通过，构建外部运行时依赖只允许 `obsidian`；依赖自身含环境判断，不以静态检查代替手机运行。
+## 真机
 
-以上是 Phase 01 的早期范围。后续已通过真实 Docker PostgreSQL 和网络/文件双客户端测试，并完成真实 Obsidian A/B 双窗口编辑/冲突测试；最新 32/8/8 项结果见 [电脑双库验证](desktop.md)。iPhone/Android、物理双机、完整进程级故障和备份还原仍未验收。
+仅用独立假库，按[移动说明](mobile-probe.md)验证。重点包括并发修改、删除/编辑、重命名/编辑、过期审阅、暂停保持、前台补齐、强退/系统回收、弱网和资源限制。iOS 后台测试关闭调试连接，不承诺持续后台执行。进程内存使用原生证据，JS heap 不代替进程峰值。
 
-## 复现浏览器冒烟
+## 结果与清理
+
+截图、JSON、日志和临时结果放在 .local/reports/ 等忽略目录，不提交到 docs 或源码目录。保留测试源码、固定依赖、协议不变量与长期说明；历史验收结果已按用户要求移除。
+
+本地假库、配置与数据库已清理。重新验证先 setup，不复用旧客户端身份；[电脑说明](desktop.md)列出资源位置和清理方式。无需验证时不要运行构建后再将生成物作为源码提交。
+
+浏览器探针仍可复现：
 
 ```sh
 npm run build:probe
 python3 -m http.server 8872 --bind 127.0.0.1 --directory tests/probe
 ```
 
-浏览器打开 `http://127.0.0.1:8872/browser-smoke.html`，点击“运行浏览器检查”，末尾应显示 `status: pass`。这是桌面检查，不读取 Vault。临时 IndexedDB 在测试后删除。
-
-## 发布前的硬门槛
-
-每一种正式支持的手机/桌面平台都需要真实设备证据；所有提交/应用边界需要真实故障注入；备份必须实际还原。任何未解决冲突、失败或未应用任务都不能显示整库已收敛。大附件上限和记住解锁功能必须以真机/安全验证结论决定。
+打开 tests/probe/browser-smoke.html 对应的本机地址。它不读取 Vault，也不是手机验证。

@@ -24,11 +24,13 @@ npm run test:desktop
 
 GitHub Actions 将执行类型检查、默认测试、两个插件构建、Go vet、Docker PostgreSQL 合同/race 测试和双客户端集成。自动化中的 fake IndexedDB 不能替代 Obsidian 和移动真机验收。
 
+`test:desktop` 同时包含故障恢复矩阵。找到 Chrome/Chromium 后还会启动独立 headless profile，执行真实 IndexedDB/SIGKILL 恢复，不操作已有浏览器会话。可用 `OBSIDIAN_SYNC_CHROME` 指定绝对路径；缺少浏览器必须记录为未执行，不能将默认跳过统计为通过。CI 明确要求该浏览器存在。
+
 ## 提交内容
 
-- 提交源代码、固定依赖、设计、迁移/协议说明与可公开的测试证据。
+- 提交源代码、固定依赖、设计、迁移/协议说明、测试源码与长期验证指引；截图、JSON 报告、日志和逐轮验收记录只放忽略目录。
 - 不提交 `.local/`、`node_modules/`、构建产物、生成测试库、数据库、真实笔记、口令、令牌和解锁记录。不要使用 `git add -f` 绕过忽略规则。
-- 提交前运行 `git diff --check`，检查 `git status --short` 和暂存区；截图也需检查是否包含私人内容。
+- 提交前运行 `git diff --check`，检查 `git status --short` 和暂存区；不要重新纳入已清理的历史测试结果。
 - 变更说明写清触发场景、行为与验证边界，不将同机双库写成物理双机或 iPhone 结果。
 
 ## 许可状态

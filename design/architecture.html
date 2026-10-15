@@ -205,6 +205,7 @@
 <tr><td>主题、CSS snippets、快捷键与可共享设置</td><td>共享，可按类别关闭；预览首次配置同步方向</td><td>配置目录通过 <code>Vault.configDir</code> 发现、Adapter 访问；必要时提示重载</td></tr>
 <tr><td>第三方插件程序与设置</td><td>纳入共享；允许逐插件设为设备独立</td><td>程序先暂存，再在安全重载边界应用；桌面专用插件保持其平台限制</td></tr>
 <tr><td>workspace、workspace-mobile、设备临时状态</td><td>设备独立</td><td>可做设备专属备份，但不跨设备覆盖当前布局</td></tr>
+<tr><td>core-plugins.json 核心插件启用列表</td><td>固定排除、设备独立</td><td>电脑与手机各自保留启用开关，不自动选择或覆盖另一端；其他可共享配置继续同步</td></tr>
 <tr><td>本同步插件的可共享偏好</td><td>显式白名单，独立于本地运行状态</td><td>仅共享不含凭据的策略；本插件升级通过安装 / 发布流程管理</td></tr>
 <tr><td>令牌、密钥缓存、outbox、inbox、暂存、索引、回收区</td><td>硬性排除</td><td>禁止同步自身状态；未知插件凭据提示按插件审阅，不承诺自动识别所有秘密</td></tr>
 </tbody></table></div>

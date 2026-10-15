@@ -104,13 +104,21 @@ export class SyncEngine {
   }
   private async acceptSnapshot(s: Snapshot): Promise<void> {
     const keys = this.crypto();
+    const previous = await this.db.progress.get("progress");
+    if (previous && (s.epoch !== previous.epoch || s.boundary < previous.received)) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
+    // Current protocol retains tombstones and revision history; a snapshot cannot forget a known identity.
+    for (const f of await this.db.remoteFiles.toArray()) if (!s.files.some(next => next.id === f.id)) throw new Error("INCOMPLETE_SNAPSHOT");
     for (const r of s.revisions) keys.manifest(r);
     for (const f of s.files) { keys.path(f.id, f.location); if (f.heads.some(h => !s.revisions.some(r => r.id === h && r.fileId === f.id))) throw new Error("INVALID_SNAPSHOT"); }
-    await this.db.transaction("rw", [this.db.remoteFiles, this.db.revisions, this.db.inbox, this.db.progress], async () => {
+    await this.db.transaction("rw", [this.db.leases, this.db.remoteFiles, this.db.revisions, this.db.inbox, this.db.progress], async () => {
+      await this.checkLease();
+      await this.db.remoteFiles.clear(); await this.db.inbox.clear();
       await this.db.remoteFiles.bulkPut(s.files); await this.db.revisions.bulkPut(s.revisions);
       await this.db.inbox.put({ seq: s.boundary, fileIds: s.files.map(f => f.id), done: false });
-      await this.db.progress.put({ id: "progress", vaultId: this.vaultId, epoch: s.epoch, received: s.boundary, applied: 0 });
+      await this.db.progress.put({ id: "progress", vaultId: this.vaultId, epoch: s.epoch, received: s.boundary, applied: previous?.applied ?? 0 });
+      this.fault?.("before-snapshot-commit");
     });
+    this.fault?.("after-snapshot-commit");
   }
   private async request(actions: Action[]): Promise<Commit> {
     const p = await this.db.progress.get("progress"); if (!p) throw new Error("NOT_INITIALIZED");
@@ -119,10 +127,13 @@ export class SyncEngine {
   private async enqueue(request: Commit, local: LocalFile[], revisions: Revision[], objects: Outbox["objects"]): Promise<void> {
     // All ciphertext snapshots have already been staged before the short DB transaction.
     await this.checkLease();
-    await this.db.transaction("rw", [this.db.localFiles, this.db.revisions, this.db.outbox], async () => {
+    await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.revisions, this.db.outbox], async () => {
+      await this.checkLease();
       await this.db.localFiles.bulkPut(local); await this.db.revisions.bulkPut(revisions);
       await this.db.outbox.add({ opId: request.opId, request, objects });
+      this.fault?.("before-outbox-commit");
     });
+    this.fault?.("after-outbox-commit");
   }
   private async captureOne(path: string, bytes: Uint8Array | null, local?: LocalFile): Promise<void> {
     const keys = this.crypto(); if (bytes && bytes.length > MAX_FILE_BYTES) { this.errors.push(`FILE_TOO_LARGE: ${path}`); return; }
@@ -152,6 +163,7 @@ export class SyncEngine {
         const obj = keys.object(bytes.subarray(offset, offset + CHUNK_BYTES)); await this.files.stageWrite(obj.id, obj.bytes); objects.push({ id: obj.id, stage: obj.id }); objectIds.push(obj.id);
       }
     }
+    this.fault?.("after-capture-stage");
     const r: Revision = { id: revisionId, fileId, parents, deviceId: this.deviceId, payload: await keys.payload({ id: revisionId, fileId, parents, deviceId: this.deviceId }, bytes ?? new Uint8Array(), kind, objectIds) };
     const location = local?.location ?? independent?.location ?? keys.location(fileId, path);
     const action: Action = local
@@ -170,13 +182,14 @@ export class SyncEngine {
         if (bytes && this.policy.reason(path, bytes.length)) { await this.skip(path, this.policy.reason(path, bytes.length)!); continue; }
         if (bytes === null) { this.errors.push(`SCAN_CHANGED: ${path}`); continue; }
         await this.captureOne(path, bytes, byPath.get(path));
-      } catch (error) { this.errors.push(error instanceof Error ? error.message : String(error)); }
+      } catch (error) { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
     }
     const set = new Set(paths);
     for (const f of locals) if (!set.has(f.path) && !f.deleted) {
       const reason = this.policy.reason(f.path); if (reason) { await this.skip(f.path, reason); continue; }
       // A second successful absence check is required, never an I/O exception.
-      if (await this.files.read(f.path) === null) await this.captureOne(f.path, null, f);
+      try { if (await this.files.read(f.path) === null) await this.captureOne(f.path, null, f); }
+      catch (error) { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
     }
   }
   async rename(oldPath: string, newPath: string): Promise<void> {
@@ -188,12 +201,13 @@ export class SyncEngine {
       if (fixedExclusion(newPath)) { await this.db.localFiles.update(f.id, { path: newPath }); return; }
       const location = this.crypto().location(f.id, newPath);
       await this.enqueue(await this.request([{ type: "move", fileId: f.id, expectedLocation: f.location.revision, location }]), [{ ...f, path: newPath, location }], [], []);
-    } finally { await this.release(); this.ended(); }
+    } finally { await this.endRun(); }
   }
   private async flush(): Promise<void> {
     await this.checkLease();
     const blocked = new Set<string>();
-    for (const row of await this.db.outbox.orderBy("queueId").toArray()) {
+    outgoing: for (const row of await this.db.outbox.orderBy("queueId").toArray()) {
+      await this.checkLease();
       let excluded = false;
       for (const action of row.request.actions) {
         const local = await this.db.localFiles.get(action.fileId);
@@ -205,10 +219,27 @@ export class SyncEngine {
       if (excluded) { for (const a of row.request.actions) blocked.add(a.fileId); await this.db.outbox.update(row.queueId!, { error: "EXCLUDED_BY_RULE" }); continue; }
       await this.db.outbox.update(row.queueId!, { error: undefined });
       try {
-        for (const obj of row.objects) await this.remote.upload(obj.id, await this.files.stageRead(obj.stage));
-        const receipt = await this.remote.commit(row.request);
+        // Ask for the immutable receipt first: an accepted operation no longer depends on local stages.
+        let receipt;
+        try { receipt = await this.remote.commit(row.request); }
+        catch (error) {
+          if (!(error instanceof RemoteError) || error.code !== "OBJECT_MISSING") throw error;
+          for (const obj of row.objects) {
+            let bytes: Uint8Array;
+            // Never poison an immutable remote object ID with damaged local ciphertext.
+            try { bytes = await this.files.stageRead(obj.stage); this.crypto().decryptObject(obj.id, bytes).fill(0); }
+            catch (stageError) {
+              if (!this.unlocked) throw stageError;
+              await this.db.outbox.update(row.queueId!, { error: "UPLOAD_STAGE_UNAVAILABLE" });
+              this.errors.push("UPLOAD_STAGE_UNAVAILABLE"); continue outgoing;
+            }
+            await this.checkLease(); await this.remote.upload(obj.id, bytes); this.fault?.("after-object-upload");
+          }
+          await this.checkLease(); receipt = await this.remote.commit(row.request);
+        }
         if (receipt.opId !== row.opId || receipt.epoch !== row.request.epoch) throw new Error("RECEIPT_MISMATCH");
         this.fault?.("after-remote-commit"); await this.db.outbox.delete(row.queueId!);
+        this.fault?.("after-outbox-ack");
       } catch (error) {
         if (!(error instanceof RemoteError)) throw error;
         if (error.code === "REVIEW_STALE") {
@@ -252,7 +283,15 @@ export class SyncEngine {
   private async receive(): Promise<void> {
     for (;;) {
       const p = (await this.db.progress.get("progress"))!;
-      const changes = await this.remote.changes(p.epoch, p.received); if (!changes.length) return;
+      let changes;
+      try { changes = await this.remote.changes(p.epoch, p.received); }
+      catch (error) {
+        if (!(error instanceof RemoteError) || error.code !== "NEED_SNAPSHOT") throw error;
+        await this.checkLease(); const snapshot = await this.remote.snapshot();
+        if (snapshot.boundary <= p.received) throw new Error("SNAPSHOT_NO_PROGRESS");
+        await this.acceptSnapshot(snapshot); continue;
+      }
+      if (!changes.length) return;
       const files = new Map((await this.db.remoteFiles.toArray()).map(f => [f.id, f]));
       const revisions = new Map((await this.db.revisions.toArray()).map(r => [r.id, r]));
       const tasks: Inbox[] = []; let seq = p.received;
@@ -265,10 +304,12 @@ export class SyncEngine {
       // Authenticate every new/locally staged revision before recording a receive boundary.
       for (const r of revisions.values()) this.crypto().manifest(r);
       await this.checkLease();
-      await this.db.transaction("rw", [this.db.remoteFiles, this.db.revisions, this.db.inbox, this.db.progress], async () => {
+      await this.db.transaction("rw", [this.db.leases, this.db.remoteFiles, this.db.revisions, this.db.inbox, this.db.progress], async () => {
+        await this.checkLease();
         if ((await this.db.progress.get("progress"))?.received !== p.received) throw new Error("RECEIVE_BASELINE_CHANGED");
         await this.db.remoteFiles.bulkPut([...files.values()]); await this.db.revisions.bulkPut([...revisions.values()]);
         await this.db.inbox.bulkPut(tasks); await this.db.progress.put({ ...p, received: seq });
+        this.fault?.("before-inbox-commit");
       });
       this.fault?.("after-inbox-commit");
       if (changes.length < 100) return;
@@ -285,10 +326,16 @@ export class SyncEngine {
   }
 
   private async finish(task: ApplyTask): Promise<void> {
-    await this.db.transaction("rw", [this.db.localFiles, this.db.applyTasks, this.db.conflicts], async () => {
+    await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.applyTasks, this.db.conflicts], async () => {
+      this.crypto();
+      const lease = await this.db.leases.get("engine");
+      if (lease?.owner !== this.owner || lease.until <= Date.now()) throw new Error("LOCAL_LEASE_LOST");
+      if ((await this.db.applyTasks.get(task.id))?.stage !== task.stage) throw new Error("APPLY_TASK_CHANGED");
       await this.db.localFiles.put({ id: task.id, path: task.targetPath, location: task.location, revision: task.revision, fingerprint: task.desiredFingerprint, deleted: task.deleted });
       await this.db.applyTasks.delete(task.id); await this.db.conflicts.delete(task.id);
+      this.fault?.("before-apply-ack");
     });
+    this.fault?.("after-apply-ack");
   }
   private async applyTask(task: ApplyTask): Promise<boolean> {
     await this.checkLease();
@@ -308,9 +355,10 @@ export class SyncEngine {
     }
     const desired = this.crypto().localOpen(task.stage, await this.files.stageRead(task.stage));
     if (await fingerprint(desired) !== task.desiredFingerprint) throw new Error("STAGE_CORRUPT");
+    await this.checkLease();
     if (task.deleted) { if (source) await this.files.remove(task.sourcePath, source); }
     else {
-      if (task.sourcePath !== task.targetPath && source !== null) await this.files.rename(task.sourcePath, task.targetPath, source);
+      if (task.sourcePath !== task.targetPath && source !== null) { await this.files.rename(task.sourcePath, task.targetPath, source); this.fault?.("after-vault-rename"); await this.checkLease(); }
       await this.files.write(task.targetPath, desired, expected);
     }
     this.fault?.("after-vault-write"); await this.finish(task); return true;
@@ -358,11 +406,13 @@ export class SyncEngine {
         if (current) { backup = randomId(); await this.files.stageWrite(backup, this.crypto().localSeal(backup, current)); }
         const task: ApplyTask = { id: f.id, sourcePath, targetPath: path, oldFingerprint: currentFp, desiredFingerprint: desiredFp, revision: r.id, location: f.location, deleted, stage, size: desired.length };
         if (backup) task.backup = backup;
+        this.fault?.("after-apply-stage");
         await this.checkLease(); await this.db.applyTasks.put(task); this.fault?.("after-apply-prepare");
         if (await this.applyTask(task)) settled.add(f.id);
-      } catch (error) { this.errors.push(error instanceof Error ? error.message : String(error)); }
+      } catch (error) { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
     }
-    await this.db.transaction("rw", [this.db.inbox, this.db.progress], async () => {
+    await this.db.transaction("rw", [this.db.leases, this.db.inbox, this.db.progress], async () => {
+      await this.checkLease();
       const tasks = await this.db.inbox.orderBy("seq").toArray(); const p = (await this.db.progress.get("progress"))!;
       let applied = p.applied;
       for (const task of tasks) {
@@ -371,17 +421,24 @@ export class SyncEngine {
       // Snapshot bootstrap may jump directly to its frozen boundary, then regular groups are contiguous.
       for (const task of tasks) { if (task.seq < applied) continue; if (!task.done) break; applied = task.seq; }
       await this.db.progress.put({ ...p, applied });
+      this.fault?.("before-applied-cursor-commit");
     });
+    this.fault?.("after-applied-cursor-commit");
   }
   private async release(): Promise<void> {
     await this.db.transaction("rw", this.db.leases, async () => { if ((await this.db.leases.get("engine"))?.owner === this.owner) await this.db.leases.delete("engine"); });
   }
+  private async endRun(): Promise<void> { try { await this.release(); } finally { this.ended(); } }
   async sync(): Promise<EngineStatus> {
     if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.crypto(); this.busy = true; this.errors = [];
     let heartbeat: ReturnType<typeof setInterval> | undefined;
+    const renewals = new Set<Promise<void>>();
     try {
       await this.lease(); await this.db.skipped.clear();
-      heartbeat = setInterval(() => { void this.lease().catch(() => { this.stopping = true; }); }, 10000);
+      heartbeat = setInterval(() => {
+        const renewal = this.lease().catch(() => { this.stopping = true; }); renewals.add(renewal);
+        void renewal.finally(() => renewals.delete(renewal));
+      }, 10000);
       const h = await this.remote.handshake(); if (!SYNC_FEATURES.every(f => h.features.includes(f))) throw new Error("SERVER_UPGRADE_REQUIRED"); const p = await this.db.progress.get("progress");
       if (h.vaultId !== this.vaultId || (p && (p.epoch !== h.epoch || p.received > h.seq))) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
       if (await fingerprint(new TextEncoder().encode(canonical(h.keyPackage))) !== this.keyPackageFingerprint) throw new Error("KEY_PACKAGE_CHANGED");
@@ -390,7 +447,10 @@ export class SyncEngine {
       if (await this.reconcileInitialCollisions()) { await this.flush(); await this.receive(); }
       await this.apply();
     } catch (error) { this.errors.push(error instanceof Error ? error.message : String(error)); }
-    finally { clearInterval(heartbeat); await this.release(); this.ended(); }
+    finally {
+      clearInterval(heartbeat); await Promise.all(renewals);
+      try { await this.endRun(); } catch { this.errors.push("LEASE_RELEASE_FAILED"); }
+    }
     return this.status();
   }
   async status(): Promise<EngineStatus> {
@@ -421,8 +481,8 @@ export class SyncEngine {
   async resolve(review: Review, selectedRevision: string, companionPath?: string, mergedBytes?: Uint8Array): Promise<void> {
     if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.busy = true; this.errors = [];
     review = structuredClone(review); mergedBytes = mergedBytes?.slice();
-    if (mergedBytes && review.path.startsWith(".obsidian/") && review.path.endsWith(".json")) { if (hasDeviceFields(review.path, mergedBytes)) throw new Error("MERGE_CONTAINS_DEVICE_FIELDS"); mergedBytes = sharedConfig(review.path, mergedBytes); }
     try {
+      if (mergedBytes && review.path.startsWith(".obsidian/") && review.path.endsWith(".json")) { if (hasDeviceFields(review.path, mergedBytes)) throw new Error("MERGE_CONTAINS_DEVICE_FIELDS"); mergedBytes = sharedConfig(review.path, mergedBytes); }
       await this.lease();
       // Freeze displayed review; flush+receive updates the CURRENT set without silently changing the chosen snapshot.
       await this.capture(); await this.flush(); await this.receive();
@@ -467,6 +527,6 @@ export class SyncEngine {
         }
       }
       await this.apply(); await this.db.mergeDrafts.delete(review.fileId);
-    } finally { await this.release(); this.ended(); }
+    } finally { await this.endRun(); }
   }
 }

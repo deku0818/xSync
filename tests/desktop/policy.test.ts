@@ -5,6 +5,13 @@ import { sharedConfig, mergeConfig } from "../../plugin/src/sync/config-projecti
 import { VaultCrypto } from "../../plugin/src/sync/crypto";
 import { compareLines } from "../../plugin/src/ui/diff-lines";
 const enc = new TextEncoder(), dec = new TextDecoder();
+it("always keeps the core-plugin enable list device-local without excluding other shared configuration", () => {
+  for (const policy of [new SyncPolicy(), new SyncPolicy({ ...defaultRules(), maxMB: 100, folders: [], suffixes: [], regexes: [] })]) {
+    expect(policy.reason(".obsidian/core-plugins.json")).toContain("每台设备独立");
+    expect(policy.reason(".OBSIDIAN/CORE-PLUGINS.JSON")).toContain("每台设备独立");
+    for (const path of [".obsidian/appearance.json", ".obsidian/community-plugins.json", ".obsidian/daily-notes.json", ".obsidian/plugins/example/core-plugins.json", "core-plugins.json", "note.md"]) expect(policy.reason(path)).toBeUndefined();
+  }
+});
 it("matches full directory boundaries, regex descendants and the exact 100 MB ceiling", () => {
   const policy = new SyncPolicy({ ...defaultRules(), folders: ["docs"], suffixes: [".zip"], regexes: [{ source: "^cache$", flags: "i" }] });
   expect(policy.reason("docs/a/b.md")).toContain("文件夹"); expect(policy.reason("docs-other/a.md")).toBeUndefined(); expect(policy.reason("CACHE/sub/file.md")).toContain("正则");

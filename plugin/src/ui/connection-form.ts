@@ -14,7 +14,15 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
   let closed = false, busy = false, draftRules = structuredClone(plugin.rules), inventory: FileEntry[] = [], selectedClient = "", dirty = false;
   const input = (id: string) => q<HTMLInputElement>(id);
   input("client-name").value = plugin.deviceName; input("endpoint").value = plugin.endpoint; input("max-size").value = String(draftRules.maxMB);
-  input("key").placeholder = plugin.engine?.unlocked ? "已保存，留空使用现有密钥" : "请输入同步密钥";
+  const renderKeyState = () => {
+    const field = input("key"), saved = plugin.hasSavedKey;
+    field.dataset.savedKey = String(saved);
+    field.placeholder = saved ? "••••••••••••" : "请输入同步密钥";
+    let hint = saved ? "密钥已保存，留空复用；输入新密钥可替换。由系统安全存储保护。" : "尚未保存密钥，请输入同步密钥。密钥仅在本机校验。";
+    if (field.value) hint = saved ? "新密钥将在保存并测试通过后替换现有密钥。" : "保存并测试通过后，密钥由系统安全存储保护。";
+    q("key-hint").setText(hint);
+  };
+  q("connection-badge").setText(plugin.hasSavedKey ? "已保存" : "未配置");
   q("current-name").setText(plugin.deviceName || "当前客户端");
   const meta = q("sync-state").nextElementSibling; if (meta) meta.textContent = "· 当前设备";
   const error = (id: string, message: string) => { q(id).setText(message); q(id).hidden = !message; };
@@ -28,6 +36,7 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
     if (check.state === "failed") { q("connection-badge").setText("测试失败"); q("connection-badge").dataset.state = "failed"; q("connection-feedback").dataset.state = "failed"; q("connection-feedback").setText(check.message ?? "无法完成测试，请重试。"); }
   };
   const renderStatus = () => {
+    renderKeyState();
     q("current-name").setText(plugin.deviceName || "当前客户端");
     const count = q("tab-clients").querySelector(".count"); if (count) count.textContent = plugin.clients.length ? String(plugin.clients.length) : "—";
     q("pause").setText(plugin.autoSync ? "暂停同步" : "恢复同步");
@@ -138,12 +147,12 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
     if (tab === "clients") { q("client-detail").setText("正在读取配置快照…"); try { await plugin.refreshClients(); if (!closed) renderClients(); } catch (e) { if (!closed) q("client-detail").setText(`无法获取配置快照：${(e as Error).message}`); } }
   };
   for (const tab of ["local", "clients"] as const) { q(`tab-${tab}`).onclick = () => { void chooseTab(tab); }; q(`tab-${tab}`).onkeydown = e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); const next = tab === "local" ? "clients" : "local"; void chooseTab(next); q(`tab-${next}`).focus(); } }; }
-  for (const id of ["client-name", "endpoint", "key"]) input(id).oninput = () => { resetChecks(); validateName(); q("connection-badge").setText("未保存"); q("connection-feedback").setText("连接配置有修改，请保存并测试。"); };
+  for (const id of ["client-name", "endpoint", "key"]) input(id).oninput = () => { if (id === "key") renderKeyState(); resetChecks(); validateName(); q("connection-badge").setText("未保存"); q("connection-feedback").setText("连接配置有修改，请保存并测试。"); };
   q("connection-form").onsubmit = async event => {
     event.preventDefault(); if (busy || !validateName()) return; busy = true; resetChecks();
     for (const id of ["client-name", "endpoint", "key", "save-connection", "pause"]) q<HTMLInputElement | HTMLButtonElement>(id).disabled = true;
     q("save-connection").setText("测试中…");
-    try { await plugin.saveConnection(input("endpoint").value, input("key").value, update, input("client-name").value); if (closed) return; input("key").value = ""; input("key").placeholder = "已保存，留空使用现有密钥"; input("endpoint").value = plugin.endpoint; input("client-name").value = plugin.deviceName; q("connection-badge").setText("验证通过"); q("connection-badge").dataset.state = "passed"; q("connection-feedback").setText(plugin.autoSync ? "连接、名称和密钥校验通过，配置已安全保存。" : "配置已安全保存，同步保持暂停。"); }
+    try { await plugin.saveConnection(input("endpoint").value, input("key").value, update, input("client-name").value); if (closed) return; input("key").value = ""; renderKeyState(); input("endpoint").value = plugin.endpoint; input("client-name").value = plugin.deviceName; q("connection-badge").setText("验证通过"); q("connection-badge").dataset.state = "passed"; q("connection-feedback").setText(plugin.autoSync ? "连接、名称和密钥校验通过，配置已安全保存。" : "配置已安全保存，同步保持暂停。"); }
     catch { /* The host reports the exact failed boundary through update(). */ }
     finally { busy = false; if (!closed) { for (const id of ["client-name", "endpoint", "key", "save-connection", "pause"]) q<HTMLInputElement | HTMLButtonElement>(id).disabled = false; q("save-connection").setText("保存并测试"); renderStatus(); } }
   };

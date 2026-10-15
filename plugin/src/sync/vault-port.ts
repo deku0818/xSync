@@ -3,6 +3,7 @@ import { bytesEqual, canonicalPath } from "./crypto";
 import { fixedExclusion, HARD_FILE_BYTES, SyncPolicy, type FileEntry } from "./policy";
 import { sharedConfig, mergeConfig, hasDeviceFields } from "./config-projection";
 import type { FilePort } from "./engine";
+import { SHARED_CONFIG_ROOT, SHARED_CONFIG_PREFIX, isSharedConfigPath } from "./config-path";
 
 /** Vault API for visible files; Adapter for the actual Vault.configDir. No Node/Electron dependency. */
 export class ObsidianVaultPort implements FilePort {
@@ -11,12 +12,12 @@ export class ObsidianVaultPort implements FilePort {
   configurationChanged = false;
   cachedInventory: FileEntry[] = [];
   constructor(private app: App, private localRoot: string, private policy: () => SyncPolicy = () => new SyncPolicy()) {}
-  logical(path: string): string { const dir = this.app.vault.configDir; return path === dir ? ".obsidian" : path.startsWith(`${dir}/`) ? `.obsidian/${path.slice(dir.length + 1)}` : path; }
-  private physical(path: string): string { return path === ".obsidian" ? this.app.vault.configDir : path.startsWith(".obsidian/") ? `${this.app.vault.configDir}/${path.slice(10)}` : path; }
+  logical(path: string): string { const dir = this.app.vault.configDir; return path === dir ? SHARED_CONFIG_ROOT : path.startsWith(`${dir}/`) ? `${SHARED_CONFIG_PREFIX}${path.slice(dir.length + 1)}` : path; }
+  private physical(path: string): string { return path === SHARED_CONFIG_ROOT ? this.app.vault.configDir : isSharedConfigPath(path) ? `${this.app.vault.configDir}/${path.slice(SHARED_CONFIG_PREFIX.length)}` : path; }
   isOwnRename(from: string, to: string): boolean { const key = `${from}\0${to}`; const at = this.ownRenames.get(key); this.ownRenames.delete(key); return at !== undefined && Date.now() - at < 60000; }
   inScope(path: string): boolean { return !this.policy().reason(this.logical(path)); }
   isOwnWrite(path: string): boolean { return this.ownWrites.has(this.logical(path)); }
-  private async writing(path: string, task: () => Promise<void>): Promise<void> { this.ownWrites.add(path); try { await task(); if (path.startsWith(".obsidian/")) this.configurationChanged = true; } finally { this.ownWrites.delete(path); } }
+  private async writing(path: string, task: () => Promise<void>): Promise<void> { this.ownWrites.add(path); try { await task(); if (isSharedConfigPath(path)) this.configurationChanged = true; } finally { this.ownWrites.delete(path); } }
   async inventory(): Promise<FileEntry[]> {
     const dir = this.app.vault.configDir; const adapter = this.app.vault.adapter;
     const entries: FileEntry[] = this.app.vault.getFiles().filter(f => f.path !== dir && !f.path.startsWith(`${dir}/`) && !f.path.split("/").some(p => p.startsWith("."))).map(f => ({ path: f.path, size: f.stat?.size ?? 0 }));
@@ -49,7 +50,7 @@ export class ObsidianVaultPort implements FilePort {
   }
   async configurationStamp(): Promise<string> {
     const inventory = await this.inventory(); const adapter = this.app.vault.adapter;
-    const values = await Promise.all(inventory.filter(e => e.path.startsWith(".obsidian/") && !e.directory && !e.reason).map(async e => { const stat = await adapter.stat(this.physical(e.path)); return `${e.path}:${stat?.size}:${stat?.mtime}`; }));
+    const values = await Promise.all(inventory.filter(e => isSharedConfigPath(e.path) && !e.directory && !e.reason).map(async e => { const stat = await adapter.stat(this.physical(e.path)); return `${e.path}:${stat?.size}:${stat?.mtime}`; }));
     return values.sort().join("\n");
   }
   async list(): Promise<string[]> { return (await this.inventory()).filter(e => !e.directory && !fixedExclusion(e.path)).map(e => e.path).sort(); }
@@ -57,7 +58,7 @@ export class ObsidianVaultPort implements FilePort {
   private permitted(path: string): void { canonicalPath(path); if (fixedExclusion(path)) throw new Error("DEVICE_LOCAL_PATH"); }
   async read(path: string): Promise<Uint8Array | null> {
     this.permitted(path); const physical = this.physical(path);
-    if (path.startsWith(".obsidian/")) {
+    if (isSharedConfigPath(path)) {
       const stat = await this.app.vault.adapter.stat(physical); if (!stat) return null; if (stat.type !== "file") throw new Error("EXPECTED_FILE");
       if (stat.size > HARD_FILE_BYTES) throw new Error("FILE_TOO_LARGE");
       return sharedConfig(path, new Uint8Array(await this.app.vault.adapter.readBinary(physical)));
@@ -71,7 +72,7 @@ export class ObsidianVaultPort implements FilePort {
     const parts = this.physical(path).split("/"); parts.pop(); let parent = "";
     for (const part of parts) {
       parent = parent ? `${parent}/${part}` : part;
-      if (path.startsWith(".obsidian/")) { if (!await this.app.vault.adapter.exists(parent)) await this.app.vault.adapter.mkdir(parent); }
+      if (isSharedConfigPath(path)) { if (!await this.app.vault.adapter.exists(parent)) await this.app.vault.adapter.mkdir(parent); }
       else if (!this.app.vault.getFolderByPath(parent)) await this.app.vault.createFolder(parent);
     }
   }
@@ -79,7 +80,7 @@ export class ObsidianVaultPort implements FilePort {
     this.permitted(path);
     await this.writing(path, async () => {
       await this.parents(path);
-      if (path.startsWith(".obsidian/")) {
+      if (isSharedConfigPath(path)) {
         const adapter = this.app.vault.adapter; const physical = this.physical(path);
         if (expected !== null && path.endsWith(".json") && typeof adapter.process === "function") {
           const encoder = new TextEncoder(), decoder = new TextDecoder("utf-8", { fatal: true });
@@ -106,7 +107,7 @@ export class ObsidianVaultPort implements FilePort {
     this.permitted(from); this.permitted(to); await this.parents(to);
     if (!bytesEqual((await this.read(from)) ?? new Uint8Array(), expected)) throw new Error("LOCAL_CHANGED_DURING_RENAME");
     if (await this.app.vault.adapter.exists(this.physical(to))) throw new Error("TARGET_OCCUPIED");
-    if (from.startsWith(".obsidian/") || to.startsWith(".obsidian/")) { if (!from.startsWith(".obsidian/") || !to.startsWith(".obsidian/")) throw new Error("CONFIG_MOVE_BOUNDARY"); await this.app.vault.adapter.rename(this.physical(from), this.physical(to)); this.configurationChanged = true; return; }
+    if (isSharedConfigPath(from) || isSharedConfigPath(to)) { if (!isSharedConfigPath(from) || !isSharedConfigPath(to)) throw new Error("CONFIG_MOVE_BOUNDARY"); await this.app.vault.adapter.rename(this.physical(from), this.physical(to)); this.configurationChanged = true; return; }
     const source = this.app.vault.getFileByPath(from); if (!source) throw new Error("SOURCE_MISSING");
     this.ownRenames.set(`${from}\0${to}`, Date.now()); await this.app.vault.rename(source, to);
   }
@@ -114,7 +115,7 @@ export class ObsidianVaultPort implements FilePort {
     this.permitted(path);
     await this.writing(path, async () => {
       const current = await this.read(path); if (!current || !bytesEqual(current, expected)) throw new Error("LOCAL_CHANGED_DURING_DELETE");
-      if (path.startsWith(".obsidian/")) {
+      if (isSharedConfigPath(path)) {
         const physical = this.physical(path); const raw = new Uint8Array(await this.app.vault.adapter.readBinary(physical));
         if (hasDeviceFields(path, raw)) throw new Error("CONFIG_DELETE_HAS_DEVICE_FIELDS");
         await this.app.vault.adapter.trashLocal(physical); return;

@@ -20,7 +20,7 @@
 .oss-settings input[type="text"], .oss-settings input[type="password"] { display: block; width: 100%; min-width: 0; height: 39px; margin: 0; padding: 0 12px; border: 1px solid var(--background-modifier-border); border-radius: 7px; background: var(--background-secondary); box-shadow: none; font: inherit; font-size: 13px; color: var(--text-normal); }
 .oss-settings input::placeholder { color: var(--text-faint); }
 .oss-settings input:focus { border-color: var(--interactive-accent); outline: 2px solid color-mix(in srgb, var(--interactive-accent) 20%, transparent); outline-offset: 1px; }
-.oss-settings .oss-endpoint { font-family: var(--font-monospace, monospace) !important; font-size: 12px !important; }
+.oss-settings input.oss-endpoint[type="text"] { font-family: var(--font-monospace, monospace); font-size: 12px; }
 .oss-settings button { flex: 0 0 auto; height: 39px; margin: 0; padding: 0 15px; border: 1px solid var(--background-modifier-border); border-radius: 7px; background: var(--interactive-normal); color: var(--text-normal); box-shadow: none; font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
 .oss-settings button:hover { background: var(--interactive-hover); }
 .oss-settings button.oss-primary { background: var(--interactive-accent); color: var(--text-on-accent); border-color: transparent; }
@@ -81,7 +81,6 @@
 .oss-app .mono{font-family:var(--font-monospace,monospace);font-size:12px}
 .oss-app .muted{color:var(--muted)}
 .oss-app .small{font-size:12px}
-.oss-app .hidden,.oss-app [hidden]{display:none!important}
 .oss-app .page{max-width:880px;margin:auto}
 .oss-app .preview-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px;font-size:11px;color:var(--faint);flex-wrap:wrap}
 .oss-app .preview-label{display:flex;align-items:center;gap:9px}
@@ -105,7 +104,7 @@
 .oss-app .dot.paused{background:var(--amber)}
 .oss-app .dot.offline{background:var(--faint)}
 .oss-app .tabs{display:flex;align-items:center;gap:25px;border-bottom:1px solid var(--line);margin-bottom:25px}
-.oss-app .tab{position:relative;border:0;background:none!important;border-radius:0;padding:0 0 12px;color:var(--muted);font-size:13px;font-weight:500}
+.oss-app .tab{position:relative;border:0;background:transparent;border-radius:0;padding:0 0 12px;color:var(--muted);font-size:13px;font-weight:500}
 .oss-app .tab[aria-selected="true"]{color:var(--text)}
 .oss-app .tab[aria-selected="true"]:after{content:"";position:absolute;height:2px;background:var(--accent);bottom:-1px;left:0;right:0;border-radius:2px}
 .oss-app .count{display:inline-block;margin-left:6px;background:var(--surface);padding:0 6px;border-radius:5px;font-size:10px;color:var(--muted)}
@@ -310,7 +309,6 @@
 .oss-app a:hover{text-decoration:underline}
 .oss-app svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
 .oss-app h1,.oss-app h2,.oss-app h3,.oss-app p{margin:0}
-.oss-app .hidden,.oss-app [hidden]{display:none!important}
 .oss-app .page{max-width:850px;margin:auto}
 .oss-app .preview-bar{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:23px;flex-wrap:wrap;font-size:11px;color:var(--faint)}
 .oss-app .preview-controls{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
@@ -486,7 +484,14 @@
 .oss-app .card-head h2{margin:0;display:block;font-size:13px;font-weight:600;line-height:1.6}
 .oss-app .detail-head h3{margin:0;font-size:15px;line-height:1.6}.oss-app .review-head h2{display:block;margin:0}
 .oss-app .client-item{height:auto;min-height:105px;align-items:flex-start;white-space:normal}
-.oss-app .heading h1{display:block!important}.oss-app .code-pane:focus-visible{outline-offset:-2px}
+.vertical-tab-content .oss-app .heading h1{display:block}.oss-app .code-pane:focus-visible{outline-offset:-2px}
 /* Reset Obsidian's generic card layout so form and section cards align alike. */
 .oss-app .card{display:block;flex:initial;margin:20px 0 0;padding:0;background:var(--panel);border:1px solid var(--line);border-radius:11px}
-.oss-app .client-item{height:auto!important;min-height:105px;overflow:visible}
+.oss-app .client-list button.client-item{height:auto;min-height:105px;overflow:visible}
+
+/* Custom declarative setting row keeps the approved full-width form. */
+.setting-item.oss-settings-row{display:block;padding:0;border:0}
+/* Last and more specific than panel/card layout rules: hidden panes stay hidden. */
+.oss-app.oss-app .hidden,.oss-app.oss-app [hidden]{display:none}
+
+.oss-app .tabs button.tab,.oss-app .tabs button.tab:hover{background:transparent}

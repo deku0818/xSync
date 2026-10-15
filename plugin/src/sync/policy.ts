@@ -2,6 +2,7 @@ import { z } from "zod";
 import { RE2JS } from "re2js";
 import { isSelfPlugin } from "./plugin-identity";
 import { hasControlCharacter } from "../../../protocol/src/text";
+import { SHARED_CONFIG_ROOT, SHARED_CONFIG_PREFIX, isSharedConfigPath } from "./config-path";
 
 export const HARD_FILE_BYTES = 100_000_000;
 export const CHUNK_BYTES = 4 * 1024 * 1024;
@@ -31,11 +32,12 @@ export function validateRules(input: unknown): SyncRules {
 }
 export function fixedExclusion(path: string): string | undefined {
   const p = path.toLowerCase();
-  if (p === ".obsidian/core-plugins.json") return "核心插件启用状态（每台设备独立）";
-  if (/^\.obsidian\/obsidian-sync-local(\/|$)/.test(p) || p.startsWith(".obsidian/plugins/") && isSelfPlugin(p.split("/")[2])) return "同步凭据、设备身份与内部状态";
-  if (/^\.obsidian\/(workspace(?:-mobile|s)?\.json|obsidian-sync-development\.json)$/.test(p)) return "窗口布局或本机开发标记";
-  if (p.split("/").some((part, i) => part.startsWith(".") && !(i === 0 && part === ".obsidian"))) return "隐藏文件或缓存";
-  if (/^\.obsidian\/(cache|logs?|backups?|trash)(\/|$)/.test(p) || /^\.obsidian\/.*(?:credential|secret|token|device-identity|private-key)[^/]*\.(json|ya?ml|txt)$/i.test(p) || /^\.obsidian\/.*\.(pem|key|p12|pfx)$/.test(p)) return "本机凭据、缓存或备份";
+  const config = isSharedConfigPath(p) ? p.slice(SHARED_CONFIG_PREFIX.length) : null;
+  if (config === "core-plugins.json") return "核心插件启用状态（每台设备独立）";
+  if (config !== null && (/^obsidian-sync-local(\/|$)/.test(config) || config.startsWith("plugins/") && isSelfPlugin(config.split("/")[1]))) return "同步凭据、设备身份与内部状态";
+  if (config !== null && /^(workspace(?:-mobile|s)?\.json|obsidian-sync-development\.json)$/.test(config)) return "窗口布局或本机开发标记";
+  if (p.split("/").some((part, i) => part.startsWith(".") && !(i === 0 && part === SHARED_CONFIG_ROOT))) return "隐藏文件或缓存";
+  if (config !== null && (/^(cache|logs?|backups?|trash)(\/|$)/.test(config) || /.*(?:credential|secret|token|device-identity|private-key)[^/]*\.(json|ya?ml|txt)$/i.test(config) || /.*\.(pem|key|p12|pfx)$/.test(config))) return "本机凭据、缓存或备份";
   return undefined;
 }
 export class SyncPolicy {

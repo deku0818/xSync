@@ -1,6 +1,6 @@
 import { timerHost, type TimerHandle } from "./runtime/timers";
 // Based on obsidianmd/obsidian-sample-plugin, commit 07ceb81d1fb3384af611ebf665a1ec42a7e5926d (0BSD).
-import { Modal, Notice, Platform, Plugin, PluginSettingTab, TFile, requestUrl, type App } from "obsidian";
+import { Modal, Notice, Platform, Plugin, TFile, requestUrl, type App } from "obsidian";
 import { z } from "zod";
 import buildManifest from "../../manifest.json";
 import { SyncEngine, type EngineStatus, type Review } from "./sync/engine";
@@ -17,6 +17,7 @@ import { enrollConnection } from "./sync/enrollment";
 import { connectionSettings } from "./sync/connection-settings";
 import { connectionFailure, type ConnectionObserver, type ConnectionStep } from "./sync/connection-check";
 import { connectionForm } from "./ui/connection-form";
+import { SyncSettingTab } from "./ui/settings-tab";
 import { SyncPolicy, defaultRules, validateRules, type SyncRules, type FileEntry } from "./sync/policy";
 import { decodeProfile, type ClientView, type ClientConfiguration, type PendingProfile } from "./sync/client-profile";
 import { clientName } from "../../protocol/src/client-profile";
@@ -381,16 +382,6 @@ export default class ObsidianSyncPlugin extends Plugin {
     await this.saveData({ format: 4, vaultId: this.config?.vaultId ?? "", autoSync: this.autoSync, endpoint: this.endpoint, record: this.connectionRecord, restoreAllowed: this.restoreAllowed, clientName: this.deviceName, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty, ...(this.profilePending ? { profilePending: this.profilePending } : {}) });
   }
 
-}
-class SyncSettingTab extends PluginSettingTab {
-  private cleanup?: () => void;
-  constructor(app: App, private plugin: ObsidianSyncPlugin) { super(app, plugin); }
-  display(): void {
-    this.cleanup?.();
-    this.containerEl.empty();
-    this.cleanup = connectionForm(this.containerEl.createDiv(), this.plugin);
-  }
-  hide(): void { this.cleanup?.(); this.cleanup = undefined; }
 }
 class ConnectionModal extends Modal {
   private cleanup?: () => void;

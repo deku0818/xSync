@@ -7,8 +7,19 @@ process.chdir(fileURLToPath(new URL("../", import.meta.url)));
 const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
 const out = `plugin/dist/${manifest.id}`;
 await mkdir(out, { recursive: true });
+let notices = await readFile("plugin/licenses/libsodium-ISC.txt", "utf8");
+for (const name of ["dexie", "zod", "re2js"]) {
+  let license;
+  for (const file of ["LICENSE", "LICENSE.txt", "LICENSE.md"]) {
+    try { license = await readFile(`node_modules/${name}/${file}`, "utf8"); break; } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  if (!license) throw new Error(`Missing license for ${name}`);
+  notices += `\n\n${name}\n${license}`;
+}
+const licenseBundle = [await readFile("LICENSE", "utf8"), await readFile("plugin/licenses/obsidian-sample-plugin-0BSD.txt", "utf8"), notices].join("\n\n");
 const context = await esbuild.context({
-  banner: { js: "/* GENERATED FILE. xSync plugin; based on obsidianmd/obsidian-sample-plugin (0BSD). */" },
+  // Community installs only main.js/manifest.json/styles.css; preserve all notices in main.js too.
+  banner: { js: `/*! GENERATED FILE. xSync plugin; based on obsidianmd/obsidian-sample-plugin (0BSD).\n${licenseBundle.replace(/\*\//g, "* /")}\n*/` },
   entryPoints: ["plugin/src/sync-main.ts"], bundle: true, external: ["obsidian", "@electron/remote", "node:buffer"],
   platform: "browser", format: "cjs", target: "es2021", logLevel: "info",
   sourcemap: process.argv.includes("--watch") ? "inline" : false,
@@ -25,11 +36,5 @@ await copyFile("manifest.json", `${out}/manifest.json`);
 await copyFile("LICENSE", `${out}/LICENSE`);
 await copyFile("plugin/styles.css", `${out}/styles.css`);
 await copyFile("plugin/licenses/obsidian-sample-plugin-0BSD.txt", `${out}/TEMPLATE-LICENSE.txt`);
-let notices = await readFile("plugin/licenses/libsodium-ISC.txt", "utf8");
-for (const name of ["dexie", "zod", "re2js"]) {
-  for (const file of ["LICENSE", "LICENSE.txt", "LICENSE.md"]) {
-    try { notices += `\n\n${name}\n${await readFile(`node_modules/${name}/${file}`, "utf8")}`; break; } catch { /* next license spelling */ }
-  }
-}
 await writeFile(`${out}/THIRD-PARTY-NOTICES.txt`, notices);
 if (process.argv.includes("--watch")) await context.watch(); else await context.dispose();

@@ -23,9 +23,11 @@ Daily controls are pause and resume. A saved key can be reused by leaving the pa
 
 ## Platforms and current limits
 
-Version 0.1.0 is an initial release for independent test vaults. The target platforms are macOS and iOS, with a minimum host version of 1.14.5. Android secure storage is not implemented, and Windows/Linux have not completed physical-device validation. iOS secure storage uses an internal native host bridge and needs validation for each supported host version.
+Version 0.1.1 is an initial release for independent test vaults. The target platforms are macOS and iOS, with a minimum host version of 1.14.5. Android secure storage is not implemented, and Windows/Linux have not completed physical-device validation. iOS secure storage uses an internal native host bridge and needs validation for each supported host version.
 
 Foreground sync and reconciliation after returning from the background are supported; continuous locked-screen or background execution is not guaranteed. Source files are still read as whole files, even though transfers are chunked. New-device enrollment and protected credential changes still need fresh Mac/iPhone installation tests. Coordinated database/object backup restoration, key migration, and a production security review remain unfinished.
+
+For context on automated scan findings and release provenance, see [Review notes](docs/REVIEW-NOTES.md).
 
 ## Network and privacy
 
@@ -37,7 +39,7 @@ There is no analytics, advertising, or plugin self-updater. Credentials, device 
 
 个人多设备 Obsidian 同步插件与自建服务，目标是电脑与手机间的端到端加密整库同步。重叠修改展示差异，由用户明确选择版本、保留双方或手动合并。
 
-**当前版本为 0.1.0，插件 ID 为 `xsync`，已发布到 [Obsidian 社区目录](https://community.obsidian.md/plugins/xsync)。** 免费开源，需要自己的 HTTPS 同步服务器，当前界面为中文。已支持普通库初始化、设备接入/撤销和标准发布包；版本文件见 [Releases](https://github.com/deku0818/xSync/releases)。新接入流程仍需 Mac/iPhone 真机复验，联合备份还原与生产安全验收尚未完成，请先在独立测试库验证。
+**当前版本为 0.1.1，插件 ID 为 `xsync`，已发布到 [Obsidian 社区目录](https://community.obsidian.md/plugins/xsync)。** 免费开源，需要自己的 HTTPS 同步服务器，当前界面为中文。已支持普通库初始化、设备接入/撤销和标准发布包；版本文件见 [Releases](https://github.com/deku0818/xSync/releases)。新接入流程仍需 Mac/iPhone 真机复验，联合备份还原与生产安全验收尚未完成，请先在独立测试库验证。
 
 ## 当前实现
 

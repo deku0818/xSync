@@ -7,6 +7,10 @@ jobs:
   package:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,6 +20,13 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run package:plugin
+      - name: Attest the exact community plugin files
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/release/main.js
+            dist/release/manifest.json
+            dist/release/styles.css
       - uses: actions/upload-artifact@v4
         with:
           name: xsync-package

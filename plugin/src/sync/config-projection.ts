@@ -1,5 +1,6 @@
 import { canonical } from "../../../protocol/src/model";
 import { isSelfPlugin } from "./plugin-identity";
+import { COMMUNITY_PLUGINS_PATH, isSharedConfigPath } from "./config-path";
 const encoder = new TextEncoder(); const decoder = new TextDecoder("utf-8", { fatal: true });
 const deviceField = (key: string) => /^(?:.*(?:password|passphrase|privatekey|apikey|token|secret|credentials?|deviceid|installationid|sessionkey|encryptionkey|masterkey|vaultkey|synckey|recoverykey)|token|secret|secrets|credentials?|deviceid|installationid|sessionkey|encryptionkey)$/i.test(key.replace(/[^a-z0-9]/gi, ""));
 function containsDeviceField(value: unknown): boolean {
@@ -21,19 +22,19 @@ function merge(local: unknown, shared: unknown): unknown {
   return shared;
 }
 export function sharedConfig(path: string, bytes: Uint8Array): Uint8Array {
-  if (!path.startsWith(".obsidian/") || !path.endsWith(".json")) return bytes;
+  if (!isSharedConfigPath(path) || !path.endsWith(".json")) return bytes;
   const value = JSON.parse(decoder.decode(bytes)) as unknown;
-  const clean = path === ".obsidian/community-plugins.json" && Array.isArray(value) ? value.filter(v => !isSelfPlugin(v)) : project(value);
+  const clean = path === COMMUNITY_PLUGINS_PATH && Array.isArray(value) ? value.filter(v => !isSelfPlugin(v)) : project(value);
   return encoder.encode(canonical(clean));
 }
 export function mergeConfig(path: string, local: Uint8Array | null, desired: Uint8Array): Uint8Array {
-  if (!path.startsWith(".obsidian/") || !path.endsWith(".json")) return desired;
+  if (!isSharedConfigPath(path) || !path.endsWith(".json")) return desired;
   const incoming = JSON.parse(decoder.decode(desired)) as unknown;
-  if (path === ".obsidian/community-plugins.json" && Array.isArray(incoming) && incoming.some(isSelfPlugin)) throw new Error("REMOTE_CONFIG_CONTAINS_DEVICE_FIELDS");
+  if (path === COMMUNITY_PLUGINS_PATH && Array.isArray(incoming) && incoming.some(isSelfPlugin)) throw new Error("REMOTE_CONFIG_CONTAINS_DEVICE_FIELDS");
   if (canonical(project(incoming)) !== canonical(incoming)) throw new Error("REMOTE_CONFIG_CONTAINS_DEVICE_FIELDS");
   const own = local ? JSON.parse(decoder.decode(local)) as unknown : {};
   let result = merge(own, incoming);
-  if (path === ".obsidian/community-plugins.json" && Array.isArray(incoming) && Array.isArray(own) && own.some(isSelfPlugin)) {
+  if (path === COMMUNITY_PLUGINS_PATH && Array.isArray(incoming) && Array.isArray(own) && own.some(isSelfPlugin)) {
     const shared: unknown[] = incoming; const local: unknown[] = own;
     result = [...shared.filter(v => !isSelfPlugin(v)), ...local.filter(isSelfPlugin)];
   }

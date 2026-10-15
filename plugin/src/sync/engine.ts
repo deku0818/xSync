@@ -1,6 +1,7 @@
 import { timerHost, type TimerHandle } from "../runtime/timers";
 import { SYNC_FEATURES } from "../../../protocol/src/wire";
 import { sharedConfig, hasDeviceFields } from "./config-projection";
+import { isSharedConfigPath } from "./config-path";
 import type { Action, Commit, FileState, Revision, Snapshot } from "../../../protocol/src/types";
 import { canonical } from "../../../protocol/src/model";
 import { VaultCrypto, MAX_FILE_BYTES, fingerprint, randomId, type SessionMaterial } from "./crypto";
@@ -485,7 +486,7 @@ export class SyncEngine {
     if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.busy = true; this.errors = [];
     review = structuredClone(review); mergedBytes = mergedBytes?.slice();
     try {
-      if (mergedBytes && review.path.startsWith(".obsidian/") && review.path.endsWith(".json")) { if (hasDeviceFields(review.path, mergedBytes)) throw new Error("MERGE_CONTAINS_DEVICE_FIELDS"); mergedBytes = sharedConfig(review.path, mergedBytes); }
+      if (mergedBytes && isSharedConfigPath(review.path) && review.path.endsWith(".json")) { if (hasDeviceFields(review.path, mergedBytes)) throw new Error("MERGE_CONTAINS_DEVICE_FIELDS"); mergedBytes = sharedConfig(review.path, mergedBytes); }
       await this.lease();
       // Freeze displayed review; flush+receive updates the CURRENT set without silently changing the chosen snapshot.
       await this.capture(); await this.flush(); await this.receive();

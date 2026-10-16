@@ -24,6 +24,8 @@
 
 ## 架构与当前实现
 
+用户确认本次生产服务器使用 PostgreSQL，部署文档明确 SQLite 尚未实现，不新增虚假的 SQLite Compose。部署使用独立 `xsync-server` Compose 项目，服务端加入已有 Nginx 代理网络且启用 TLS，PG 仅在内部数据库网络，两者均不映射宿主端口。库初始化与同步密钥仍由所有者电脑生成；服务端私有运行配置可包含数据库 DSN，但不能包含同步密钥。原 CouchDB 数据保留，不进行自动迁移。
+
 服务端镜像与插件分开打包：Go 静态二进制、Linux amd64/arm64、非 root 用户；配置、同步密钥和数据不进入构建上下文。CI 完整验证通过后才允许 Docker Hub 上传；普通 push/PR 只验证，手动发布使用 edge/准确版本，正式 GitHub Release 更新版本与 latest。容器保持现有监听安全合同，Linux host 网络可复用宿主 loopback HTTPS 代理与 Docker PG；其他网络方式需 TLS 配置，不开放生产明文非 loopback。部署与凭据配置见 [DEPLOYMENT](DEPLOYMENT.md)、[RELEASING](RELEASING.md)。
 
 TypeScript 插件、IndexedDB/Dexie、本机加密暂存、独立协议、Go/pgx、Docker PostgreSQL 元数据与不可变密文对象。普通文件用 Vault API，隐藏配置用 Adapter 和实际 configDir；移动核心不依赖 Node/Electron。

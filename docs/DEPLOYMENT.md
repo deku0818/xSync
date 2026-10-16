@@ -1,6 +1,15 @@
 # 自建 xSync 服务
 
-本文是可执行的配置说明，不表示已替用户部署或完成生产验收。服务端单进程管理一个同步库；多实例事件通知和生产容量尚未验收。设备接入见[安装说明](SETUP.md)。
+本文是可复用的配置说明；实际部署状态保存在管理员私有运维记录中。服务运行不等于生产安全或真机同步验收。服务端单进程管理一个同步库；多实例事件通知和生产容量尚未验收。设备接入见[安装说明](SETUP.md)。
+
+## 数据库版本与部署入口
+
+| 数据库 | 当前支持 | 部署说明 |
+| --- | --- | --- |
+| PostgreSQL | 已实现；生产 Compose 使用 `17.11-bookworm`，开发基线 `17.11-alpine` | [完整 Compose 与 Nginx 部署](deployment/postgres.md) |
+| SQLite | 尚未实现，无可运行镜像/Compose 版本 | [范围与后续要求](deployment/sqlite.md) |
+
+已有 Docker Nginx 时，优先使用 [server/deploy/postgres/docker-compose.yaml](../server/deploy/postgres/docker-compose.yaml)：包含服务端和 PG，后端 TLS、独立数据库网络、持久目录及日志轮转；示例目录为 `/srv/xsync`，域名为 `sync.example.com`。下文保留源码进程/宿主代理的另一种配置方式。`server/compose.yaml` 只启动数据库；不要将两套同名 `xsync-server` Compose 项目同时运行。
 
 ## 数据与进程
 

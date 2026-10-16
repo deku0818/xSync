@@ -4,6 +4,8 @@
 
 ## 状态
 
+新增可复用的 PostgreSQL Compose、首次配置脚本与 Nginx 示例，位于 `server/deploy/`；说明见 [PostgreSQL 部署](deployment/postgres.md)与 [SQLite 状态](deployment/sqlite.md)。SQLite 尚未实现。公开文件仅使用示例域名、地址和通用路径，实际部署清单、服务器信息与凭据留在管理员私有环境。联合备份还原、生产安全审查与真机验收仍未完成。
+
 服务端 Docker Hub 构建入口已提交并推送（8703461）：`server/Dockerfile` 只打包 Go 服务，使用非 root 用户，配置/数据运行时挂载；`.github/workflows/dockerhub.yml` 支持手动 `edge`/当前版本和 GitHub Release published 触发，目标为 `ycw0818/xsync-server`。正式 Release 才更新 latest，手动补发旧版本不改旧 tag。上传前调用完整 check 工作流；常规 CI 增加 amd64/arm64 镜像入口检查，不上传。GitHub 的 DOCKERHUB_USERNAME、DOCKERHUB_IMAGE 和 Secret DOCKERHUB_TOKEN 已配置，维护步骤见 [RELEASING](RELEASING.md)。
 
 用户已授权提交、推送 CI 并补发 `0.1.1` 服务端镜像。[Docker Hub 0.1.1](https://hub.docker.com/r/ycw0818/xsync-server/tags?name=0.1.1) 已上传，包含 Linux amd64/arm64；镜像 index digest 为 `sha256:9d1b0d07ddfbbbb30b7862e38af240aec1470efde1c7d510696b1f054cdbdfff`，源码对应 87034614236f7d3b002da10772e9a94b52d8d417，服务端源码与原 0.1.1 tag 一致。此次手动发布不生成 latest，不改写插件 tag/Release 或其资产，不代表生产部署或真机验收。
@@ -43,11 +45,11 @@ Mac 上三个旧测试库入口、各自窗口状态文件和对应的三个同�
 
 ## 后续
 
-1. 0.1.0 xSync 新安装与普通库接入的 Mac/iPhone 真机复验；新保护记录包含令牌，旧移动验收不能代替本轮。新增正式部署或下一版本发布需另行授权；当前 0.1.0 已由用户发布。
+1. xSync 新安装与普通库接入的 Mac/iPhone 真机复验；新保护记录包含令牌，旧移动验收不能代替本轮。新增部署或下一版本发布需用户授权；实际部署状态保存在私有运维记录中。
 2. 数据库与密文对象联合备份、实际还原及旧设备重连核对。
 3. iPhone 传输中系统终止、实际 move 应用中断、低存储/大附件峰值内存、网络切换、锁屏 Keychain 实效与重启/迁移。
 4. Android、Windows/Linux 安全存储、物理双机、未知第三方私密字段、空目录/批量移动、高级附件/多头审阅、历史/GC 和安全审查。
 
 本轮已在真实 Go HTTP、Docker PG 上验证新设备双向同步、接入窗口、回执重试、令牌更换和撤销后重启；宿主测试覆盖无标记初始化、原身份恢复和安全存储/设置指针失败。默认、数据库/race 与原生 IndexedDB 恢复套件保留，不重建历史结果文档。安装、运维和发布说明见 [SETUP](SETUP.md)、[DEPLOYMENT](DEPLOYMENT.md)、[RELEASING](RELEASING.md)。
 
-100 MB 源文件仍整读；iOS 保护器依赖宿主内部桥接，须按版本验证。开发重建步骤见[电脑说明](testing/desktop.md)，测试边界见[流程](testing/DEVELOPMENT.md)。0.1.0 tag 保持在 74d1e0a，0.1.1 tag 为 755b7c7，不改写旧版本或其资产，不部署服务或操作真实笔记库。
+100 MB 源文件仍整读；iOS 保护器依赖宿主内部桥接，须按版本验证。开发重建步骤见[电脑说明](testing/desktop.md)，测试边界见[流程](testing/DEVELOPMENT.md)。0.1.0 tag 保持在 74d1e0a，0.1.1 tag 为 755b7c7，不改写旧版本或其资产，不操作用户真实笔记库。

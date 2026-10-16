@@ -1,0 +1,86 @@
+name: xsync-server
+
+services:
+  postgres:
+    image: postgres:17.11-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xsync
+      POSTGRES_DB: xsync
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - database
+    shm_size: 128mb
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U xsync -d xsync"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  server:
+    image: ${XSYNC_SERVER_IMAGE:-ycw0818/xsync-server:0.1.1@sha256:9d1b0d07ddfbbbb30b7862e38af240aec1470efde1c7d510696b1f054cdbdfff}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - --config
+      - /config/server.json
+      - --tls-cert
+      - /tls/fullchain.pem
+      - --tls-key
+      - /tls/privkey.pem
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+    volumes:
+      - type: bind
+        source: ./secrets/server.json
+        target: /config/server.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./secrets/tls
+        target: /tls
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./data/objects
+        target: /data/objects
+        bind:
+          create_host_path: false
+    networks:
+      database:
+      proxy:
+        aliases:
+          - xsync-server
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres-password.txt
+
+networks:
+  database:
+    internal: true
+  proxy:
+    external: true
+    name: ${XSYNC_PROXY_NETWORK:-xsync-proxy}

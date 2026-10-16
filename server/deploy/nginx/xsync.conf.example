@@ -1,0 +1,53 @@
+# Install inside an existing nginx http{} via conf.d; nginx and xSync share
+# XSYNC_PROXY_NETWORK. Keep the existing certificate renewal configuration.
+map $http_upgrade $xsync_connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen 80;
+    server_name sync.example.com;
+    return 308 https://sync.example.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name sync.example.com;
+    ssl_certificate /etc/nginx/ssl/sync.example.com/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/sync.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_tickets off;
+
+    # Transfers are chunked; the service limits each ciphertext object to 16 MiB.
+    client_max_body_size 17m;
+    access_log off;
+
+    # Resolve the current service address after a container is recreated.
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    set $xsync_backend xsync-server:8873;
+
+    location / {
+        proxy_pass https://$xsync_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $xsync_connection_upgrade;
+        proxy_ssl_server_name on;
+        proxy_ssl_name sync.example.com;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 3;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 120s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_redirect off;
+    }
+}

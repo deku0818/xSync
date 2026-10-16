@@ -23,7 +23,7 @@ Daily controls are pause and resume. A saved key can be reused by leaving the pa
 
 ## Platforms and current limits
 
-Version 0.1.1 is an initial release for independent test vaults. The target platforms are macOS and iOS, with a minimum host version of 1.14.5. Android secure storage is not implemented, and Windows/Linux have not completed physical-device validation. iOS secure storage uses an internal native host bridge and needs validation for each supported host version.
+Version 0.1.2 is an initial release for independent test vaults. The target platforms are macOS and iOS, with a minimum host version of 1.14.4. Android secure storage is not implemented, and Windows/Linux have not completed physical-device validation. iOS secure storage uses an internal native host bridge and needs validation for each supported host version.
 
 Foreground sync and reconciliation after returning from the background are supported; continuous locked-screen or background execution is not guaranteed. Source files are still read as whole files, even though transfers are chunked. New-device enrollment and protected credential changes still need fresh Mac/iPhone installation tests. Coordinated database/object backup restoration, key migration, and a production security review remain unfinished.
 
@@ -39,7 +39,7 @@ There is no analytics, advertising, or plugin self-updater. Credentials, device 
 
 个人多设备 Obsidian 同步插件与自建服务，目标是电脑与手机间的端到端加密整库同步。重叠修改展示差异，由用户明确选择版本、保留双方或手动合并。
 
-**当前版本为 0.1.1，插件 ID 为 `xsync`，已发布到 [Obsidian 社区目录](https://community.obsidian.md/plugins/xsync)。** 免费开源，需要自己的 HTTPS 同步服务器，当前界面为中文。已支持普通库初始化、设备接入/撤销和标准发布包；版本文件见 [Releases](https://github.com/deku0818/xSync/releases)。新接入流程仍需 Mac/iPhone 真机复验，联合备份还原与生产安全验收尚未完成，请先在独立测试库验证。
+**当前版本为 0.1.2，插件 ID 为 `xsync`，已发布到 [Obsidian 社区目录](https://community.obsidian.md/plugins/xsync)。** 免费开源，需要自己的 HTTPS 同步服务器，当前界面为中文。已支持普通库初始化、设备接入/撤销和标准发布包；版本文件见 [Releases](https://github.com/deku0818/xSync/releases)。新接入流程仍需 Mac/iPhone 真机复验，联合备份还原与生产安全验收尚未完成，请先在独立测试库验证。
 
 ## 当前实现
 
@@ -57,7 +57,7 @@ There is no analytics, advertising, or plugin self-updater. Credentials, device 
 
 先阅读[安装与接入](docs/SETUP.md)和[服务部署](docs/DEPLOYMENT.md)。`npm run server:init -- --out .local/xsync-owner` 在所有者电脑生成初始化文件，只把 `server.json` 送到服务器，`sync-key.txt` 留在自己的设备与离线备份中。
 
-在 Obsidian 的“设置 → 第三方插件 → 浏览”中搜索 **xSync**，或从[社区展示页](https://community.obsidian.md/plugins/xsync)点击 **Add to Obsidian**，安装并启用。手动安装可使用 GitHub Release 文件；开发构建运行 `npm run package:plugin`，将生成的 `xsync/` 文件夹放到独立测试库的 `<配置目录>/plugins/`。填写名称、HTTPS 地址、同步密钥，保存并测试后前台自动同步。后续新增设备需管理者临时开放接入。最低宿主版本暂设为 1.14.5；Android 尚无安全存储适配，Windows/Linux 未完成真机验收。
+在 Obsidian 的“设置 → 第三方插件 → 浏览”中搜索 **xSync**，或从[社区展示页](https://community.obsidian.md/plugins/xsync)点击 **Add to Obsidian**，安装并启用。手动安装可使用 GitHub Release 文件；开发构建运行 `npm run package:plugin`，将生成的 `xsync/` 文件夹放到独立测试库的 `<配置目录>/plugins/`。填写名称、HTTPS 地址、同步密钥，保存并测试后前台自动同步。后续新增设备需管理者临时开放接入。最低宿主版本暂设为 1.14.4；Android 尚无安全存储适配，Windows/Linux 未完成真机验收。
 
 插件会连接用户配置的自建服务，上传文件/路径/配置的密文、文件身份、长度和同步版本元数据；服务端可见设备名称与授权摘要。没有分析统计、广告或插件自动更新器。暂停会保留本机配置；凭据、身份、布局、核心插件启用状态及 xSync/旧开发插件自身固定排除。其他第三方配置中的未知秘密字段仍可能未被识别，应使用本机排除规则。网络和本机存储边界见[安装说明](docs/SETUP.md)。
 

@@ -1,8 +1,10 @@
 # 当前交接
 
-项目 /Users/y-pc/Cocoon/xSync，源码及 GitHub 已发布版本 **0.1.1**，正式名称 **xSync**，ID **xsync**。不修改 PalletTruck3D，不操作用户真实笔记库。
+项目 /Users/y-pc/Cocoon/xSync，源码 **0.1.2**，GitHub/社区已发布版本 **0.1.1**，正式名称 **xSync**，ID **xsync**。不修改 PalletTruck3D，不操作用户真实笔记库。
 
 ## 状态
+
+工作区已修正最低宿主版本为 1.14.4：此前 0.1.1 错设为尚不可用的 1.14.5，导致正式 Obsidian 1.14.4 社区安装提示 No appropriate version found。项目 SDK 本身是 1.14.4，设置定义 API 已包含在其中。打包增加最低宿主不得高于所用 SDK 的检查。用户已授权发布 0.1.2，此兼容性修复待准确提交的 CI、官方预审、来源证明核验后发布；旧 0.1.1 tag/Release 与其来源证明文件、版本原映射保持不动，新加 0.1.2 → 1.14.4 映射。不将本地构建当成社区已可安装。
 
 新增可复用的 PostgreSQL Compose、首次配置脚本与 Nginx 示例，位于 `server/deploy/`；说明见 [PostgreSQL 部署](deployment/postgres.md)与 [SQLite 状态](deployment/sqlite.md)。SQLite 尚未实现。公开文件仅使用示例域名、地址和通用路径，实际部署清单、服务器信息与凭据留在管理员私有环境。联合备份还原、生产安全审查与真机验收仍未完成。
 

@@ -4,6 +4,8 @@
 
 ## 状态
 
+新增服务端 Docker Hub 构建入口：`server/Dockerfile` 只打包 Go 服务，使用非 root 用户，配置/数据运行时挂载；`.github/workflows/dockerhub.yml` 支持手动 `edge`/当前版本和 GitHub Release published 触发，目标通过 Actions variables 配置为 `ycw0818/xsync-server`。正式 Release 才更新 latest，手动补发旧版本不改旧 tag。上传前调用完整 check 工作流；常规 CI 增加 amd64/arm64 镜像入口检查，不上传。GitHub 需配置 DOCKERHUB_USERNAME、DOCKERHUB_IMAGE 和 Secret DOCKERHUB_TOKEN，步骤见 [RELEASING](RELEASING.md)。新增源码不表示镜像已上传、凭据已配置或生产部署已验收。
+
 用户已授权修复可修审查项、补充误报说明，官方预审无阻断错误后发布新版本。0.1.1 已接声明式设置搜索，保留原表单和清理生命周期；CSS 移除 !important；配置协议命名空间集中定义但原值保持不变，仍按 Vault.configDir 映射；Actions 增加三个安装文件的构建来源证明。社区 Release 仅上传三个安装文件，许可嵌入 main.js。误报与必需能力说明见 [REVIEW-NOTES](REVIEW-NOTES.md)。
 
 0.1.1 tag 对应 755b7c7；完整 CI（38755469857）与来源证明打包（38755911905）均成功，95 个默认测试、61 个集成与 17 个原生 IndexedDB 恢复测试通过，Go 合同/race/vet 通过。隔离浏览器确认隐藏面板、页签颜色及卡片高度。官方对该提交的预审 Completed，无阻断错误，源码/CSS 警告从 31 条降为 1 条协议常量误报。GitHub 0.1.1 已发布；三份上传文件摘要与已核验来源证明的 CI 产物一致，目录发布后审查 Completed，无阻断错误；main.js/styles.css 来源证明与逐字节构建复现均 Pass。公开版本为 0.1.1，Review 从 Caution（36 项）升至 Satisfactory（3 项）：1 条协议路径常量误报，加必要整库枚举和 RE2JS 方法名误报。新的 iPhone 真机验收未执行，不把这些检查当成真机证据。

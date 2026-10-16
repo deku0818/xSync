@@ -24,6 +24,8 @@
 
 ## 架构与当前实现
 
+服务端镜像与插件分开打包：Go 静态二进制、Linux amd64/arm64、非 root 用户；配置、同步密钥和数据不进入构建上下文。CI 完整验证通过后才允许 Docker Hub 上传；普通 push/PR 只验证，手动发布使用 edge/准确版本，正式 GitHub Release 更新版本与 latest。容器保持现有监听安全合同，Linux host 网络可复用宿主 loopback HTTPS 代理与 Docker PG；其他网络方式需 TLS 配置，不开放生产明文非 loopback。部署与凭据配置见 [DEPLOYMENT](DEPLOYMENT.md)、[RELEASING](RELEASING.md)。
+
 TypeScript 插件、IndexedDB/Dexie、本机加密暂存、独立协议、Go/pgx、Docker PostgreSQL 元数据与不可变密文对象。普通文件用 Vault API，隐藏配置用 Adapter 和实际 configDir；移动核心不依赖 Node/Electron。
 
 文件身份、位置与内容版本分离；编辑只基于实际展示的准确修订。未知来源的同路径内容保留独立根，不借用远端版本当祖先。明确拒绝的初始化 create 先归档原 intent/identity/journal 再核对，复杂或未知提交不猜测修复。

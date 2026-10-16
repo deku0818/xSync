@@ -28,6 +28,41 @@ cd server
 go build -o ../dist/xsync-server ./cmd/obsidiansync
 ```
 
+## 使用服务端镜像
+
+服务端镜像构建/上传流程和 Docker Hub 配置见[发布说明](RELEASING.md#服务端-docker-hub-镜像)。目标为 `ycw0818/xsync-server`，支持 Linux amd64/arm64；首次上传成功前镜像可能尚不可拉取。本地也可从根目录执行 `docker build -f server/Dockerfile -t xsync-server:local .`，不需要上传。根目录 `.dockerignore` 只允许服务端 Go/SQL 源码、模块锁定文件、Dockerfile 和项目许可进入构建上下文。
+
+镜像使用非 root 用户 `65532:65532`，默认执行 `xsync-server --config /config/server.json`。配置与数据在运行时挂载，容器内对象路径应设置为 `/data/objects`。下面是 **Linux Docker Engine** 配合宿主 HTTPS 代理和前述 Docker PG 的运行方式；使用 host 网络，使原有 loopback HTTP/TLS 约束和 `127.0.0.1:55439` 数据库地址保持有效。此示例不适用于默认网络配置的 Docker Desktop，也不能把它改成 bridge 加 `-p` 后仍期待容器 loopback 可访问。
+
+1. 将所有者电脑生成的 `server.json` 放到 `/srv/xsync/server.json`，设 `listen` 为 `127.0.0.1:8873`、`objectDir` 为 `/data/objects`，其余身份/密钥包字段保持原值。
+2. 创建私有 `/srv/xsync/server.env`，只配置 `XSYNC_DATABASE_URL=postgres://xsync:<password>@127.0.0.1:55439/xsync?sslmode=disable`，文件权限设为 `0600`。密码使用前面生成的十六进制值；同步密钥不要复制到服务器。
+3. 为容器用户准备对象目录及配置读取权限，再运行已发布的确定版本：
+
+```sh
+sudo mkdir -p /srv/xsync/objects
+sudo chown 65532:65532 /srv/xsync/objects /srv/xsync/server.json
+sudo chmod 700 /srv/xsync/objects
+sudo chmod 400 /srv/xsync/server.json
+docker run -d --name xsync-server --restart unless-stopped \
+  --network host --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --env-file /srv/xsync/server.env \
+  --mount type=bind,src=/srv/xsync/server.json,dst=/config/server.json,readonly \
+  --mount type=bind,src=/srv/xsync/objects,dst=/data/objects \
+  ycw0818/xsync-server:0.1.1
+```
+
+镜像标签以实际成功上传的版本为准，也可改用固定 digest。PostgreSQL 仍由 `server/compose.yaml` 独立运行，不包含在镜像内。对象目录和 PG volume 均需持久化与联合备份；删除/重建容器不能删除它们。宿主 HTTPS 代理仍须按下一节转发 WebSocket。若选择服务直接提供 TLS，需额外挂载可由 UID 65532 读取的证书与私钥，并显式传入 `--config`、`--tls-cert`、`--tls-key`；不放宽监听校验。
+
+本机管理命令通过容器内同一个二进制执行，例如：
+
+```sh
+docker exec xsync-server /usr/local/bin/xsync-server --config /config/server.json --list-devices
+docker exec xsync-server /usr/local/bin/xsync-server --config /config/server.json --enroll-for 10m
+```
+
+容器没有 shell，管理命令继承创建容器时的环境。运行说明尚未代替实际生产部署、备份还原或真机验收。
+
 ## HTTPS
 
 可使用已有反向代理：保持 `listen` 为 `127.0.0.1:8873`，服务只接受本机 HTTP，由代理提供有效的公网 HTTPS。代理必须转发 `/events` WebSocket 升级，以及其他原样路径；不得记录 Authorization 头或请求体。设置合适的请求速率、连接数和磁盘配额，单个密文对象请求上限为 16 MiB。客户端地址填 `https://sync.example.com`，不带路径、用户信息或查询参数。

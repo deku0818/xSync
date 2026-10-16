@@ -1,0 +1,14 @@
+# Allow only the server build inputs; credentials and local data stay outside.
+**
+!LICENSE
+!server/
+!server/Dockerfile
+!server/go.mod
+!server/go.sum
+!server/cmd/
+!server/cmd/**/
+!server/cmd/**/*.go
+!server/internal/
+!server/internal/**/
+!server/internal/**/*.go
+!server/internal/**/*.sql

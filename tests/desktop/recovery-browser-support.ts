@@ -86,20 +86,24 @@ export class NativeRecoveryBrowser {
   }
   async start(offset: number): Promise<void> {
     const profile = join(this.fixture.root, "chrome-profile"); await rm(join(profile, "DevToolsActivePort"), { force: true });
-    this.process = spawn(this.executable, ["--headless", `--user-data-dir=${profile}`, "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-extensions", "about:blank"], { stdio: "ignore" });
-    const deadline = Date.now() + 15000; let debugOrigin = "";
+    this.process = spawn(this.executable, ["--headless", `--user-data-dir=${profile}`, "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-extensions", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+    let browserLogs = "";
+    this.process.stderr?.on("data", chunk => { browserLogs = (browserLogs + String(chunk)).slice(-4000); });
+    const startDeadline = Date.now() + 30000; let debugOrigin = "";
     for (;;) {
-      if (this.process.exitCode !== null) throw new Error("TEST_CHROME_EXITED");
+      if (this.process.exitCode !== null) throw new Error(`TEST_CHROME_EXITED: ${browserLogs}`);
       try { const port = (await readFile(join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]; debugOrigin = `http://127.0.0.1:${port}`; await fetch(`${debugOrigin}/json/version`); break; }
-      catch { if (Date.now() > deadline) throw new Error("TEST_CHROME_START_TIMEOUT"); await new Promise(resolve => setTimeout(resolve, 25)); }
+      catch { if (Date.now() > startDeadline) throw new Error(`TEST_CHROME_START_TIMEOUT: ${browserLogs}`); await new Promise(resolve => setTimeout(resolve, 25)); }
     }
     const pages = await (await fetch(`${debugOrigin}/json/list`)).json() as { type: string; webSocketDebuggerUrl: string }[];
     const socket = new WebSocket(pages.find(p => p.type === "page")!.webSocketDebuggerUrl);
     await new Promise<void>((resolve, reject) => { socket.onopen = () => resolve(); socket.onerror = () => reject(new Error("TEST_CDP_FAILED")); });
     this.protocol = new Protocol(socket); await this.protocol.call("Page.enable"); await this.protocol.call("Page.navigate", { url: this.origin });
+    // Page loading gets its own budget after Chrome and CDP are ready.
+    const pageDeadline = Date.now() + 15000;
     for (;;) {
       if (await this.protocol.evaluate("typeof recovery !== 'undefined'")) break;
-      if (Date.now() > deadline) throw new Error("TEST_PAGE_LOAD_TIMEOUT"); await new Promise(resolve => setTimeout(resolve, 25));
+      if (Date.now() > pageDeadline) throw new Error(`TEST_PAGE_LOAD_TIMEOUT: ${browserLogs}`); await new Promise(resolve => setTimeout(resolve, 25));
     }
     await this.protocol.evaluate(`recovery.setup(${offset})`);
   }

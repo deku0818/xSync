@@ -14,7 +14,7 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_BROWSER_TEST !== "1")("native IndexedD
     if (!existsSync(chrome)) throw new Error("Set OBSIDIAN_SYNC_CHROME to an installed Chrome/Chromium executable");
     fixture = new RecoveryFixture(); await fixture.open(); await fixture.client(0);
     browser = new NativeRecoveryBrowser(fixture, chrome); await browser.open();
-  }, 30000);
+  }, 60000);
   afterEach(async () => { await browser?.close(); await fixture?.close(); }, 15000);
   it.each(["before-snapshot-commit", "after-snapshot-commit", "before-outbox-commit", "after-outbox-commit", "after-object-upload", "after-remote-commit", "after-outbox-ack"])("survives an actual client process kill at %s", async point => {
     await browser.files.edit("note.md", "native outbound crash proof"); await browser.crash(point); await browser.start(120000);

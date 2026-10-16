@@ -55,3 +55,9 @@ GitHub Actions 的常规检查验证类型、自动测试、构建、发布包�
 界面模板通过 Obsidian 的 `sanitizeHTMLToDom` 挂载，图标使用受清洗支持的内联 SVG 图形；用户和服务器数据仍只写入 textContent/value。宿主和共享核心通过窗口定时器适配层兼容浏览器与无 window 的 Worker/Node 测试。`.obsidian` 在协议核心中是固定逻辑命名空间，物理配置目录由 VaultPort 按 Vault.configDir 映射；不得为了消除规则警告更改密文路径身份或同步格式。预审结果只保存在忽略目录，不提交历史报告。
 
 后续仍需完成 0.1.0 普通库接入的 Mac/iPhone 安装与恢复验证，复核网络/隐私披露、安全存储和内部 iOS 桥接兼容性，并保持初始版本限制披露。联合备份还原、安全审查和其他平台尚未完成，不宣传已通过。插件只连接用户配置的自建同步服务，无分析统计、广告或自动更新器。
+
+## 0.1.2 发布状态
+
+GitHub [0.1.2 Release](https://github.com/deku0818/xSync/releases/tag/0.1.2) 已发布，tag 为 1ba68ee，最低宿主为 1.14.4。三个文件原样来自 [Actions 打包](https://github.com/deku0818/xSync/actions/runs/38861042835)，摘要、准确来源提交、签名工作流与本地逐字节构建均已核对；[完整 CI](https://github.com/deku0818/xSync/actions/runs/38861035307)通过。旧 0.1.1 的安装资产和最低宿主历史映射保持不变。
+
+本次官方预览扫描长时间 Pending 且阻止新预览，未取得完成结论。插件与服务端运行源码相对已审 0.1.1 无变化，修复涉及宿主版本元数据、打包检查和测试启动计时；按用户明确授权先发布已核验的 GitHub Release，再用官方 Check for new releases 入口触发正式扫描。目录已发现 0.1.2，当前扫描 Pending、展示版本仍为 0.1.1，不能据此报告社区安装已恢复。

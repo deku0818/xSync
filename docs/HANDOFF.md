@@ -1,10 +1,10 @@
 # 当前交接
 
-项目 /Users/y-pc/Cocoon/xSync，源码 **0.1.2**，GitHub/社区已发布版本 **0.1.1**，正式名称 **xSync**，ID **xsync**。不修改 PalletTruck3D，不操作用户真实笔记库。
+项目 /Users/y-pc/Cocoon/xSync，源码及 GitHub 已发布版本 **0.1.2**，社区当前展示 **0.1.1**（新 Release 扫描 Pending），正式名称 **xSync**，ID **xsync**。不修改 PalletTruck3D，不操作用户真实笔记库。
 
 ## 状态
 
-工作区已修正最低宿主版本为 1.14.4：此前 0.1.1 错设为尚不可用的 1.14.5，导致正式 Obsidian 1.14.4 社区安装提示 No appropriate version found。项目 SDK 本身是 1.14.4，设置定义 API 已包含在其中。打包增加最低宿主不得高于所用 SDK 的检查。用户已授权发布 0.1.2，此兼容性修复待准确提交的 CI、官方预审、来源证明核验后发布；旧 0.1.1 tag/Release 与其来源证明文件、版本原映射保持不动，新加 0.1.2 → 1.14.4 映射。不将本地构建当成社区已可安装。
+工作区已修正最低宿主版本为 1.14.4：此前 0.1.1 错设为尚不可用的 1.14.5，导致正式 Obsidian 1.14.4 社区安装提示 No appropriate version found。项目 SDK 本身是 1.14.4，设置定义 API 已包含在其中。打包增加最低宿主不得高于所用 SDK 的检查。用户已授权发布 0.1.2，准确提交 1ba68ee 已通过完整 CI 与三份文件来源证明核验，GitHub Release 已发布；旧 0.1.1 tag/Release 与其来源证明文件、版本原映射保持不动，新加 0.1.2 → 1.14.4 映射。首次 CI 暴露 Chrome 冷启动与页面加载共享期限，已拆分计时、补有界诊断后完整通过，故障注入和恢复断言未变。官方 ee2d9af 预览长时间 Pending 并阻止新预览；本次运行源码与已审 0.1.1 完全一致，按用户发布授权先发布已核验 GitHub 资产，再通过 Check for new releases 排队正式扫描，当前仍 Pending，未宣称目录已更新或扫描已通过。
 
 新增可复用的 PostgreSQL Compose、首次配置脚本与 Nginx 示例，位于 `server/deploy/`；说明见 [PostgreSQL 部署](deployment/postgres.md)与 [SQLite 状态](deployment/sqlite.md)。SQLite 尚未实现。公开文件仅使用示例域名、地址和通用路径，实际部署清单、服务器信息与凭据留在管理员私有环境。联合备份还原、生产安全审查与真机验收仍未完成。
 
@@ -54,4 +54,4 @@ Mac 上三个旧测试库入口、各自窗口状态文件和对应的三个同�
 
 本轮已在真实 Go HTTP、Docker PG 上验证新设备双向同步、接入窗口、回执重试、令牌更换和撤销后重启；宿主测试覆盖无标记初始化、原身份恢复和安全存储/设置指针失败。默认、数据库/race 与原生 IndexedDB 恢复套件保留，不重建历史结果文档。安装、运维和发布说明见 [SETUP](SETUP.md)、[DEPLOYMENT](DEPLOYMENT.md)、[RELEASING](RELEASING.md)。
 
-100 MB 源文件仍整读；iOS 保护器依赖宿主内部桥接，须按版本验证。开发重建步骤见[电脑说明](testing/desktop.md)，测试边界见[流程](testing/DEVELOPMENT.md)。0.1.0 tag 保持在 74d1e0a，0.1.1 tag 为 755b7c7，不改写旧版本或其资产，不操作用户真实笔记库。
+100 MB 源文件仍整读；iOS 保护器依赖宿主内部桥接，须按版本验证。开发重建步骤见[电脑说明](testing/desktop.md)，测试边界见[流程](testing/DEVELOPMENT.md)。0.1.0 tag 保持在 74d1e0a，0.1.1 tag 为 755b7c7，0.1.2 tag 为 1ba68ee，不改写旧版本或其资产，不操作用户真实笔记库。

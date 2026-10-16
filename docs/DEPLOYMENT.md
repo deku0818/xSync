@@ -30,7 +30,7 @@ go build -o ../dist/xsync-server ./cmd/obsidiansync
 
 ## 使用服务端镜像
 
-服务端镜像构建/上传流程和 Docker Hub 配置见[发布说明](RELEASING.md#服务端-docker-hub-镜像)。目标为 `ycw0818/xsync-server`，支持 Linux amd64/arm64；首次上传成功前镜像可能尚不可拉取。本地也可从根目录执行 `docker build -f server/Dockerfile -t xsync-server:local .`，不需要上传。根目录 `.dockerignore` 只允许服务端 Go/SQL 源码、模块锁定文件、Dockerfile 和项目许可进入构建上下文。
+服务端镜像构建/上传流程和 Docker Hub 配置见[发布说明](RELEASING.md#服务端-docker-hub-镜像)。[ycw0818/xsync-server:0.1.1](https://hub.docker.com/r/ycw0818/xsync-server/tags?name=0.1.1) 已发布，支持 Linux amd64/arm64；此次手动补发不生成 latest，请使用明确版本或 digest。本地也可从根目录执行 `docker build -f server/Dockerfile -t xsync-server:local .`，不需要上传。根目录 `.dockerignore` 只允许服务端 Go/SQL 源码、模块锁定文件、Dockerfile 和项目许可进入构建上下文。
 
 镜像使用非 root 用户 `65532:65532`，默认执行 `xsync-server --config /config/server.json`。配置与数据在运行时挂载，容器内对象路径应设置为 `/data/objects`。下面是 **Linux Docker Engine** 配合宿主 HTTPS 代理和前述 Docker PG 的运行方式；使用 host 网络，使原有 loopback HTTP/TLS 约束和 `127.0.0.1:55439` 数据库地址保持有效。此示例不适用于默认网络配置的 Docker Desktop，也不能把它改成 bridge 加 `-p` 后仍期待容器 loopback 可访问。
 

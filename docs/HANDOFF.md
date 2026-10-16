@@ -4,7 +4,9 @@
 
 ## 状态
 
-新增服务端 Docker Hub 构建入口：`server/Dockerfile` 只打包 Go 服务，使用非 root 用户，配置/数据运行时挂载；`.github/workflows/dockerhub.yml` 支持手动 `edge`/当前版本和 GitHub Release published 触发，目标通过 Actions variables 配置为 `ycw0818/xsync-server`。正式 Release 才更新 latest，手动补发旧版本不改旧 tag。上传前调用完整 check 工作流；常规 CI 增加 amd64/arm64 镜像入口检查，不上传。GitHub 需配置 DOCKERHUB_USERNAME、DOCKERHUB_IMAGE 和 Secret DOCKERHUB_TOKEN，步骤见 [RELEASING](RELEASING.md)。新增源码不表示镜像已上传、凭据已配置或生产部署已验收。
+服务端 Docker Hub 构建入口已提交并推送（8703461）：`server/Dockerfile` 只打包 Go 服务，使用非 root 用户，配置/数据运行时挂载；`.github/workflows/dockerhub.yml` 支持手动 `edge`/当前版本和 GitHub Release published 触发，目标为 `ycw0818/xsync-server`。正式 Release 才更新 latest，手动补发旧版本不改旧 tag。上传前调用完整 check 工作流；常规 CI 增加 amd64/arm64 镜像入口检查，不上传。GitHub 的 DOCKERHUB_USERNAME、DOCKERHUB_IMAGE 和 Secret DOCKERHUB_TOKEN 已配置，维护步骤见 [RELEASING](RELEASING.md)。
+
+用户已授权提交、推送 CI 并补发 `0.1.1` 服务端镜像。[Docker Hub 0.1.1](https://hub.docker.com/r/ycw0818/xsync-server/tags?name=0.1.1) 已上传，包含 Linux amd64/arm64；镜像 index digest 为 `sha256:9d1b0d07ddfbbbb30b7862e38af240aec1470efde1c7d510696b1f054cdbdfff`，源码对应 87034614236f7d3b002da10772e9a94b52d8d417，服务端源码与原 0.1.1 tag 一致。此次手动发布不生成 latest，不改写插件 tag/Release 或其资产，不代表生产部署或真机验收。
 
 用户已授权修复可修审查项、补充误报说明，官方预审无阻断错误后发布新版本。0.1.1 已接声明式设置搜索，保留原表单和清理生命周期；CSS 移除 !important；配置协议命名空间集中定义但原值保持不变，仍按 Vault.configDir 映射；Actions 增加三个安装文件的构建来源证明。社区 Release 仅上传三个安装文件，许可嵌入 main.js。误报与必需能力说明见 [REVIEW-NOTES](REVIEW-NOTES.md)。
 

@@ -14,6 +14,8 @@ export interface Conflict { id: string; path: string; heads: string[]; reason: s
 export interface ApplyTask {
   id: string; sourcePath: string; targetPath: string; oldFingerprint: string | null; desiredFingerprint: string;
   revision: string; location: FileState["location"]; deleted: boolean; stage: string; backup?: string; size?: number;
+  /** Only explicit false proves this journal has never entered a filesystem mutation. Older rows are unknown. */
+  mutationStarted?: boolean;
 }
 export interface SkippedFile { id: string; path: string; reason: string }
 export interface Reconciliation {

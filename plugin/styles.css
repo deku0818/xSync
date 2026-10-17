@@ -498,3 +498,48 @@
 .oss-app.oss-app .hidden,.oss-app.oss-app [hidden]{display:none}
 
 .oss-app .tabs button.tab,.oss-app .tabs button.tab:hover{background:transparent}
+
+/* Quiet daily sync: compact status on demand, decisions only for conflicting contents. */
+.oss-status-bar { cursor: pointer; }
+.oss-status-bar[data-state="conflict"], .oss-status-bar[data-state="attention"] { color: var(--text-warning); }
+.oss-status-bar[data-state="syncing"] { color: var(--text-accent); }
+.oss-overview-host { width: min(360px, 94vw); padding: 20px; }
+.oss-status-container .modal-bg { background: transparent; }
+.oss-status-container .oss-overview-host { position: fixed; right: var(--oss-status-right, 12px); bottom: var(--oss-status-bottom, 36px); left: auto; margin: 0; max-height: min(560px, 88vh); overflow: auto; }
+.oss-app .quiet-status-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 17px; }
+.oss-app .quiet-status-head h1 { font-size: 15px; }
+.oss-app .quiet-status-head span { font-size: 10px; color: var(--muted); }
+.oss-app .quiet-status-summary { display: flex; align-items: center; gap: 8px; }
+.oss-app .quiet-status-summary h2 { font-size: 14px; }
+.oss-app .quiet-status-summary svg { color: var(--accent); }
+.oss-app[data-state="complete"] .quiet-status-summary svg { color: var(--green); }
+.oss-app[data-state="attention"] .quiet-status-summary svg, .oss-app[data-state="conflict"] .quiet-status-summary svg { color: var(--amber); }
+.oss-app .quiet-status-copy { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.8; }
+.oss-app .quiet-status-actions { display: flex; justify-content: space-between; gap: 10px; border-top: 1px solid var(--line); margin-top: 18px; padding-top: 10px; }
+.oss-app .quiet-status-actions button { font-size: 11px; padding: 4px 5px; }
+.oss-app .quiet-conflict-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; }
+.oss-app .quiet-conflict-row span { font-size: 11px; overflow-wrap: anywhere; min-width: 0; }
+.oss-app .quiet-conflict-row button { flex-shrink: 0; font-size: 11px; }
+.oss-app .quiet-diagnostics { font-size: 11px; color: var(--muted); margin-top: 12px; }
+.oss-app .quiet-diagnostics p { margin-top: 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.oss-app [data-ui="retry"] { margin-top: 12px; width: 100%; }
+.oss-app .quiet-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.oss-app .quiet-choices button { white-space: normal; }
+.oss-app .quiet-choices button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--tint); }
+.oss-app .quiet-choice-summary { font-size: 11px; color: var(--muted); margin: 10px 0; min-height: 32px; overflow-wrap: anywhere; }
+.oss-app .version-head small { font-size: 10px; color: var(--muted); }
+.oss-app [data-ui="both-detail"] { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+.oss-app [data-ui="both-detail"] .inline-label { margin-top: 10px; }
+.oss-app [data-ui="manual-merge"] { font-size: 11px; padding: 3px 0; }
+@media (max-width: 600px) { .oss-app .quiet-choices { grid-template-columns: 1fr; } }
+.oss-status-container .modal-bg { backdrop-filter: none; }
+.oss-overview-host .modal-close-button { display: none; }
+.oss-app .quiet-status-head span { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oss-app .quiet-status-head button { flex-shrink: 0; }
+.oss-review-host { width: min(850px, 95vw); }
+.oss-app h3.decision-heading { font-size: 13px; font-weight: 550; margin-top: 18px; }
+.oss-review-host .code-pane { height: 200px; }
+@media (max-width: 600px) { .oss-review-host .code-pane { height: 160px; } }
+.oss-overview-host, .oss-review-host { box-sizing: border-box; }
+.oss-sync-ribbon { position: relative; }
+.oss-sync-ribbon[data-state="conflict"]::after { content: attr(data-count); position: absolute; top: 0; right: 0; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: var(--text-warning); color: var(--background-primary); font-size: 9px; line-height: 13px; text-align: center; }

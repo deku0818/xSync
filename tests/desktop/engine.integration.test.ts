@@ -268,7 +268,7 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("two clients + a
       };
       const vault = { configDir: ".custom-config", adapter, getFolderByPath: (p: string) => { try { return statSync(join(root, p)).isDirectory() ? { path: p } : null; } catch { return null; } }, createFolder: async (p: string) => { await adapter.mkdir(p); return { path: p }; }, getFiles: () => walk(root), getFileByPath: (p: string) => { try { const st = statSync(join(root, p)); return st.isFile() ? { path: p, stat: { size: st.size } } : null; } catch { return null; } },
         readBinary: (f: { path: string }) => adapter.readBinary(f.path), createBinary: (p: string, bytes: ArrayBuffer) => adapter.writeBinary(p, bytes), modifyBinary: (f: { path: string }, bytes: ArrayBuffer) => adapter.writeBinary(f.path, bytes), process: (f: { path: string }, fn: (v: string) => string) => adapter.process(f.path, fn), rename: (f: { path: string }, p: string) => adapter.rename(f.path, p), trash: (f: { path: string }) => adapter.trashLocal(f.path) };
-      return { vault } as unknown as App;
+      return { vault, workspace: { getLeavesOfType: () => [] } } as unknown as App;
     };
     const dirs = [join(root, "config-A"), join(root, "config-B")];
     for (const [i,dir] of dirs.entries()) { await mkdir(join(dir, ".custom-config/obsidian-sync-local"), { recursive: true }); await mkdir(join(dir, ".custom-config/themes/Demo"), { recursive: true }); await mkdir(join(dir, ".custom-config/plugins/example"), { recursive: true });

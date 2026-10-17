@@ -4,7 +4,7 @@ import { sharedConfig, hasDeviceFields } from "./config-projection";
 import { isSharedConfigPath } from "./config-path";
 import type { Action, Commit, FileState, Revision, Snapshot } from "../../../protocol/src/types";
 import { canonical } from "../../../protocol/src/model";
-import { VaultCrypto, MAX_FILE_BYTES, fingerprint, randomId, type SessionMaterial } from "./crypto";
+import { VaultCrypto, MAX_FILE_BYTES, bytesEqual, fingerprint, randomId, type SessionMaterial } from "./crypto";
 import { SyncDB, type ApplyTask, type Inbox, type LocalFile, type Outbox } from "./store";
 import { isAncestor, project } from "./projection";
 import { RemoteError, Transport } from "./transport";
@@ -14,12 +14,15 @@ import { CHUNK_BYTES, SyncPolicy, fixedExclusion } from "./policy";
 import { cleanupLocalData, type StageCleanupPort } from "./local-cleanup";
 
 export interface FilePort extends StageCleanupPort {
+  /** Host adapters flush pending editor buffers before reading saved file snapshots. */
+  flushEdits?(path: string): Promise<void>;
   list(): Promise<string[]>;
   stat?(path: string): Promise<{ size: number } | null>;
   read(path: string): Promise<Uint8Array | null>;
-  /** Create when expected=null; otherwise guard exact expected bytes. Text uses Vault.process. */
+  /** Create when expected=null; otherwise guard exact expected bytes. LOCAL_CHANGED_DURING_APPLY means no mutation occurred. */
   write(path: string, desired: Uint8Array, expected: Uint8Array | null): Promise<void>;
   rename(from: string, to: string, expected: Uint8Array): Promise<void>;
+  /** Guard the exact bytes; LOCAL_CHANGED_DURING_APPLY must reject before deletion. */
   remove(path: string, expected: Uint8Array): Promise<void>;
   stageWrite(id: string, ciphertext: Uint8Array): Promise<void>;
   stageRead(id: string): Promise<Uint8Array>;
@@ -219,6 +222,7 @@ export class SyncEngine {
     const locals = await this.db.localFiles.toArray(); const byPath = new Map(locals.map(f => [f.path, f]));
     for (const path of paths) {
       try {
+        await this.files.flushEdits?.(path);
         const stat = await this.files.stat?.(path);
         const reason = this.policy.reason(path, stat?.size); if (reason) { await this.skip(path, reason); continue; }
         this.crypto().pathKey(path); const bytes = await this.files.read(path);
@@ -231,7 +235,7 @@ export class SyncEngine {
     for (const f of locals) if (!set.has(f.path) && !f.deleted) {
       const reason = this.policy.reason(f.path); if (reason) { await this.skip(f.path, reason); continue; }
       // A second successful absence check is required, never an I/O exception.
-      try { if (await this.files.read(f.path) === null) await this.captureOne(f.path, null, f); }
+      try { await this.files.flushEdits?.(f.path); if (await this.files.read(f.path) === null) await this.captureOne(f.path, null, f); }
       catch (error) { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
     }
   }
@@ -383,6 +387,7 @@ export class SyncEngine {
     await this.metadata().ensureBase(task.revision);
     // Cleanup may release the only recovery snapshots after acknowledgement. Verify the actual result
     // even when a host write returned successfully (a torn write need not reject its promise).
+    await this.files.flushEdits?.(task.deleted ? task.sourcePath : task.targetPath);
     const result = await this.files.read(task.deleted ? task.sourcePath : task.targetPath);
     if (task.deleted ? result !== null : result === null || await fingerprint(result) !== task.desiredFingerprint) {
       throw new Error("APPLY_VERIFY_FAILED");
@@ -401,6 +406,12 @@ export class SyncEngine {
     });
     this.fault?.("after-apply-ack");
   }
+  private async retireUnappliedTask(task: ApplyTask): Promise<void> {
+    await this.db.transaction("rw", [this.db.leases, this.db.applyTasks], async () => {
+      await this.checkLease();
+      if ((await this.db.applyTasks.get(task.id))?.stage === task.stage) await this.db.applyTasks.delete(task.id);
+    });
+  }
   private async applyTask(task: ApplyTask): Promise<boolean> {
     await this.checkLease();
     const reason = this.policy.reason(task.sourcePath, task.size) ?? this.policy.reason(task.targetPath, task.size);
@@ -415,15 +426,31 @@ export class SyncEngine {
     const expected = task.sourcePath === task.targetPath || source !== null ? source : target;
     const expectedFp = expected === null ? null : await fingerprint(expected);
     if (expectedFp !== task.oldFingerprint || (task.sourcePath !== task.targetPath && source !== null && target !== null)) {
-      await this.db.conflicts.put({ id: task.id, path: task.targetPath, heads: [task.revision], reason: "LOCAL_CHANGED_DURING_APPLY: preserve bytes and journal" }); return false;
+      if (task.sourcePath === task.targetPath && task.mutationStarted === false) await this.retireUnappliedTask(task);
+      await this.db.conflicts.put({ id: task.id, path: task.targetPath, heads: [task.revision], reason: "LOCAL_CHANGED_DURING_APPLY" }); return false;
     }
     const desired = this.crypto().localOpen(task.stage, await this.files.stageRead(task.stage));
     if (await fingerprint(desired) !== task.desiredFingerprint) throw new Error("STAGE_CORRUPT");
-    await this.checkLease();
-    if (task.deleted) { if (source) await this.files.remove(task.sourcePath, source); }
-    else {
-      if (task.sourcePath !== task.targetPath && source !== null) { await this.files.rename(task.sourcePath, task.targetPath, source); this.fault?.("after-vault-rename"); await this.checkLease(); }
-      await this.files.write(task.targetPath, desired, expected);
+    await this.db.transaction("rw", [this.db.leases, this.db.applyTasks], async () => {
+      await this.checkLease();
+      if ((await this.db.applyTasks.get(task.id))?.stage !== task.stage) throw new Error("APPLY_TASK_CHANGED");
+      await this.db.applyTasks.update(task.id, { mutationStarted: true });
+    });
+    this.fault?.("before-vault-mutation");
+    try {
+      if (task.deleted) { if (source) await this.files.remove(task.sourcePath, source); }
+      else {
+        if (task.sourcePath !== task.targetPath && source !== null) { await this.files.rename(task.sourcePath, task.targetPath, source); this.fault?.("after-vault-rename"); await this.checkLease(); }
+        await this.files.write(task.targetPath, desired, expected);
+      }
+    } catch (error) {
+      // A same-path guard rejection occurs before mutation. Retire only that unapplied journal,
+      // so the next capture can publish the user's edit from its unchanged displayed baseline.
+      // Unknown write failures, torn results and moves retain their recovery evidence.
+      if (task.sourcePath === task.targetPath && error instanceof Error && error.message === "LOCAL_CHANGED_DURING_APPLY") {
+        await this.retireUnappliedTask(task);
+      }
+      throw error;
     }
     this.fault?.("after-vault-write"); await this.finish(task); return true;
   }
@@ -478,7 +505,7 @@ export class SyncEngine {
         const stage = randomId(); await this.files.stageWrite(stage, this.crypto().localSeal(stage, desired));
         let backup: string | undefined;
         if (current) { backup = randomId(); await this.files.stageWrite(backup, this.crypto().localSeal(backup, current)); }
-        const task: ApplyTask = { id: f.id, sourcePath, targetPath: path, oldFingerprint: currentFp, desiredFingerprint: desiredFp, revision: r.id, location: f.location, deleted, stage, size: desired.length };
+        const task: ApplyTask = { id: f.id, sourcePath, targetPath: path, oldFingerprint: currentFp, desiredFingerprint: desiredFp, revision: r.id, location: f.location, deleted, stage, size: desired.length, mutationStarted: false };
         if (backup) task.backup = backup;
         this.fault?.("after-apply-stage");
         await this.checkLease(); await this.db.applyTasks.put(task); this.fault?.("after-apply-prepare");
@@ -567,9 +594,22 @@ export class SyncEngine {
 
   async saveMergeDraft(fileId: string, text: string): Promise<void> { const bytes = new TextEncoder().encode(text); if (bytes.length > 65536) throw new Error("MERGE_TOO_LARGE"); const ciphertext = this.crypto().localSeal(`merge:${fileId}`, bytes); await this.db.mergeDrafts.put({ id: fileId, ciphertext }); }
   async loadMergeDraft(fileId: string): Promise<string | null> { const draft = await this.db.mergeDrafts.get(fileId); return draft ? new TextDecoder("utf-8", { fatal: true }).decode(this.crypto().localOpen(`merge:${fileId}`, draft.ciphertext)) : null; }
-  async review(fileId: string): Promise<Review> {
+  private async assertReviewLocalReady(fileId: string, path: string): Promise<void> {
+    const pending = (await this.db.outbox.toArray()).some(row => row.request.actions.some(action => action.fileId === fileId));
+    if (pending || await this.db.applyTasks.get(fileId)) throw new Error("REVIEW_LOCAL_CHANGES_PENDING");
+    const local = await this.db.localFiles.get(fileId);
+    await this.files.flushEdits?.(local?.path ?? path);
+    const bytes = await this.files.read(local?.path ?? path);
+    const actual = bytes === null ? null : await fingerprint(bytes);
+    const expected = local && !local.deleted ? local.fingerprint : null;
+    if (actual !== expected) throw new Error("REVIEW_LOCAL_CHANGES_PENDING");
+  }
+  async review(fileId: string, previous?: Review): Promise<Review> {
     const f = await this.db.remoteFiles.get(fileId); if (!f || f.heads.length < 2) throw new Error("NO_REMOTE_CONFLICT");
     const versions: ReviewVersion[] = []; const path = this.crypto().path(f.id, f.location);
+    await this.assertReviewLocalReady(fileId, path);
+    if (previous?.fileId === fileId && previous.location.revision === f.location.revision &&
+        canonical([...previous.heads].sort()) === canonical([...f.heads].sort())) return previous;
     for (const head of f.heads) {
       const r = (await this.db.revisions.get(head))!; const manifest = this.crypto().manifest(r);
       if (manifest.length > 65536 || !/\.(md|txt|json|canvas|css|js|ts|ya?ml|xml|html|csv)$/i.test(path)) { versions.push({ revision: head, device: this.devices.get(r.deviceId) ?? r.deviceId, deviceId: r.deviceId, kind: r.payload.kind, text: null, fingerprint: manifest.fingerprint, bytes: new Uint8Array(), length: manifest.length }); continue; }
@@ -577,7 +617,8 @@ export class SyncEngine {
       try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); if (text.includes("\u0000")) text = null; } catch { /* binary */ }
       versions.push({ revision: head, device: this.devices.get(r.deviceId) ?? r.deviceId, deviceId: r.deviceId, kind: r.payload.kind, text, fingerprint: await fingerprint(bytes), bytes });
     }
-    return { fileId, path: this.crypto().path(f.id, f.location), heads: [...f.heads], versions, location: f.location };
+    await this.assertReviewLocalReady(fileId, path);
+    return { fileId, path, heads: [...f.heads], versions, location: f.location };
   }
   async resolve(review: Review, selectedRevision: string, companionPath?: string, mergedBytes?: Uint8Array): Promise<void> {
     if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.busy = true; this.errors = [];
@@ -587,9 +628,11 @@ export class SyncEngine {
       if (mergedBytes && isSharedConfigPath(review.path) && review.path.endsWith(".json")) { if (hasDeviceFields(review.path, mergedBytes)) throw new Error("MERGE_CONTAINS_DEVICE_FIELDS"); mergedBytes = sharedConfig(review.path, mergedBytes); }
       await this.lease();
       stopRenewing = this.keepLease();
+      const draft = await this.db.mergeDrafts.get(review.fileId);
       await this.prepareSynchronization();
       // Freeze displayed review; flush+receive updates the CURRENT set without silently changing the chosen snapshot.
       await this.capture(); await this.flush(); await this.receive();
+      await this.assertReviewLocalReady(review.fileId, review.path);
       const f = await this.db.remoteFiles.get(review.fileId);
       if (!f || f.location.revision !== review.location.revision || canonical([...f.heads].sort()) !== canonical([...review.heads].sort())) throw new Error("REVIEW_STALE");
       if (this.policy.reason(review.path)) throw new Error("FILE_EXCLUDED");
@@ -614,6 +657,7 @@ export class SyncEngine {
         action.decision = { kind: "keep-both", selectedRevision, companionSource: original.id, companion: { type: "create", fileId: companionId, revisionId: id, payload, location: this.crypto().location(companionId, companionPath, coordinate ? derivedID(coordinate, "lc") : undefined) } };
       }
       // Persist exact immutable resolution before network; retry retains IDs and ciphertext.
+      await this.assertReviewLocalReady(review.fileId, review.path);
       const request = await this.request([action]); await this.enqueue(request, [], [revision], objects);
       await this.flush(); await this.receive();
       const rejected = await this.db.rejectedOutbox.get(request.opId);
@@ -621,17 +665,28 @@ export class SyncEngine {
       const pending = await this.db.outbox.where("opId").equals(request.opId).first();
       if (pending) throw new RemoteError(pending.error ?? "RESOLUTION_NOT_COMMITTED");
       // Acknowledged explicit selection authorizes replacement only if the local file still matches the review snapshot.
-      const current = await this.db.localFiles.get(f.id); const bytes = current ? await this.files.read(current.path) : null;
+      const current = await this.db.localFiles.get(f.id);
+      await this.files.flushEdits?.(current?.path ?? review.path);
+      const bytes = current ? await this.files.read(current.path) : null;
       if (current && (bytes === null ? current.deleted : await fingerprint(bytes) === current.fingerprint)) {
         const remoteHead = (await this.db.remoteFiles.get(f.id))?.heads;
         if (remoteHead?.length === 1 && remoteHead[0] === revisionId) {
           const desired = selected.bytes; const stage = randomId(); await this.files.stageWrite(stage, this.crypto().localSeal(stage, desired));
-          const task: ApplyTask = { id: f.id, sourcePath: current.path, targetPath: this.crypto().path(f.id, f.location), oldFingerprint: bytes === null ? null : await fingerprint(bytes), desiredFingerprint: await fingerprint(desired), revision: revisionId, location: f.location, deleted: revision.payload.kind === "deleted", stage, size: desired.length };
+          const task: ApplyTask = { id: f.id, sourcePath: current.path, targetPath: this.crypto().path(f.id, f.location), oldFingerprint: bytes === null ? null : await fingerprint(bytes), desiredFingerprint: await fingerprint(desired), revision: revisionId, location: f.location, deleted: revision.payload.kind === "deleted", stage, size: desired.length, mutationStarted: false };
           if (bytes) { task.backup = randomId(); await this.files.stageWrite(task.backup, this.crypto().localSeal(task.backup, bytes)); }
           await this.db.applyTasks.put(task); await this.applyTask(task);
         }
       }
-      await this.apply(); await this.db.mergeDrafts.delete(review.fileId); await this.cleanup();
+      await this.apply();
+      if (draft) await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.conflicts, this.db.mergeDrafts], async () => {
+        await this.checkLease();
+        const currentDraft = await this.db.mergeDrafts.get(review.fileId);
+        if (currentDraft && bytesEqual(currentDraft.ciphertext, draft.ciphertext) &&
+            (await this.db.localFiles.get(review.fileId))?.revision === revisionId && !await this.db.conflicts.get(review.fileId)) {
+          await this.db.mergeDrafts.delete(review.fileId);
+        }
+      });
+      await this.cleanup();
     } finally { await stopRenewing?.(); await this.remote.releaseSnapshots(); await this.endRun(); }
   }
 }

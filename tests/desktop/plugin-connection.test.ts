@@ -12,7 +12,7 @@ const host = vi.hoisted(() => ({ saved: null as unknown, failSave: false, failPr
 vi.mock("obsidian", () => ({
   Plugin: class {
     constructor(public app: unknown, public manifest: unknown) {}
-    addStatusBarItem() { return { setText() {} }; } addRibbonIcon() {} addCommand() {} addSettingTab() {} registerEvent() {}
+    addStatusBarItem() { return { setText() {}, addClass() {}, setAttribute() {}, dataset: {} }; } addRibbonIcon() { return { addClass() {}, setAttribute() {}, dataset: {} }; } addCommand() {} addSettingTab() {} registerEvent() {}
     registerDomEvent(_target: unknown, name: string, callback: () => void) { host.handlers.set(name, callback); }
     async loadData() { return host.saved; }
     async saveData(value: unknown) { if (host.failSave) throw new Error("SETTINGS_WRITE_FAILED"); host.saved = structuredClone(value); }
@@ -52,7 +52,7 @@ beforeEach(async () => {
 afterEach(async () => { instance?.onunload(); instance = undefined; await new SyncDB(`obsidian-sync-dev-${databaseId}`).delete(); vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks(); });
 async function load() {
   const adapter = { mkdir: async (p: string) => { host.files.set(p, ""); }, exists: async (p: string) => host.files.has(p), read: async (p: string) => host.files.get(p)!, write: async (p: string, s: string) => { host.files.set(p, s); } };
-  const app = { vault: { configDir: ".obsidian", adapter, on: (name: string, callback: (...args: unknown[]) => void) => { host.handlers.set(name, callback); } }, workspace: { onLayoutReady(callback: () => void) { host.handlers.set("layout", callback); } } } as unknown as App;
+  const app = { vault: { configDir: ".obsidian", adapter, on: (name: string, callback: (...args: unknown[]) => void) => { host.handlers.set(name, callback); } }, workspace: { getLeavesOfType: () => [], onLayoutReady(callback: () => void) { host.handlers.set("layout", callback); } } } as unknown as App;
   instance = new ObsidianSyncPlugin(app, { version: "0.1.0" } as PluginManifest); await instance.onload();
   databaseId = JSON.parse(host.files.get(".obsidian/obsidian-sync-local/device.json")!).databaseId;
   return instance;

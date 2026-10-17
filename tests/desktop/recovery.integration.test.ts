@@ -173,6 +173,194 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("recovery with r
     expect(await b.files.text("note.md")).toBe("computer choice"); expect(await b.engine.status()).toMatchObject({ state: "complete", errors: [] });
     expect(await b.db.leases.get("engine")).toBeUndefined(); expect(await b.files.stageList()).toEqual([]);
   });
+  it.each(["computer", "phone", "both", "merge"])("preserves post-conflict edits when upload is busy before an old %s selection", async choice => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "common base"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "computer at detection"); await b.files.edit("note.md", "phone at detection");
+    await a.engine.sync(); await b.engine.sync(); await a.engine.sync();
+    const fileId = (await a.db.conflicts.toArray())[0]!.id, oldReview = await a.engine.review(fileId);
+    const selected = oldReview.versions.find(v => v.deviceId === (choice === "computer" ? a.engine.deviceId : b.engine.deviceId))!;
+    await a.files.edit("note.md", "computer newest edits after conflict");
+    await a.engine.saveMergeDraft(fileId, "unsubmitted merge draft");
+    let resolutions = 0;
+    fixture.httpHook = async (request, next) => {
+      if (request.url.endsWith("/metadata/commits")) {
+        const body = JSON.parse(new TextDecoder().decode(request.body));
+        if (body.request.actions.some((action: { type: string }) => action.type === "resolve")) resolutions++;
+      }
+      if (request.url.endsWith("/content/upload")) return { status: 429, headers: {}, bytes: new TextEncoder().encode('{"code":"CONTENT_BUSY"}') };
+      return next();
+    };
+    await expect(a.engine.review(fileId)).rejects.toThrow("REVIEW_LOCAL_CHANGES_PENDING");
+    await expect(a.engine.resolve(oldReview, selected.revision, choice === "both" ? "phone-copy.md" : undefined,
+      choice === "merge" ? new TextEncoder().encode("old reviewed merge") : undefined)).rejects.toThrow("REVIEW_LOCAL_CHANGES_PENDING");
+    expect(resolutions).toBe(0); expect(await a.files.text("note.md")).toBe("computer newest edits after conflict");
+    expect(await a.db.outbox.count()).toBe(1); expect((await a.files.stageList()).length).toBeGreaterThan(0);
+    expect(await a.engine.loadMergeDraft(fileId)).toBe("unsubmitted merge draft");
+    const pending = (await a.db.outbox.toArray())[0]!.request;
+    await a.files.edit("unrelated.md", "unrelated file continues");
+    // Only this upload remains busy; a different file still syncs normally.
+    fixture.httpHook = async (request, next) => {
+      if (request.url.endsWith("/content/upload") && JSON.parse(new TextDecoder().decode(request.body)).actions.some((action: { fileId: string }) => action.fileId === fileId))
+        return { status: 429, headers: {}, bytes: new TextEncoder().encode('{"code":"CONTENT_BUSY"}') };
+      return next();
+    };
+    const reopened = await fixture.reopen(0); await reopened.engine.sync(); await b.engine.sync();
+    expect(await b.files.text("unrelated.md")).toBe("unrelated file continues");
+    expect(await reopened.files.text("note.md")).toBe("computer newest edits after conflict");
+    expect((await reopened.db.outbox.toArray())[0]!.request).toEqual(pending);
+    fixture.httpHook = undefined; expect((await reopened.engine.sync()).errors).toEqual([]);
+    const latest = await reopened.engine.review(fileId);
+    expect(latest.versions.map(v => v.text)).toContain("computer newest edits after conflict");
+    await expect(reopened.engine.resolve(oldReview, selected.revision)).rejects.toThrow("REVIEW_STALE");
+    const localVersion = latest.versions.find(v => v.deviceId === reopened.engine.deviceId)!;
+    await reopened.engine.resolve(latest, localVersion.revision); await b.engine.sync();
+    expect(await b.files.text("note.md")).toBe("computer newest edits after conflict");
+    expect(await reopened.files.stageList()).toEqual([]);
+  });
+  it("does not accept an old selection when capturing the latest local edit fails", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "base"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "computer"); await b.files.edit("note.md", "phone"); await a.engine.sync(); await b.engine.sync(); await a.engine.sync();
+    const id = (await a.db.conflicts.toArray())[0]!.id, review = await a.engine.review(id);
+    await a.files.edit("note.md", "new bytes without a captured intent");
+    a.files.hook = async op => { if (op === "stageWrite") throw new Error("DISK_FULL"); };
+    await expect(a.engine.resolve(review, review.versions[0]!.revision)).rejects.toThrow("REVIEW_LOCAL_CHANGES_PENDING");
+    expect(await a.files.text("note.md")).toBe("new bytes without a captured intent"); expect(await a.db.outbox.count()).toBe(0);
+    a.files.hook = undefined; await a.engine.sync();
+    expect((await a.engine.review(id)).versions.map(v => v.text)).toContain("new bytes without a captured intent");
+  });
+  it("preserves edits typed while a conflict selection is being committed", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "base"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "computer reviewed"); await b.files.edit("note.md", "phone reviewed");
+    await a.engine.sync(); await b.engine.sync(); await a.engine.sync();
+    const id = (await a.db.conflicts.toArray())[0]!.id, review = await a.engine.review(id);
+    const chosen = review.versions.find(version => version.deviceId === b.engine.deviceId)!;
+    let edited = false, editorBuffer: string | null = null;
+    Object.assign(a.files, { flushEdits: async () => { if (editorBuffer !== null) { await a.files.edit("note.md", editorBuffer); editorBuffer = null; } } });
+    fixture.httpHook = async (request, next) => {
+      const result = await next();
+      if (!edited && request.url.endsWith("/metadata/commits") && JSON.parse(new TextDecoder().decode(request.body)).request.actions.some((action: { type: string }) => action.type === "resolve") && result.status === 200) {
+        edited = true; editorBuffer = "new content typed during the submission";
+      }
+      return result;
+    };
+    await a.engine.saveMergeDraft(id, "draft still needed if new content arrives");
+    await a.engine.resolve(review, chosen.revision); expect(edited).toBe(true);
+    expect(await a.engine.loadMergeDraft(id)).toBe("draft still needed if new content arrives");
+    expect(await a.files.text("note.md")).toBe("new content typed during the submission");
+    fixture.httpHook = undefined; expect((await a.engine.sync()).errors).toEqual([]);
+    const latest = await a.engine.review(id);
+    expect(latest.versions.map(version => version.text).sort()).toEqual(["new content typed during the submission", "phone reviewed"]);
+  });
+  it("automatically saves editor-buffer changes before preparing the conflict comparison", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "base"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "computer"); await b.files.edit("note.md", "phone"); await a.engine.sync(); await b.engine.sync(); await a.engine.sync();
+    const id = (await a.db.conflicts.toArray())[0]!.id, old = await a.engine.review(id);
+    let buffer: string | null = "new typing before the host auto-save";
+    Object.assign(a.files, { flushEdits: async () => { if (buffer !== null) { await a.files.edit("note.md", buffer); buffer = null; } } });
+    await expect(a.engine.review(id, old)).rejects.toThrow("REVIEW_LOCAL_CHANGES_PENDING");
+    expect(buffer).toBeNull(); expect(await a.files.text("note.md")).toBe("new typing before the host auto-save");
+    await expect(a.engine.resolve(old, old.versions[0]!.revision)).rejects.toThrow("REVIEW_STALE");
+    const latest = await a.engine.review(id);
+    expect(latest.versions.map(version => version.text)).toContain("new typing before the host auto-save");
+    expect(await a.files.text("note.md")).toBe("new typing before the host auto-save");
+  });
+  it("isolates a pending host save to its file while other uploads and downloads continue", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("pending.md", "saved base"); await a.engine.sync(); await b.engine.sync();
+    Object.assign(a.files, { flushEdits: async (path?: string) => { if (!path || path === "pending.md") throw new Error("LOCAL_EDITOR_CHANGES_PENDING"); } });
+    await a.files.edit("healthy.md", "outgoing content");
+    await b.files.edit("incoming.md", "incoming content"); await b.engine.sync();
+    expect((await a.engine.sync()).errors).toContain("LOCAL_EDITOR_CHANGES_PENDING");
+    await b.engine.sync();
+    expect(await b.files.text("healthy.md")).toBe("outgoing content");
+    expect(await a.files.text("incoming.md")).toBe("incoming content");
+    expect(await a.files.text("pending.md")).toBe("saved base");
+  });
+  it.each(["select", "both", "merge", "delete"])("recovers automatically when new typing rejects a %s write before the file changes", async choice => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "base"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "computer reviewed");
+    if (choice === "delete") await unlink(b.files.path("note.md")); else await b.files.edit("note.md", "phone reviewed");
+    await a.engine.sync(); await b.engine.sync(); await a.engine.sync();
+    const id = (await a.db.conflicts.toArray())[0]!.id, review = await a.engine.review(id);
+    const selected = review.versions.find(v => v.deviceId === b.engine.deviceId)!;
+    let blocked = false;
+    a.files.hook = async (op, path) => {
+      if (!blocked && path === "note.md" && (op === "write" || op === "remove")) {
+        blocked = true; await a.files.edit("note.md", "latest typing after the final read");
+        throw new Error("LOCAL_CHANGED_DURING_APPLY");
+      }
+    };
+    await expect(a.engine.resolve(review, selected.revision, choice === "both" ? "other.md" : undefined,
+      choice === "merge" ? new TextEncoder().encode("merged choice") : undefined)).rejects.toThrow("LOCAL_CHANGED_DURING_APPLY");
+    expect(blocked).toBe(true); expect(await a.db.applyTasks.count()).toBe(0);
+    a.files.hook = undefined; const restarted = await fixture.reopen(0);
+    expect((await restarted.engine.sync()).errors).toEqual([]);
+    const latest = await restarted.engine.review(id);
+    expect(latest.versions.map(v => v.text)).toContain("latest typing after the final read");
+    expect(await restarted.files.text("note.md")).toBe("latest typing after the final read");
+  });
+  it.each(["unchanged", "newer"])("cleans only the resolved draft and preserves a %s draft during submission", async kind => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "base"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "computer"); await b.files.edit("note.md", "phone");
+    await a.engine.sync(); await b.engine.sync(); await a.engine.sync();
+    const id = (await a.db.conflicts.toArray())[0]!.id, review = await a.engine.review(id);
+    await a.engine.saveMergeDraft(id, "old draft");
+    let saved = false;
+    fixture.httpHook = async (request, next) => {
+      const result = await next();
+      if (!saved && request.url.endsWith("/metadata/commits") && JSON.parse(new TextDecoder().decode(request.body)).request.actions.some((action: { type: string }) => action.type === "resolve") && result.status === 200) {
+        saved = true; if (kind === "newer") await a.engine.saveMergeDraft(id, "new draft from another open review");
+      }
+      return result;
+    };
+    await a.engine.resolve(review, review.versions[0]!.revision);
+    expect(saved).toBe(true); expect(await a.engine.loadMergeDraft(id)).toBe(kind === "newer" ? "new draft from another open review" : null);
+  });
+  it("captures newer saved content after reopening a journal that never started its file write", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "base"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "remote update"); await a.engine.sync();
+    b.engine.fault = failOnce("after-apply-prepare").fault; await b.engine.sync();
+    expect((await b.db.applyTasks.toArray())[0]!.mutationStarted).toBe(false);
+    await b.files.edit("note.md", "new local content before any write");
+    const reopened = await fixture.reopen(1); expect((await reopened.engine.sync()).errors).toEqual([]);
+    expect(await reopened.db.applyTasks.count()).toBe(0);
+    const id = (await reopened.db.conflicts.toArray())[0]!.id;
+    expect((await reopened.engine.review(id)).versions.map(v => v.text).sort()).toEqual(["new local content before any write", "remote update"]);
+  });
+  it("retains an older journal with unknown write progress when saved bytes have diverged", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "base"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "remote update"); await a.engine.sync();
+    b.engine.fault = failOnce("after-apply-prepare").fault; await b.engine.sync();
+    const task = (await b.db.applyTasks.toArray())[0]!; delete task.mutationStarted; await b.db.applyTasks.put(task);
+    await b.files.edit("note.md", "unknown partial write or newer editing");
+    const reopened = await fixture.reopen(1); await reopened.engine.sync();
+    expect(await reopened.db.applyTasks.get(task.id)).toEqual(task);
+    expect(await reopened.files.stageList()).toEqual(expect.arrayContaining([task.stage, task.backup!]));
+    expect(await reopened.files.text("note.md")).toBe("unknown partial write or newer editing");
+  });
+  it("does not acknowledge an applied baseline while newer typing is still in the host editor", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "displayed base"); await a.engine.sync(); await b.engine.sync();
+    const base = (await b.db.localFiles.toArray())[0]!;
+    let buffer: string | null = null;
+    Object.assign(b.files, { flushEdits: async () => { if (buffer !== null) { await b.files.edit("note.md", buffer); buffer = null; } } });
+    b.engine.fault = point => { if (point === "after-vault-write") buffer = "typing that has not observed the remote result"; };
+    await a.files.edit("note.md", "remote result"); await a.engine.sync();
+    expect((await b.engine.sync()).errors).toContain("APPLY_VERIFY_FAILED");
+    expect(await b.files.text("note.md")).toBe("typing that has not observed the remote result");
+    expect((await b.db.localFiles.get(base.id))!.revision).toBe(base.revision);
+    const task = (await b.db.applyTasks.toArray())[0]!;
+    expect(task.mutationStarted).toBe(true);
+    expect(await b.files.stageList()).toEqual(expect.arrayContaining([task.stage, task.backup!]));
+  });
   it("refuses damaged outgoing ciphertext before publishing an accepted revision", async () => {
     const a = fixture.clients[0]!;
     await a.files.edit("note.md", "original intent");

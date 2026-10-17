@@ -1,4 +1,4 @@
-import { TFile, type App } from "obsidian";
+import { MarkdownView, TFile, type App } from "obsidian";
 import { bytesEqual, canonicalPath } from "./crypto";
 import { fixedExclusion, HARD_FILE_BYTES, SyncPolicy, type FileEntry } from "./policy";
 import { sharedConfig, mergeConfig, hasDeviceFields } from "./config-projection";
@@ -12,6 +12,25 @@ export class ObsidianVaultPort implements FilePort {
   configurationChanged = false;
   cachedInventory: FileEntry[] = [];
   constructor(private app: App, private localRoot: string, private policy: () => SyncPolicy = () => new SyncPolicy()) {}
+  private editors(path: string): MarkdownView[] {
+    return this.app.workspace.getLeavesOfType("markdown").map(leaf => leaf.view).filter((view): view is MarkdownView =>
+      view instanceof MarkdownView && view.file?.path === path && view.getMode() === "source" && this.inScope(path));
+  }
+  private editorMatches(view: MarkdownView, bytes: Uint8Array): boolean {
+    // CodeMirror uses LF even when an unchanged file still contains CRLF on disk.
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/\r\n/g, "\n") === view.editor.getValue();
+  }
+  async flushEdits(path: string): Promise<void> {
+    for (const view of this.editors(path)) {
+      await view.save(); // The host skips unchanged data and may already have another save in flight.
+      if (view.file && !this.editorMatches(view, new Uint8Array(await this.app.vault.readBinary(view.file)))) {
+        throw new Error("LOCAL_EDITOR_CHANGES_PENDING");
+      }
+    }
+  }
+  private assertEditorUnchanged(path: string, expected: Uint8Array): void {
+    for (const view of this.editors(path)) if (!this.editorMatches(view, expected)) throw new Error("LOCAL_CHANGED_DURING_APPLY");
+  }
   logical(path: string): string { const dir = this.app.vault.configDir; return path === dir ? SHARED_CONFIG_ROOT : path.startsWith(`${dir}/`) ? `${SHARED_CONFIG_PREFIX}${path.slice(dir.length + 1)}` : path; }
   private physical(path: string): string { return path === SHARED_CONFIG_ROOT ? this.app.vault.configDir : isSharedConfigPath(path) ? `${this.app.vault.configDir}/${path.slice(SHARED_CONFIG_PREFIX.length)}` : path; }
   isOwnRename(from: string, to: string): boolean { const key = `${from}\0${to}`; const at = this.ownRenames.get(key); this.ownRenames.delete(key); return at !== undefined && Date.now() - at < 60000; }
@@ -99,7 +118,7 @@ export class ObsidianVaultPort implements FilePort {
       if (!file) throw new Error("SOURCE_MISSING");
       if (/\.(md|txt|json|canvas|css|js|ts|yaml|yml|xml|html|csv)$/i.test(path)) {
         const decode = new TextDecoder("utf-8", { fatal: true }); const previous = decode.decode(expected); const next = decode.decode(desired);
-        await this.app.vault.process(file, current => { if (current !== previous) throw new Error("LOCAL_CHANGED_DURING_APPLY"); return next; });
+        await this.app.vault.process(file, current => { if (current !== previous) throw new Error("LOCAL_CHANGED_DURING_APPLY"); this.assertEditorUnchanged(path, expected); return next; });
       } else { if (!bytesEqual(new Uint8Array(await this.app.vault.readBinary(file)), expected)) throw new Error("LOCAL_CHANGED_DURING_APPLY"); await this.app.vault.modifyBinary(file, desired.slice().buffer); }
     });
   }
@@ -109,6 +128,7 @@ export class ObsidianVaultPort implements FilePort {
     if (await this.app.vault.adapter.exists(this.physical(to))) throw new Error("TARGET_OCCUPIED");
     if (isSharedConfigPath(from) || isSharedConfigPath(to)) { if (!isSharedConfigPath(from) || !isSharedConfigPath(to)) throw new Error("CONFIG_MOVE_BOUNDARY"); await this.app.vault.adapter.rename(this.physical(from), this.physical(to)); this.configurationChanged = true; return; }
     const source = this.app.vault.getFileByPath(from); if (!source) throw new Error("SOURCE_MISSING");
+    this.assertEditorUnchanged(from, expected);
     this.ownRenames.set(`${from}\0${to}`, Date.now()); await this.app.vault.rename(source, to);
   }
   async remove(path: string, expected: Uint8Array): Promise<void> {
@@ -120,7 +140,7 @@ export class ObsidianVaultPort implements FilePort {
         if (hasDeviceFields(path, raw)) throw new Error("CONFIG_DELETE_HAS_DEVICE_FIELDS");
         await this.app.vault.adapter.trashLocal(physical); return;
       }
-      const file = this.app.vault.getFileByPath(path); if (!file) throw new Error("SOURCE_MISSING"); await this.app.fileManager.trashFile(file);
+      const file = this.app.vault.getFileByPath(path); if (!file) throw new Error("SOURCE_MISSING"); this.assertEditorUnchanged(path, expected); await this.app.fileManager.trashFile(file);
     });
   }
   private stage(id: string): string { if (!/^(?:c_)?[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID"); return `${this.localRoot}/staging/${id}`; }

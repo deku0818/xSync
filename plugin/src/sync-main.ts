@@ -8,7 +8,7 @@ import { SyncDB } from "./sync/store";
 import { ObsidianVaultPort } from "./sync/vault-port";
 import { Transport, boundedRequest, normalizeEndpoint } from "./sync/transport";
 import { SyncOverview } from "./ui/sync-panels";
-import { syncActivityLabel, syncDisplayState } from "./ui/sync-status";
+import { syncPresentation } from "./ui/sync-status";
 import { AutomaticSync, RemoteEvents, SerialWork } from "./sync/realtime";
 import { desktopProtector } from "./desktop/protector";
 import { iosProtector } from "./mobile/ios-protector";
@@ -55,6 +55,8 @@ export default class ObsidianSyncPlugin extends Plugin {
   private statusTimer?: TimerHandle;
   private db?: SyncDB;
   private statusEl?: HTMLElement;
+  private ribbonEl?: HTMLElement;
+  private statusPanel?: SyncOverview;
   private work = new SerialWork();
   private automatic?: AutomaticSync;
   private events?: RemoteEvents;
@@ -67,8 +69,12 @@ export default class ObsidianSyncPlugin extends Plugin {
   deviceName = "";
   async onload(): Promise<void> {
     this.statusEl = this.addStatusBarItem(); this.statusEl.setText("xSync · 正在连接");
-    this.addRibbonIcon("refresh-cw", "xSync 同步面板", () => new SyncOverview(this.app, this, () => new ConnectionModal(this.app, this).open()).open());
-    this.addCommand({ id: "open-sync-panel", name: "打开同步面板", callback: () => new SyncOverview(this.app, this, () => new ConnectionModal(this.app, this).open()).open() });
+    this.statusEl.addClass("oss-status-bar"); this.statusEl.setAttribute("role", "button"); this.statusEl.tabIndex = 0;
+    this.registerDomEvent(this.statusEl, "click", () => this.openStatus(this.statusEl));
+    this.registerDomEvent(this.statusEl, "keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); this.openStatus(this.statusEl); } });
+    this.ribbonEl = this.addRibbonIcon("cloud", "xSync 同步状态", () => this.openStatus());
+    this.ribbonEl.addClass("oss-sync-ribbon");
+    this.addCommand({ id: "open-sync-panel", name: "查看同步状态", callback: () => this.openStatus() });
     this.addCommand({ id: "configure-sync", name: "配置服务器与同步密钥", callback: () => new ConnectionModal(this.app, this).open() });
     this.addCommand({ id: "toggle-sync", name: "暂停 / 恢复同步", callback: () => { void this.setAutoSync(!this.autoSync).catch(error => new Notice(String(error))); } });
     this.addSettingTab(new SyncSettingTab(this.app, this));
@@ -156,6 +162,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     });
   }
   onunload(): void {
+    this.statusPanel?.close();
     timerHost().clearInterval(this.statusTimer); this.statusTimer = undefined;
     this.disposed = true; timerHost().clearInterval(this.configTimer); this.configTimer = undefined; this.automatic?.stop(); this.events?.stop(); this.listeners.clear(); this.engine?.lock();
     void this.work.idle().finally(() => this.db?.close());
@@ -172,6 +179,11 @@ export default class ObsidianSyncPlugin extends Plugin {
   private showPending(): void {
     this.renderStatusBar();
     this.emit();
+  }
+  private openStatus(anchor?: HTMLElement): void {
+    this.statusPanel?.close();
+    this.statusPanel = new SyncOverview(this.app, this, () => new ConnectionModal(this.app, this).open(), anchor);
+    this.statusPanel.open();
   }
   private transport(endpoint: string): Transport {
     if (!this.config) throw new Error("LOCAL_IDENTITY_NOT_READY");
@@ -327,16 +339,21 @@ export default class ObsidianSyncPlugin extends Plugin {
     });
   }
   private renderStatusBar(): string {
-    const state = syncDisplayState(this.lastStatus, !!this.engine?.unlocked, this.autoSync, this.syncing, this.localPending);
-    const label = state === "syncing" ? syncActivityLabel(this.lastStatus?.activity) : {
-      locked: "请配置同步", paused: "已暂停同步", conflict: "需处理", attention: "需处理", pending: "有变更待核对", complete: "所选范围同步完成",
-    }[state];
-    this.statusEl?.setText(`xSync · ${label}`); return label;
+    const display = syncPresentation(this.lastStatus, !!this.engine?.unlocked, this.autoSync, this.syncing, this.localPending);
+    this.statusEl?.setText(`xSync · ${display.label}`);
+    if (this.statusEl) this.statusEl.dataset.state = display.state;
+    if (this.ribbonEl) {
+      this.ribbonEl.dataset.state = display.state;
+      const count = this.lastStatus?.conflicts ?? 0;
+      this.ribbonEl.dataset.count = count > 99 ? "99+" : String(count);
+      this.ribbonEl.setAttribute("aria-label", `xSync · ${display.label}`);
+    }
+    return display.label;
   }
   private publishStatus(status: EngineStatus, notify: boolean): void {
     this.lastStatus = status;
     const label = this.renderStatusBar();
-    if (notify) new Notice(`${label} · 待上传 ${status.outbox} · 待应用 ${status.inbox} · 冲突 ${status.conflicts}`);
+    if (notify && status.state === "needs-attention" && !status.conflicts) new Notice(`${label}，本机内容仍保留。`);
     this.emit();
   }
   async resolveConflict(review: Review, selectedRevision: string, companionPath?: string, mergedBytes?: Uint8Array): Promise<void> {

@@ -1,0 +1,112 @@
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { JSDOM } from "jsdom";
+import type { App } from "obsidian";
+import type ObsidianSyncPlugin from "../../plugin/src/sync-main";
+import type { Review, EngineStatus } from "../../plugin/src/sync/engine";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+const host = vi.hoisted(() => ({ close: [] as (() => void)[], notices: [] as string[] }));
+vi.mock("obsidian", async () => {
+  const { default: createDOMPurify } = await import("dompurify");
+  return {
+    Modal: class {
+      containerEl = document.createElement("div"); modalEl = document.createElement("div"); contentEl = document.createElement("div");
+      constructor() { this.containerEl.className = "modal-container"; this.modalEl.className = "modal"; this.contentEl.className = "modal-content"; this.containerEl.append(this.modalEl); this.modalEl.append(this.contentEl); host.close.push(() => this.close()); }
+      open() { document.body.append(this.containerEl); (this as unknown as { onOpen(): void }).onOpen(); }
+      close() { (this as unknown as { onClose(): void }).onClose(); this.containerEl.remove(); }
+    },
+    Notice: class { constructor(text: string) { host.notices.push(text); } },
+    sanitizeHTMLToDom: (markup: string) => createDOMPurify(window).sanitize(markup, { RETURN_DOM_FRAGMENT: true }),
+  };
+});
+import { ConflictReview, SyncOverview } from "../../plugin/src/ui/sync-panels";
+
+let browser: JSDOM, listeners: Set<() => void>, pending: boolean, latest: Review, plugin: ObsidianSyncPlugin, currentStatus: EngineStatus;
+function element(this: HTMLElement, tag: string, options: { cls?: string; text?: string; attr?: Record<string, string> } = {}): HTMLElement {
+  const node = this.ownerDocument.createElement(tag);
+  if (options.cls) node.className = options.cls;
+  if (options.text) node.textContent = options.text;
+  for (const [key, value] of Object.entries(options.attr ?? {})) node.setAttribute(key, value);
+  this.append(node); return node;
+}
+const review = (id: string, text: string): Review => ({
+  fileId: "F", path: "note.md", heads: [id, "phone"], location: { revision: "L", pathKey: "fixture", encryptedPath: "fixture" },
+  versions: [{ revision: id, device: "MacBook Pro", deviceId: "local", kind: "file", text, bytes: new TextEncoder().encode(text), fingerprint: "fixture" },
+    { revision: "phone", device: "iPhone 15", deviceId: "remote", kind: "file", text: "phone content", bytes: new TextEncoder().encode("phone content"), fingerprint: "fixture" }],
+});
+const query = (id: string): HTMLElement => document.querySelector(`[data-ui="${id}"]`)!;
+const button = (id: string): HTMLButtonElement => query(id) as HTMLButtonElement;
+const emit = () => { for (const listener of listeners) listener(); };
+beforeEach(() => {
+  browser = new JSDOM("", { url: "https://fixture.invalid" }); vi.stubGlobal("window", browser.window); vi.stubGlobal("document", browser.window.document);
+  Object.assign(browser.window.HTMLElement.prototype, {
+    createEl: element,
+    createDiv(this: HTMLElement, options: string | { cls?: string } = {}) { return element.call(this, "div", typeof options === "string" ? { cls: options } : options); },
+    createSpan(this: HTMLElement, options: { cls?: string; text?: string } = {}) { return element.call(this, "span", options); },
+    setText(this: HTMLElement, text: string) { this.textContent = text; },
+    addClass(this: HTMLElement, name: string) { this.classList.add(name); },
+    empty(this: HTMLElement) { this.replaceChildren(); },
+  });
+  host.close.length = 0; host.notices.length = 0; listeners = new Set(); pending = false; latest = review("computer-1", "computer first content");
+  currentStatus = { state: "complete", outbox: 0, inbox: 0, conflicts: 0, errors: [] };
+  plugin = {
+    deviceName: "MacBook Pro", autoSync: true, syncing: false, localPending: false, hostError: "", policy: { reason: () => null },
+    subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+    sync: vi.fn(async () => {}),
+    setAutoSync: vi.fn(async (enabled: boolean) => { plugin.autoSync = enabled; emit(); }),
+    resolveConflict: vi.fn(async () => {}),
+    engine: { unlocked: true, deviceId: "local", status: async () => currentStatus, db: { skipped: { toArray: async () => [] }, conflicts: { toArray: async () => [] } },
+      review: vi.fn(async (_id: string, previous?: Review) => { if (pending) throw new Error("REVIEW_LOCAL_CHANGES_PENDING"); return previous?.heads[0] === latest.heads[0] ? previous : latest; }),
+      loadMergeDraft: async () => null, saveMergeDraft: vi.fn(async () => {}),
+    },
+  } as unknown as ObsidianSyncPlugin;
+});
+afterEach(() => { for (const close of host.close) close(); browser.window.close(); vi.unstubAllGlobals(); });
+
+async function savePreview(name: string): Promise<void> {
+  const target = process.env.OBSIDIAN_SYNC_UI_PREVIEW_DIR; if (!target) return;
+  await mkdir(target, { recursive: true });
+  const css = await readFile("plugin/styles.css", "utf8");
+  const baseline = `:root{--background-primary:#202020;--background-secondary:#262626;--background-modifier-border:#373737;--background-modifier-hover:#303030;--text-normal:#e6e4e9;--text-muted:#aaa6b0;--text-faint:#86818d;--text-accent:#af91ef;--interactive-accent:#8660d4;--interactive-accent-hover:#9671e1;--text-warning:#ddbd7b;--text-error:#ee939b}body{margin:0;background:#171717;color:var(--text-normal);font:14px/1.6 -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif}.modal-container{display:flex;align-items:center;justify-content:center;min-height:100vh}.modal{background:#202020;border:1px solid #373737;border-radius:12px;max-height:94vh;overflow:auto}.modal-content{padding:0}button,input,textarea{font:inherit}[hidden]{display:none!important}`;
+  await writeFile(join(target, name + ".html"), `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>xSync 实际组件 · 宿主 DOM 模拟</title><style>${baseline}\n${css}</style>${document.body.innerHTML}</html>`);
+}
+
+it("shows compact, quiet status without queue counters and keeps pause/configure available", async () => {
+  const configure = vi.fn(); new SyncOverview({} as App, plugin, configure).open();
+  await vi.waitFor(() => expect(query("status-title").textContent).toBe("已同步"));
+  expect(document.querySelector(".metrics,.status-card")).toBeNull(); expect(query("diagnostics").hidden).toBe(true); expect(host.notices).toEqual([]);
+  await savePreview("status"); button("pause").click(); await vi.waitFor(() => expect(query("status-title").textContent).toBe("已暂停"));
+  button("configure").click(); expect(configure).toHaveBeenCalledOnce();
+});
+it("automatically waits for post-conflict edits and only enables choices after latest content is ready", async () => {
+  pending = true; new ConflictReview({} as App, plugin, "F", "note.md").open();
+  await vi.waitFor(() => expect(query("review-description").textContent).toContain("最新修改"));
+  expect(query("comparison").hidden).toBe(true); expect(button("confirm").disabled).toBe(true); expect(plugin.sync).toHaveBeenCalledOnce();
+  emit(); emit(); await vi.waitFor(() => expect(plugin.engine!.review).toHaveBeenCalledTimes(3)); expect(plugin.sync).toHaveBeenCalledOnce();
+  pending = false; latest = review("computer-2", "newest saved edit"); emit();
+  await vi.waitFor(() => expect(query("pane-a").textContent).toContain("newest saved edit"));
+  expect(button("confirm").disabled).toBe(true); expect(query("comparison").hidden).toBe(false);
+  await savePreview("conflict"); button("choice-both").click(); expect(button("confirm").textContent).toBe("确认保留双方");
+  button("confirm").click(); await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest, "computer-2", "note（iPhone 15）.md", undefined));
+});
+it("clears a stale selection, preserves merge drafts and refreshes automatically when local edits finish uploading", async () => {
+  new ConflictReview({} as App, plugin, "F", "note.md").open();
+  await vi.waitFor(() => expect(query("comparison").hidden).toBe(false)); button("manual-merge").click();
+  const editor = query("merge-editor") as HTMLTextAreaElement; editor.value = "keep my merge draft"; editor.dispatchEvent(new browser.window.Event("input"));
+  await vi.waitFor(() => expect(plugin.engine!.saveMergeDraft).toHaveBeenCalledWith("F", "keep my merge draft"));
+  pending = true; emit(); await vi.waitFor(() => expect(query("comparison").hidden).toBe(true)); expect(button("confirm").disabled).toBe(true);
+  latest = { ...review("computer-3", "later local edits"), path: "renamed.md" }; pending = false; emit();
+  await vi.waitFor(() => expect(query("pane-a").textContent).toContain("later local edits")); expect(button("confirm").disabled).toBe(true);
+  expect(query("review-title").textContent).toBe("renamed.md");
+  button("manual-merge").click(); expect((query("merge-editor") as HTMLTextAreaElement).value).toBe("keep my merge draft");
+  button("confirm").click(); await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest, "", undefined, new TextEncoder().encode("keep my merge draft")));
+});
+it("keeps transient failures quiet and does not expose arbitrary error text or paths in problem details", async () => {
+  currentStatus = { ...currentStatus, state: "needs-attention", errors: ["NETWORK_TIMEOUT"] }; new SyncOverview({} as App, plugin, () => {}).open();
+  await vi.waitFor(() => expect(query("status-title").textContent).toBe("等待连接")); expect(query("retry").hidden).toBe(true);
+  currentStatus = { ...currentStatus, errors: ["UPLOAD_STAGE_UNAVAILABLE: private/note.md", "unexpected secret value"] }; emit();
+  await vi.waitFor(() => expect(query("status-title").textContent).toBe("同步未完成"));
+  expect(query("diagnostic-message").textContent).toBe("UPLOAD_STAGE_UNAVAILABLE\nSYNC_INCOMPLETE"); expect(query("diagnostics").hasAttribute("open")).toBe(false);
+  await savePreview("problem"); expect(host.notices).toEqual([]);
+});

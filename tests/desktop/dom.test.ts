@@ -27,7 +27,7 @@ it.each([settingsTemplate, overviewTemplate, reviewTemplate])("preserves form co
     for (const node of root.querySelectorAll("[aria-describedby],[aria-labelledby],[aria-controls]")) {
       for (const attribute of ["aria-describedby","aria-labelledby","aria-controls"]) for (const id of node.getAttribute(attribute)?.split(/\s+/)??[]) expect(root.querySelector(`[id="${id}"]`)).not.toBeNull();
     }
-    expect(root.querySelectorAll("svg").length).toBeGreaterThan(0);
+    expect(root.querySelectorAll("button,input,textarea").length).toBeGreaterThan(0);
     for (const svg of root.querySelectorAll("svg")) { expect(svg.getAttribute("viewBox")).toBe("0 0 24 24"); expect(svg.querySelector("path,rect"), svg.outerHTML).not.toBeNull(); }
     expect(root.querySelector("use")).toBeNull();
   }
@@ -39,7 +39,7 @@ it("retains empty password value and clickable labels after sanitization", () =>
 });
 it("switches overview status icons without missing symbols or unsafe SVG references", () => {
   const root=document.createElement("div"); const query=mountTemplate(root,overviewTemplate);
-  for (const id of ["status-symbol","result-symbol"]) {
+  for (const id of ["status-symbol"]) {
     const target=query(id); const original=target.textContent;
     updateIcon(target,"check"); expect(target.querySelector("path")?.getAttribute("d")).toBe("m5 12 4 4L19 6");
     updateIcon(target,"alert"); expect(target.querySelector("path")?.namespaceURI).toBe("http://www.w3.org/2000/svg");

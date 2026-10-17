@@ -46,7 +46,19 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_BROWSER_TEST !== "1")("native IndexedD
     expect(await browser.evaluate("recovery.summary('note.md').then(s => s.requestAcks)")).toBe(0);
     expect(await browser.evaluate("recovery.summary('note.md').then(s => s.inbox)")).toBe(0);
   }, 30000);
-  it.each(["before-inbox-commit", "after-inbox-commit", "after-apply-prepare", "after-vault-write", "before-apply-ack", "after-apply-ack", "before-applied-cursor-commit", "after-applied-cursor-commit", "rename", "delete"])("recovers received data after a real process kill at %s", async point => {
+  it("preserves newer editing after killing a prepared but unstarted native apply", async () => {
+    const a = fixture.clients[0]!; await a.files.edit("note.md", "shared baseline"); await a.engine.sync();
+    expect((await browser.evaluate<EngineStatus>("recovery.sync()")).errors).toEqual([]);
+    await a.files.edit("note.md", "remote change"); await a.engine.sync();
+    await browser.crash("after-apply-prepare");
+    await browser.files.edit("note.md", "new local text after the interrupted preparation"); await browser.start(120000);
+    const status = await browser.evaluate<EngineStatus>("recovery.sync()");
+    expect(status.errors).toEqual([]); expect(status.conflicts).toBe(1);
+    expect(await browser.files.text("note.md")).toBe("new local text after the interrupted preparation");
+    expect(await browser.evaluate("recovery.summary('note.md').then(s => s.tasks)")).toBe(0);
+    expect((await fixture.transport(0).snapshot()).files[0]!.heads).toHaveLength(2);
+  }, 30000);
+  it.each(["before-inbox-commit", "after-inbox-commit", "after-apply-prepare", "before-vault-mutation", "after-vault-write", "before-apply-ack", "after-apply-ack", "before-applied-cursor-commit", "after-applied-cursor-commit", "rename", "delete"])("recovers received data after a real process kill at %s", async point => {
     const a = fixture.clients[0]!; await a.files.edit("old.md", "native initial bytes"); await a.engine.sync();
     expect((await browser.evaluate<EngineStatus>("recovery.sync()")).errors).toEqual([]);
     if (point === "rename") { await rename(a.files.path("old.md"), a.files.path("new.md")); await a.engine.rename("old.md", "new.md"); }

@@ -2,7 +2,8 @@ import "fake-indexeddb/auto";
 import Dexie from "dexie";
 import { expect, it, vi } from "vitest";
 import type { App } from "obsidian";
-vi.mock("obsidian", () => ({ TFile: class {} }));
+vi.mock("obsidian", () => ({ TFile: class {}, MarkdownView: class {} }));
+import { MarkdownView } from "obsidian";
 import { ObsidianVaultPort } from "../../plugin/src/sync/vault-port";
 import { VaultCrypto, canonicalPath, fingerprint, randomId } from "../../plugin/src/sync/crypto";
 import { SyncDB } from "../../plugin/src/sync/store";
@@ -74,7 +75,7 @@ it("honours the host trash preference only after verifying the exact file bytes"
   const expected=new TextEncoder().encode("reviewed bytes"); const file={path:"note.md",stat:{size:expected.length}};
   let current=expected.slice();
   const trashFile=vi.fn(async()=>{}), directTrash=vi.fn(async()=>{});
-  const app={vault:{configDir:".obsidian",getFileByPath:()=>file,readBinary:async()=>current.slice().buffer,trash:directTrash},fileManager:{trashFile}} as unknown as App;
+  const app={workspace:{getLeavesOfType:()=>[]},vault:{configDir:".obsidian",getFileByPath:()=>file,readBinary:async()=>current.slice().buffer,trash:directTrash},fileManager:{trashFile}} as unknown as App;
   const port=new ObsidianVaultPort(app,".obsidian/obsidian-sync-local");
   current=new TextEncoder().encode("unreviewed change"); await expect(port.remove(file.path,expected)).rejects.toThrow("LOCAL_CHANGED_DURING_DELETE"); expect(trashFile).not.toHaveBeenCalled();
   current=expected.slice(); await port.remove(file.path,expected); expect(trashFile).toHaveBeenCalledWith(file); expect(directTrash).not.toHaveBeenCalled();
@@ -93,4 +94,51 @@ it("only enumerates direct private stages and permanently removes validated file
   await port.stageRemove(id); expect(remove).toHaveBeenCalledExactlyOnceWith(`${root}/${id}`); expect(trashLocal).not.toHaveBeenCalled();
   adapter.stat.mockResolvedValueOnce({ type: "folder" });
   await expect(port.stageRemove(randomId())).rejects.toThrow("EXPECTED_STAGE_FILE"); expect(remove).toHaveBeenCalledTimes(1);
+});
+
+it("flushes the host editor buffer without asking for a manual save", async () => {
+  const save = vi.fn(async () => {}), previewSave = vi.fn(async () => {});
+  const source = Object.assign(Object.create(MarkdownView.prototype), { file: { path: "note.md" }, data: "saved", getViewData: () => "new editor content", editor: { getValue: () => "new editor content" }, getMode: () => "source", save });
+  const preview = Object.assign(Object.create(MarkdownView.prototype), { file: { path: "other.md" }, getMode: () => "preview", save: previewSave });
+  const app = { vault: { configDir: ".obsidian", readBinary: async () => new TextEncoder().encode("new editor content").buffer }, workspace: { getLeavesOfType: () => [{ view: source }, { view: preview }] } } as unknown as App;
+  await new ObsidianVaultPort(app, ".obsidian/obsidian-sync-local").flushEdits("note.md");
+  expect(save).toHaveBeenCalledOnce(); expect(previewSave).not.toHaveBeenCalled();
+});
+it("refuses to overwrite or delete text still waiting in the editor auto-save buffer", async () => {
+  let saved = "reviewed content", buffer = "new typing before auto-save";
+  const file = { path: "note.md", stat: { size: saved.length } }, encoder = new TextEncoder();
+  const view = Object.assign(Object.create(MarkdownView.prototype), { file, data: saved, getViewData: () => buffer, getMode: () => "source", editor: { getValue: () => buffer }, save: async () => { saved = buffer; view.data = saved; } });
+  const trashFile = vi.fn(async () => {});
+  const app = { workspace: { getLeavesOfType: () => [{ view }] }, fileManager: { trashFile }, vault: { configDir: ".obsidian", getFileByPath: () => file,
+    readBinary: async () => encoder.encode(saved).buffer, process: async (_file: unknown, fn: (text: string) => string) => { saved = fn(saved); } } } as unknown as App;
+  const port = new ObsidianVaultPort(app, ".obsidian/obsidian-sync-local");
+  await expect(port.write("note.md", encoder.encode("selected phone content"), encoder.encode(saved))).rejects.toThrow("LOCAL_CHANGED_DURING_APPLY");
+  await expect(port.remove("note.md", encoder.encode(saved))).rejects.toThrow("LOCAL_CHANGED_DURING_APPLY");
+  expect(saved).toBe("reviewed content"); expect(buffer).toBe("new typing before auto-save"); expect(trashFile).not.toHaveBeenCalled();
+  await port.flushEdits("note.md"); expect(saved).toBe("new typing before auto-save");
+  buffer = saved; await port.write("note.md", encoder.encode("explicitly chosen result"), encoder.encode(saved));
+  expect(saved).toBe("explicitly chosen result");
+});
+it("waits when the host save call returns before an existing save reaches the file", async () => {
+  const encoder = new TextEncoder(); let disk = "old saved file";
+  const view = Object.assign(Object.create(MarkdownView.prototype), { file: { path: "note.md" }, getMode: () => "source", editor: { getValue: () => "new editor buffer" }, save: async () => {} });
+  const app = { workspace: { getLeavesOfType: () => [{ view }] }, vault: { configDir: ".obsidian", readBinary: async () => encoder.encode(disk).buffer } } as unknown as App;
+  const port = new ObsidianVaultPort(app, ".obsidian/obsidian-sync-local");
+  await expect(port.flushEdits("note.md")).rejects.toThrow("LOCAL_EDITOR_CHANGES_PENDING");
+  expect(disk).toBe("old saved file"); disk = "new editor buffer"; await expect(port.flushEdits("note.md")).resolves.toBeUndefined();
+});
+it("checks only the requested editor and accepts unchanged CRLF text without hiding new typing", async () => {
+  const encoder = new TextEncoder(); let buffer = "first\nsecond\n";
+  const file = { path: "note.md", stat: { size: 15 } }, save = vi.fn(async () => {}), otherSave = vi.fn(async () => { throw new Error("OTHER_SAVE_PENDING"); });
+  const view = Object.assign(Object.create(MarkdownView.prototype), { file, getMode: () => "source", editor: { getValue: () => buffer }, save });
+  const other = Object.assign(Object.create(MarkdownView.prototype), { file: { path: "other.md" }, getMode: () => "source", save: otherSave });
+  const process = vi.fn(async (_file: unknown, fn: (value: string) => string) => { fn("first\r\nsecond\r\n"); });
+  const app = { workspace: { getLeavesOfType: () => [{ view }, { view: other }] }, vault: { configDir: ".obsidian", getFileByPath: () => file,
+    readBinary: async () => encoder.encode("first\r\nsecond\r\n").buffer, process } } as unknown as App;
+  const port = new ObsidianVaultPort(app, ".obsidian/obsidian-sync-local");
+  await port.flushEdits("note.md"); expect(save).toHaveBeenCalledOnce(); expect(otherSave).not.toHaveBeenCalled();
+  await port.write("note.md", encoder.encode("remote choice"), encoder.encode("first\r\nsecond\r\n"));
+  buffer += "new typing";
+  await expect(port.flushEdits("note.md")).rejects.toThrow("LOCAL_EDITOR_CHANGES_PENDING");
+  await expect(port.write("note.md", encoder.encode("remote choice"), encoder.encode("first\r\nsecond\r\n"))).rejects.toThrow("LOCAL_CHANGED_DURING_APPLY");
 });

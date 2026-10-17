@@ -61,22 +61,23 @@ export class RememberedUnlock {
   async retirementIdentity(): Promise<UnlockIdentity | null> {
     return (await this.readRetirement())?.identity ?? null;
   }
+  /** Persist before replacing the settings pointer; preparation never removes a file or native key. */
+  async prepareRetirement(): Promise<void> {
+    if (!this.files.remove || await this.readRetirement() || !await this.files.exists(this.path)) return;
+    // Keep the opaque original even if it cannot currently be opened. Deletion validates it below.
+    const retirement = retirementSchema.parse({ format: 0, identity: this.identity, record: await this.files.read(this.path) });
+    const encoded = JSON.stringify(retirement), journal = `${this.path}.retiring`;
+    await this.files.write(journal, encoded);
+    if (await this.files.read(journal) !== encoded) throw new Error("UNLOCK_WRITE_INCOMPLETE");
+  }
   /** Caller has durably installed another record; this path is no longer a recovery pointer. */
   async retire(active?: RememberedUnlock): Promise<void> {
     if (active?.path === this.path) return;
     if (!this.files.remove) return;
     const journal = `${this.path}.retiring`;
-    let retirement = await this.readRetirement();
-    if (!retirement) {
-      if (!await this.files.exists(this.path)) return;
-      const record = await this.files.read(this.path);
-      const raw: unknown = JSON.parse(record);
-      if (!disabledSchema.safeParse(raw).success) envelopeSchema.parse(raw);
-      retirement = { format: 0, identity: this.identity, record };
-      const encoded = JSON.stringify(retirement);
-      await this.files.write(journal, encoded);
-      if (await this.files.read(journal) !== encoded) throw new Error("UNLOCK_WRITE_INCOMPLETE");
-    }
+    await this.prepareRetirement();
+    const retirement = await this.readRetirement();
+    if (!retirement) return;
     for (const field of ["vaultId", "deviceId", "databaseId", "endpoint"] as const) {
       if (retirement.identity[field] !== this.identity[field]) throw new Error("UNLOCK_IDENTITY_MISMATCH");
     }

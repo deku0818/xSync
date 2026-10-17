@@ -45,9 +45,9 @@ async function fixture() {
   const created = await VaultCrypto.create(identity.vaultId, "public-retirement-test-only");
   const material: StoredMaterial = { format: 0, vaultId: identity.vaultId, keyPackageFingerprint: "a".repeat(64), session: created.crypto.sessionMaterial(), token: "t".repeat(64) };
   created.crypto.close(); await store(oldName).save(material); await store(activeName).save(material);
-  const cleanup = async (current = activeName): Promise<void> => {
+  const cleanup = async (current = activeName, endpoint = identity.endpoint): Promise<void> => {
     const owner = Object.assign(Object.create(ObsidianSyncPlugin.prototype) as CleanupOwner, {
-      app: { vault: { adapter } }, root, endpoint: identity.endpoint, connectionRecord: current, remembered: store(current),
+      app: { vault: { adapter } }, root, endpoint, connectionRecord: current, remembered: store(current, endpoint),
       unlockStore: (endpoint: string, name: string) => store(name, endpoint),
     });
     await owner.cleanupConnectionRecords();
@@ -64,6 +64,26 @@ it.each<Boundary>(["journal-write-before", "journal-write-after", "key-remove-be
   f.setFault(); await f.cleanup(); await f.cleanup();
   expect(f.files.has(`${f.root}/${f.oldName}`)).toBe(false); expect(f.files.has(`${f.root}/${f.oldName}.retiring`)).toBe(false);
   expect(f.keys.size).toBe(1); expect(await f.store(f.activeName).load()).toEqual(f.material);
+});
+
+it.each(["address", "token"])("prepares retirement before the %s pointer switch and only deletes the old wrapping key after it", async kind => {
+  const f = await fixture();
+  await f.store(f.activeName).retire();
+  const endpoint = kind === "address" ? "https://next.fixture.invalid" : f.identity.endpoint;
+  const material = { ...f.material, token: kind === "token" ? "n".repeat(64) : f.material.token };
+  await f.store(f.activeName, endpoint).save(material);
+  const original = f.files.get(`${f.root}/${f.oldName}`);
+  await f.store(f.oldName).prepareRetirement();
+  // A restart before the settings pointer commits must continue using the old key.
+  await f.cleanup(f.oldName);
+  expect(f.files.get(`${f.root}/${f.oldName}`)).toBe(original);
+  expect(await f.store(f.oldName).load()).toEqual(f.material); expect(f.keys.size).toBe(2);
+  expect(f.files.has(`${f.root}/${f.oldName}.retiring`)).toBe(true);
+  // After the pointer commits, the journal supplies the old binding even across an address change.
+  await f.cleanup(f.activeName, endpoint); await f.cleanup(f.activeName, endpoint);
+  expect(f.files.has(`${f.root}/${f.oldName}`)).toBe(false);
+  expect(f.files.has(`${f.root}/${f.oldName}.retiring`)).toBe(false); expect(f.keys.size).toBe(1);
+  expect(await f.store(f.activeName, endpoint).load()).toEqual(material);
 });
 
 it("retains a new credential written at the retiring path while native deletion is in flight", async () => {

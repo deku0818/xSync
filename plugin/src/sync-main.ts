@@ -316,10 +316,12 @@ export default class ObsidianSyncPlugin extends Plugin {
           const remembered = this.unlockStore(endpoint, record, vaultId);
           await remembered.save({ ...candidate.rememberedMaterial(), token });
           if (this.disposed) throw new Error("PLUGIN_UNLOADED");
+          const previousRecord = this.remembered;
+          await previousRecord?.prepareRetirement();
+          if (this.disposed) throw new Error("PLUGIN_UNLOADED");
           // Immutable protected records keep the previous configuration usable if saving the pointer fails.
           await this.saveData({ format: 4, vaultId, autoSync: this.autoSync, endpoint, record, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: receipt.revision, profileDirty: false });
           if (this.disposed) throw new Error("PLUGIN_UNLOADED");
-          const previousRecord = this.remembered;
           this.engine?.lock(); this.engine = candidate; installed = true; this.config.vaultId = vaultId; this.config.token = token;
           this.endpoint = endpoint; this.remote = remote; this.deviceName = name; this.profileRevision = receipt.revision; this.profileDirty = false; this.profilePending = undefined; this.connectionRecord = record; this.restoreAllowed = true; this.remembered = remembered;
           this.hasSavedKey = true;

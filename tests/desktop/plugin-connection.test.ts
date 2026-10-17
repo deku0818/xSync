@@ -125,12 +125,69 @@ it("retires unreferenced protected records only after the new settings pointer s
   host.files.set(root+"unrelated.json","keep"); host.failSave=true;
   await expect(plugin.saveConnection(endpoint,"")).rejects.toThrow("SETTINGS_WRITE_FAILED");
   expect(host.files.has(root+old)).toBe(true); expect((host.saved as {record:string}).record).toBe(old);
-  expect([...host.files.keys()].filter(path=>path.startsWith(root+"connection-")).length).toBe(2);
+  expect([...host.files.keys()].filter(path=>path.startsWith(root+"connection-") && path.endsWith(".json")).length).toBe(2);
   host.failSave=false; await plugin.saveConnection(endpoint,"");
   const current=(host.saved as {record:string}).record;
   expect([...host.files.keys()].filter(path=>path.startsWith(root+"connection-"))).toEqual([root+current]);
   expect(host.files.get(root+"unrelated.json")).toBe("keep");
   expect(await (plugin as unknown as {remembered:RememberedUnlock}).remembered.load()).not.toBeNull();
+});
+it.each(["address", "token"])("journals the previous %s credential before publishing a new pointer and recovers after unload", async kind => {
+  const plugin = await load(); await plugin.saveConnection(endpoint, "test-sync-key");
+  const root = ".obsidian/obsidian-sync-local/", old = (host.saved as { record: string }).record;
+  const oldEnvelope = host.files.get(root + old)!;
+  const nextEndpoint = kind === "address" ? "http://localhost:8873" : endpoint;
+  if (kind === "token") (plugin as unknown as { config: { token: string } }).config.token = "n".repeat(64);
+  const save = plugin.saveData.bind(plugin);
+  vi.spyOn(plugin, "saveData").mockImplementation(async value => {
+    expect(JSON.parse(host.files.get(root + old + ".retiring")!)).toMatchObject({ identity: { endpoint }, record: oldEnvelope });
+    await save(value); plugin.onunload();
+  });
+  await expect(plugin.saveConnection(nextEndpoint, "")).rejects.toThrow("PLUGIN_UNLOADED");
+  expect(host.files.has(root + old)).toBe(true);
+  const current = (host.saved as { record: string }).record;
+  expect(current).not.toBe(old);
+  const restarted = await load(); await (restarted as unknown as { startup(): Promise<void> }).startup();
+  expect(restarted.engine!.unlocked).toBe(true);
+  expect(host.files.has(root + old)).toBe(false); expect(host.files.has(root + old + ".retiring")).toBe(false);
+  expect(host.files.has(root + current)).toBe(true);
+});
+it("keeps the active credential and its prepared journal when publishing the new pointer fails", async () => {
+  const plugin = await load(); await plugin.saveConnection(endpoint, "test-sync-key");
+  const saved = structuredClone(host.saved), root = ".obsidian/obsidian-sync-local/", old = (host.saved as { record: string }).record;
+  const original = host.files.get(root + old);
+  host.failSave = true;
+  await expect(plugin.saveConnection("http://localhost:8873", "")).rejects.toThrow("SETTINGS_WRITE_FAILED");
+  expect(host.saved).toEqual(saved); expect(host.files.has(root + old + ".retiring")).toBe(true);
+  plugin.onunload(); await Promise.resolve(); host.failSave = false;
+  const restarted = await load(); await (restarted as unknown as { startup(): Promise<void> }).startup();
+  expect(restarted.engine!.unlocked).toBe(true); expect(host.files.get(root + old)).toBe(original);
+  expect(host.files.has(root + old + ".retiring")).toBe(true);
+  await restarted.saveConnection("http://localhost:8873", "");
+  expect(host.files.has(root + old)).toBe(false); expect(host.files.has(root + old + ".retiring")).toBe(false);
+});
+it.each(["before-write", "after-write", "unload"])("does not publish a new pointer when retirement preparation stops at %s", async boundary => {
+  const plugin = await load(); await plugin.saveConnection(endpoint, "test-sync-key");
+  const saved = structuredClone(host.saved), root = ".obsidian/obsidian-sync-local/", old = (host.saved as { record: string }).record;
+  const original = host.files.get(root + old), prepare = RememberedUnlock.prototype.prepareRetirement;
+  vi.spyOn(RememberedUnlock.prototype, "prepareRetirement").mockImplementationOnce(async function(this: RememberedUnlock) {
+    if (boundary !== "before-write") await prepare.call(this);
+    if (boundary === "unload") plugin.onunload(); else throw new Error("RETIREMENT_PREPARE_INTERRUPTED");
+  });
+  const save = vi.spyOn(plugin, "saveData");
+  await expect(plugin.saveConnection("http://localhost:8873", "")).rejects.toThrow(boundary === "unload" ? "PLUGIN_UNLOADED" : "RETIREMENT_PREPARE_INTERRUPTED");
+  expect(save).not.toHaveBeenCalled(); expect(host.saved).toEqual(saved);
+  expect(host.files.get(root + old)).toBe(original);
+  expect(host.files.has(root + old + ".retiring")).toBe(boundary !== "before-write");
+});
+it("can replace a damaged old envelope while retaining it as uncertain recovery evidence", async () => {
+  const plugin = await load(); await plugin.saveConnection(endpoint, "test-sync-key");
+  const root = ".obsidian/obsidian-sync-local/", old = (host.saved as { record: string }).record;
+  host.files.set(root + old, "{damaged envelope");
+  await plugin.saveConnection("http://localhost:8873", "");
+  expect((host.saved as { record: string }).record).not.toBe(old);
+  expect(plugin.engine!.unlocked).toBe(true); expect(host.files.get(root + old)).toBe("{damaged envelope");
+  expect(JSON.parse(host.files.get(root + old + ".retiring")!).record).toBe("{damaged envelope");
 });
 it("initializes an ordinary vault without a marker, and reloads its protected credential with the same identity and pause state", async () => {
   ordinaryVault(); const plugin = await load(); const identity = host.files.get(".obsidian/obsidian-sync-local/device.json")!;

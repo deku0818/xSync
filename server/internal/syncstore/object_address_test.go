@@ -223,6 +223,7 @@ func TestObjectCapabilityIsRequiredBeforeServingAddressedState(t *testing.T) {
 	}
 	request.Header.Set("X-Sync-Objects", ObjectCapability)
 	request.Header.Set("X-Sync-Continuity", ContinuityCapability)
+	request.Header.Set("X-Sync-Snapshots", SnapshotCapability)
 	response = httptest.NewRecorder()
 	s.Handler().ServeHTTP(response, request)
 	if response.Code != 200 {

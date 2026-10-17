@@ -292,6 +292,7 @@ func TestContentCapabilityAndExpiredReadAreEnforced(t *testing.T) {
 	request.Header.Set("X-Sync-Content", ContentCapability)
 	request.Header.Set("X-Sync-Objects", ObjectCapability)
 	request.Header.Set("X-Sync-Continuity", ContinuityCapability)
+	request.Header.Set("X-Sync-Snapshots", SnapshotCapability)
 	response = httptest.NewRecorder()
 	h.ServeHTTP(response, request)
 	if response.Code != 200 {
@@ -303,6 +304,7 @@ func TestContentCapabilityAndExpiredReadAreEnforced(t *testing.T) {
 	request.Header.Set("X-Sync-Content", ContentCapability)
 	request.Header.Set("X-Sync-Objects", ObjectCapability)
 	request.Header.Set("X-Sync-Continuity", ContinuityCapability)
+	request.Header.Set("X-Sync-Snapshots", SnapshotCapability)
 	response = httptest.NewRecorder()
 	h.ServeHTTP(response, request)
 	var body map[string]string
@@ -482,14 +484,45 @@ func TestLogRetentionRequiresRecoverableSnapshot(t *testing.T) {
 	}
 	p := DefaultCleanupPolicy()
 	p.LogEntries = 1
-	_, e := s.Collect(ctx, p)
-	expectCode(t, e, "SNAPSHOT_TOO_LARGE")
-	if scalar(t, s, "SELECT count(*) FROM changes WHERE vault_id=$1", s.Config.VaultID) != 3 || scalar(t, s, "SELECT min_seq FROM vaults WHERE id=$1", s.Config.VaultID) != 0 {
-		t.Fatal("retention cut off recovery")
+	report, e := s.Collect(ctx, p)
+	if e != nil || report.Changes != 2 {
+		t.Fatalf("paged recovery should allow truncation: %+v %v", report, e)
 	}
-	_, e = s.CreateSnapshot(ctx, "computer-a", opaqueID())
+	ticket, e := s.CreateSnapshot(ctx, "computer-a", opaqueID())
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = s.ReadSnapshot(ctx, "computer-a", ticket.ID)
 	expectCode(t, e, "SNAPSHOT_TOO_LARGE")
-	if scalar(t, s, "SELECT count(*) FROM content_leases WHERE vault_id=$1", s.Config.VaultID) != 0 {
-		t.Fatal("failed snapshot leaked protection")
+	var offset int64
+	files, revisions, pages := 0, 0, 0
+	for {
+		page, err := s.ReadSnapshotPage(ctx, "computer-a", ticket.ID, offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(page)
+		if err != nil || len(encoded)+1 > snapshotPageBytes {
+			t.Fatal("page exceeded its wire budget", err)
+		}
+		files += len(page.Files)
+		revisions += len(page.Revisions)
+		pages++
+		if page.Next == nil {
+			break
+		}
+		offset = *page.Next
+	}
+	if files != 1 || revisions != 3 || pages < 2 {
+		t.Fatalf("incomplete frozen snapshot: files=%d revisions=%d pages=%d", files, revisions, pages)
+	}
+	if _, err := s.ReadSnapshotPage(ctx, "computer-b", ticket.ID, 0); err == nil {
+		t.Fatal("cross-device page access")
+	}
+	if e = s.ReleaseLease(ctx, "computer-a", ticket.LeaseID); e != nil {
+		t.Fatal(e)
+	}
+	if _, err := s.ReadSnapshotPage(ctx, "computer-a", ticket.ID, 0); err == nil {
+		t.Fatal("released page still readable")
 	}
 }

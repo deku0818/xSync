@@ -88,3 +88,13 @@ it("integrates with immutable remembered-unlock files without writing passphrase
   expect(await restored.load()).toEqual(material);
   f.items.clear(); await expect(restored.load()).rejects.toThrow("IOS_KEYCHAIN_KEY_UNAVAILABLE"); expect(files.get("connection.json")).toBe(bytes);
 });
+
+it("retires only the exact wrapping key and rejects a foreign identity before deletion", async () => {
+  const f=fixture(), p=iosProtector(true,identity,f.runtime);
+  const old=await p.protect("old"), current=await p.protect("current");
+  await expect(iosProtector(true,{...identity,deviceId:"foreign"},f.runtime).forget!(old)).rejects.toThrow("IOS_KEYCHAIN_IDENTITY_MISMATCH");
+  expect(f.storage.internalRemoveItem).not.toHaveBeenCalled();
+  await p.forget!(old); expect(f.items.size).toBe(1); expect(await p.unprotect(current)).toBe("current");
+  await p.forget!(current,current); expect(f.items.size).toBe(1); expect(await p.unprotect(current)).toBe("current");
+  await expect(p.unprotect(old)).rejects.toThrow("IOS_KEYCHAIN_KEY_UNAVAILABLE");
+});

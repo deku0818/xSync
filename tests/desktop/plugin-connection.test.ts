@@ -7,6 +7,8 @@ import { VaultCrypto, randomId } from "../../plugin/src/sync/crypto";
 import { SyncDB } from "../../plugin/src/sync/store";
 import { AutomaticSync, RemoteEvents } from "../../plugin/src/sync/realtime";
 import { RememberedUnlock } from "../../plugin/src/desktop/remembered-unlock";
+import { RecoveryFixture, recoveryHTTP, RECOVERY_PASSPHRASE } from "./recovery-support";
+import { Transport } from "../../plugin/src/sync/transport";
 
 const host = vi.hoisted(() => ({ saved: null as unknown, failSave: false, failProtect: false, failUnprotect: false, loseEnrollment: false, enrollments: [] as unknown[], modern: false, onboarding: {} as unknown, reads: 0, status: 200, files: new Map<string, string>(), handshake: {} as unknown, profile: { id: "device", name: "Fixture", revision: 0, ciphertext: "" }, handlers: new Map<string, (...args: unknown[]) => void>() }));
 vi.mock("obsidian", () => ({
@@ -51,13 +53,85 @@ beforeEach(async () => {
 });
 afterEach(async () => { instance?.onunload(); instance = undefined; await new SyncDB(`obsidian-sync-dev-${databaseId}`).delete(); vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks(); });
 async function load() {
-  const adapter = { mkdir: async (p: string) => { host.files.set(p, ""); }, exists: async (p: string) => host.files.has(p), read: async (p: string) => host.files.get(p)!, write: async (p: string, s: string) => { host.files.set(p, s); } };
+  const adapter = { list: async (root: string) => ({ files: [...host.files.keys()].filter(p => p.startsWith(root+"/") && !p.slice(root.length+1).includes("/")), folders: [] }), remove: async (p: string) => { host.files.delete(p); }, mkdir: async (p: string) => { host.files.set(p, ""); }, exists: async (p: string) => host.files.has(p), read: async (p: string) => host.files.get(p)!, write: async (p: string, s: string) => { host.files.set(p, s); } };
   const app = { vault: { configDir: ".obsidian", adapter, on: (name: string, callback: (...args: unknown[]) => void) => { host.handlers.set(name, callback); } }, workspace: { getLeavesOfType: () => [], onLayoutReady(callback: () => void) { host.handlers.set("layout", callback); } } } as unknown as App;
   instance = new ObsidianSyncPlugin(app, { version: "0.1.0" } as PluginManifest); await instance.onload();
   databaseId = JSON.parse(host.files.get(".obsidian/obsidian-sync-local/device.json")!).databaseId;
   return instance;
 }
 function ordinaryVault() { host.modern = true; host.files.delete(".obsidian/obsidian-sync-development.json"); host.files.delete(".obsidian/obsidian-sync-local/device.json"); }
+it.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1").each(["receipt", "pointer"])("preserves a rotated authorization after losing its %s, restarting and closing enrollment", async boundary => {
+  const fixture = new RecoveryFixture(); await fixture.open(true);
+  const originalRequest = vi.mocked(requestUrl).getMockImplementation()!;
+  let loseReceipt = false;
+  try {
+    vi.mocked(requestUrl).mockImplementation(request => {
+      const result = (async () => {
+        const input = typeof request === "string" ? { url: request } : request;
+        let body: Uint8Array | undefined;
+        if (typeof input.body === "string") body = new TextEncoder().encode(input.body);
+        else if (input.body) body = new Uint8Array(input.body);
+        const response = await recoveryHTTP({ url: input.url, method: input.method ?? "GET", headers: input.headers ?? {}, body });
+        if (loseReceipt && new URL(input.url).pathname === "/enroll" && response.status === 200) {
+          loseReceipt = false; throw new Error("ENROLLMENT_RECEIPT_LOST");
+        }
+        const text = new TextDecoder().decode(response.bytes);
+        return { status: response.status, headers: response.headers, arrayBuffer: response.bytes.slice().buffer, text, json: JSON.parse(text) };
+      })();
+      return Object.defineProperties(result, {
+        arrayBuffer: { get: () => result.then(response => response.arrayBuffer) },
+        text: { get: () => result.then(response => response.text) },
+        json: { get: () => result.then(response => response.json) },
+      }) as ReturnType<typeof requestUrl>;
+    });
+    ordinaryVault(); const plugin = await load();
+    await plugin.saveConnection(fixture.endpoint, RECOVERY_PASSPHRASE, undefined, "Fixture");
+    const oldRecord = (host.saved as { record: string }).record;
+    const store = (owner: ObsidianSyncPlugin, name: string): RememberedUnlock =>
+      (owner as unknown as { unlockStore(endpoint: string, record: string): RememberedUnlock }).unlockStore(fixture.endpoint, name);
+    const old = (await store(plugin, oldRecord).load())!;
+    await fixture.sql(`UPDATE ${fixture.schema}.vaults SET enrollment_until=clock_timestamp()+interval '10 minutes'`);
+    plugin.engine!.lock();
+    vi.spyOn(RememberedUnlock.prototype, "load").mockRejectedValueOnce(new Error("TEMPORARY_KEYCHAIN_READ_FAILURE"));
+    host.failSave = boundary === "pointer"; loseReceipt = boundary === "receipt";
+    await expect(plugin.saveConnection(fixture.endpoint, RECOVERY_PASSPHRASE, undefined, "Fixture"))
+      .rejects.toThrow(boundary === "pointer" ? "SETTINGS_WRITE_FAILED" : "ENROLLMENT_RECEIPT_LOST");
+    const root = ".obsidian/obsidian-sync-local/";
+    const pending = [...host.files.keys()].find(path => /^pending-[a-f0-9]{64}\.json$/.test(path.slice(root.length)))!;
+    expect(pending).toBeDefined();
+    const fresh = (await store(plugin, pending.slice(root.length)).load())!;
+    expect(fresh.token).not.toBe(old.token);
+    await new Transport(fixture.endpoint, fresh.token!, recoveryHTTP).handshake();
+    await expect(new Transport(fixture.endpoint, old.token!, recoveryHTTP).handshake()).rejects.toThrow("UNAUTHORIZED");
+    const recoveryRecords = [...host.files.keys()].filter(path => path.startsWith(root) && path !== root + oldRecord && /(?:pending|connection)-[a-f0-9]{64}\.json$/.test(path));
+    host.failSave = false; plugin.onunload(); await Promise.resolve();
+    const restarted = await load();
+    await (restarted as unknown as { startup(): Promise<void> }).startup();
+    expect(restarted.engine!.unlocked).toBe(true);
+    for (const path of recoveryRecords) expect(host.files.has(path)).toBe(true);
+    await fixture.sql(`UPDATE ${fixture.schema}.vaults SET enrollment_until=clock_timestamp()-interval '1 second'`);
+    await restarted.saveConnection(fixture.endpoint, "", undefined, "Fixture");
+    await restarted.engine!.validateConnection();
+    const current = (host.saved as { record: string }).record;
+    expect((await store(restarted, current).load())!.token).toBe(fresh.token);
+    expect(host.files.has(pending)).toBe(false); expect(host.files.has(root + oldRecord)).toBe(false);
+    for (const path of recoveryRecords) expect(host.files.has(path)).toBe(false);
+  } finally { vi.mocked(requestUrl).mockImplementation(originalRequest); await fixture.close(); }
+}, 30000);
+
+it("retires unreferenced protected records only after the new settings pointer succeeds", async () => {
+  const plugin=await load(); await plugin.saveConnection(endpoint,"test-sync-key");
+  const old=(host.saved as {record:string}).record, root=".obsidian/obsidian-sync-local/";
+  host.files.set(root+"unrelated.json","keep"); host.failSave=true;
+  await expect(plugin.saveConnection(endpoint,"")).rejects.toThrow("SETTINGS_WRITE_FAILED");
+  expect(host.files.has(root+old)).toBe(true); expect((host.saved as {record:string}).record).toBe(old);
+  expect([...host.files.keys()].filter(path=>path.startsWith(root+"connection-")).length).toBe(2);
+  host.failSave=false; await plugin.saveConnection(endpoint,"");
+  const current=(host.saved as {record:string}).record;
+  expect([...host.files.keys()].filter(path=>path.startsWith(root+"connection-"))).toEqual([root+current]);
+  expect(host.files.get(root+"unrelated.json")).toBe("keep");
+  expect(await (plugin as unknown as {remembered:RememberedUnlock}).remembered.load()).not.toBeNull();
+});
 it("initializes an ordinary vault without a marker, and reloads its protected credential with the same identity and pause state", async () => {
   ordinaryVault(); const plugin = await load(); const identity = host.files.get(".obsidian/obsidian-sync-local/device.json")!;
   expect(Object.keys(JSON.parse(identity)).sort()).toEqual(["databaseId","deviceId"]); expect(plugin.engine).toBeUndefined(); expect(plugin.endpoint).toBe("");

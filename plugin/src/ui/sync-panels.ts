@@ -1,11 +1,12 @@
 import { Modal, Notice, type App } from "obsidian";
-import type ObsidianSyncPlugin from "../sync-main";
-import type { Review } from "../sync/engine";
-import { canonicalPath } from "../sync/crypto";
-import { mountTemplate, updateIcon } from "./dom";
-import { overviewTemplate, reviewTemplate } from "./templates";
-import { compareLines } from "./diff-lines";
-import { syncPresentation } from "./sync-status";
+
+import type ObsidianSyncPlugin from "../sync-main.js";
+import { canonicalPath } from "../sync/crypto.js";
+import type { Review } from "../sync/engine.js";
+import { compareLines } from "./diff-lines.js";
+import { mountTemplate, updateIcon } from "./dom.js";
+import { syncPresentation } from "./sync-status.js";
+import { overviewTemplate, reviewTemplate } from "./templates.js";
 
 /** Compact status on demand; no routine notifications or permanent dashboard. */
 export class SyncOverview extends Modal {
@@ -34,7 +35,10 @@ export class SyncOverview extends Modal {
         const display = syncPresentation(status, !!this.plugin.engine?.unlocked, this.plugin.autoSync, this.plugin.syncing, this.plugin.localPending);
         q("status-title").setText(display.label); q("status-description").setText(display.message);
         root.dataset.state = display.state;
-        updateIcon(q("status-symbol"), display.state === "complete" ? "check" : ["conflict", "attention"].includes(display.state) ? "alert" : "cloud");
+        let statusIcon = "cloud";
+        if (display.state === "complete") statusIcon = "check";
+        else if (["conflict", "attention"].includes(display.state)) statusIcon = "alert";
+        updateIcon(q("status-symbol"), statusIcon);
         q("pause").setText(this.plugin.autoSync ? "暂停同步" : "恢复同步");
         q<HTMLButtonElement>("pause").disabled = !this.plugin.engine;
         q("retry").hidden = display.state !== "attention";
@@ -72,16 +76,26 @@ export class ConflictReview extends Modal {
     let review: Review | undefined, closed = false, submitting = false, refreshing = false, again = false, ready = false, syncRequested = false;
     let mode = "", original = "", companion = "", draft = "", draftInitialized = false;
     let draftWrites: Promise<unknown> = Promise.resolve();
-    const versions = () => review?.versions ?? [];
-    const comparable = () => !!review && versions().length === 2 && versions().every(version => version.text !== null && version.bytes.length <= 65536);
+    function versions(): Review["versions"] { return review?.versions ?? []; }
+    function chosenVersion(): Review["versions"][number] | undefined {
+      if (mode === "a") return versions()[0];
+      if (mode === "b") return versions()[1];
+      return versions().find(version => mode === `version:${version.revision}`);
+    }
+    const extraElements: HTMLElement[] = [];
+    function comparable(): boolean {
+      return !!review && versions().length === 2 && versions().every(version => version.text !== null && version.bytes.length <= 65536);
+    }
     const companionError = (): string => {
       try { canonicalPath(companion); } catch { return "请填写有效的文件名。"; }
       if (companion.normalize("NFC").toLowerCase() === this.path.normalize("NFC").toLowerCase()) return "另一份文件名不能与原文件相同。";
-      return this.plugin.policy.reason(companion, versions().find(version => version.revision !== original)?.bytes.length) ? "这个文件名不在同步范围内。" : "";
+      const other = versions().find(version => version.revision !== original);
+      return this.plugin.policy.reason(companion, other?.length ?? other?.bytes.length) ? "这个文件名不在同步范围内。" : "";
     };
     const updateFooter = (): void => {
-      const choice = mode === "a" ? versions()[0] : mode === "b" ? versions()[1] : undefined;
-      const allowed = ready && !refreshing && !submitting && this.plugin.autoSync && comparable() && !!mode &&
+      const choice = chosenVersion();
+      const allowed = ready && !refreshing && !submitting && this.plugin.autoSync && !!mode &&
+        (!!choice || mode === "both" && versions().length === 2 || mode === "merge" && comparable()) &&
         (mode !== "both" || !companionError()) && (mode !== "merge" || draftInitialized && new TextEncoder().encode(draft).length <= 65536);
       q<HTMLButtonElement>("confirm").disabled = !allowed;
       let label = "确认";
@@ -90,12 +104,15 @@ export class ConflictReview extends Modal {
       else if (mode === "merge") label = "确认合并结果";
       else if (choice) label = choice.kind === "deleted" ? "确认删除文件" : `确认用「${choice.device}」这份`;
       q("confirm").setText(label);
-      q("footer-summary").setText(!this.plugin.autoSync ? "同步已暂停，恢复后才能确认。" : !ready ? "正在等待最新内容，原文件与草稿均保留。" : "其他文件继续同步");
+      let footerSummary = "其他文件继续同步";
+      if (!this.plugin.autoSync) footerSummary = "同步已暂停，恢复后才能确认。";
+      else if (!ready) footerSummary = "正在等待最新内容，原文件与草稿均保留。";
+      q("footer-summary").setText(footerSummary);
     };
     const refreshChoices = (): void => {
       for (const button of shell.querySelectorAll<HTMLButtonElement>("[data-mode]")) {
         button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
-        button.disabled = submitting || !ready || !comparable() || button.dataset.mode === "both" && versions().some(version => version.kind === "deleted");
+        button.disabled = submitting || !ready || button.dataset.mode === "both" && (versions().length !== 2 || versions().some(version => version.kind === "deleted"));
       }
       q("both-detail").hidden = mode !== "both"; q("merge-detail").hidden = mode !== "merge";
       q<HTMLInputElement>("companion-path").value = companion;
@@ -106,7 +123,10 @@ export class ConflictReview extends Modal {
       let summary = "没有默认选择，也可以稍后再处理。";
       if (mode === "both") summary = `双方都保留，另一份保存为「${companion}」。`;
       else if (mode === "merge") summary = "原文件将使用下方的合并结果。";
-      else if (mode === "a" || mode === "b") { const chosen = versions()[mode === "a" ? 0 : 1]!; summary = chosen.kind === "deleted" ? "确认后会删除当前文件。" : `原文件将使用「${chosen.device}」的内容。`; }
+      else {
+        const chosen = chosenVersion();
+        if (chosen) summary = chosen.kind === "deleted" ? "确认后会删除当前文件。" : `原文件将使用「${chosen.device}」的内容。`;
+      }
       q("choice-summary").setText(summary); updateFooter();
     };
     const renderCompare = (): void => {
@@ -116,11 +136,33 @@ export class ConflictReview extends Modal {
         q(`choice-${side}`).setText(`用「${version?.device ?? "设备"}」这份${version?.kind === "deleted" ? "（删除）" : ""}`);
         q(`pane-${side}`).empty();
       }
-      if (!comparable()) return;
+      for (const node of extraElements) node.remove();
+      extraElements.length = 0;
+      for (const version of versions().slice(2)) {
+        const choice = q("choice-b").parentElement!.createEl("button", { text: `用「${version.device}」这份${version.kind === "deleted" ? "（删除）" : ""}`, attr: { type: "button", "data-mode": `version:${version.revision}`, "aria-pressed": "false" } });
+        choice.onclick = () => choose(`version:${version.revision}`); extraElements.push(choice);
+        const section = q("comparison").createDiv("version"), header = section.createDiv("version-head");
+        header.createSpan({ text: version.device }); header.createEl("small", { text: version.deviceId === this.plugin.engine?.deviceId ? "此设备" : "另一台设备" });
+        section.createDiv("code-pane").setText(version.text ?? `${version.kind === "deleted" ? "删除文件" : "文件内容"} · ${version.length ?? version.bytes.length} 字节`);
+        extraElements.push(section);
+      }
+      if (!comparable()) {
+        for (const [index, side] of ["a", "b"].entries()) {
+          const version = versions()[index];
+          q(`pane-${side}`).setText(version?.text ?? `${version?.kind === "deleted" ? "删除文件" : "文件内容"} · ${version?.length ?? version?.bytes.length ?? 0} 字节`);
+        }
+        return;
+      }
       for (const row of compareLines(versions()[0]!.text!, versions()[1]!.text!)) for (const side of ["a", "b"] as const) {
         const version = versions()[side === "a" ? 0 : 1]!;
         if (version.kind === "deleted") { q(`pane-${side}`).setText("这份修改删除了文件。"); continue; }
-        const line = q(`pane-${side}`).createDiv(`code-row${row[`${side}Line`] === undefined ? " blank" : row.type === "same" ? "" : side === "a" ? " changed-left" : " changed-right"}`);
+        let lineClass = "code-row";
+        if (row[`${side}Line`] === undefined) lineClass += " blank";
+        else if (row.type !== "same") {
+          if (side === "a") lineClass += " changed-left";
+          else lineClass += " changed-right";
+        }
+        const line = q(`pane-${side}`).createDiv(lineClass);
         line.createSpan({ cls: "line-number", text: String(row[`${side}Line`] ?? "") }); line.createSpan({ cls: "code-text", text: row[side] ?? " " });
       }
     };
@@ -159,16 +201,18 @@ export class ConflictReview extends Modal {
           q("update-message").setText(`内容已更新，请重新选择。${draftInitialized ? "合并草稿仍保留。" : ""}`);
           renderCompare();
         } else if (!ready) { q("update-banner").hidden = false; q("update-message").setText("最新内容已就绪，请重新选择。"); }
-        ready = comparable(); syncRequested = false;
+        ready = versions().length >= 2; syncRequested = false;
         q("comparison").hidden = !ready; q("decisions").hidden = !ready;
-        q("review-description").setText(ready ? "双方内容均保留，请对比后选择。" : "此文件暂不支持完整对比，所有内容仍保留。");
+        q("review-description").setText(comparable() ? "双方内容均保留，请对比后选择。" : "所有版本均保留，可选择一份；两个文件版本也可都保留。");
       } catch (error) {
         if (closed) return;
         ready = false; mode = "";
         q("comparison").hidden = true; q("decisions").hidden = true;
         const code = error instanceof Error ? error.message : "";
         const localPending = code === "REVIEW_LOCAL_CHANGES_PENDING" || code === "LOCAL_EDITOR_CHANGES_PENDING";
-        const message = localPending ? "正在同步这篇笔记的最新修改，完成后将自动更新对比。" : code === "NO_REMOTE_CONFLICT" ? "这篇笔记的冲突已处理，可以关闭此窗口。" : "暂时无法读取最新内容，正在等待重试。原文件与草稿均保留。";
+        let message = "暂时无法读取最新内容，正在等待重试。原文件与草稿均保留。";
+        if (localPending) message = "正在同步这篇笔记的最新修改，完成后将自动更新对比。";
+        else if (code === "NO_REMOTE_CONFLICT") message = "这篇笔记的冲突已处理，可以关闭此窗口。";
         q("review-description").setText(message);
         if (localPending && !syncRequested && this.plugin.autoSync) {
           syncRequested = true; void this.plugin.sync(false).catch(() => {});
@@ -181,7 +225,7 @@ export class ConflictReview extends Modal {
     };
     q("confirm").onclick = async () => {
       if (q<HTMLButtonElement>("confirm").disabled || !review) return;
-      const frozen = structuredClone(review), selected = mode === "both" ? original : mode === "a" ? versions()[0]!.revision : mode === "b" ? versions()[1]!.revision : "";
+      const frozen = structuredClone(review), selected = mode === "both" ? original : chosenVersion()?.revision ?? "";
       const copyPath = mode === "both" ? companion : undefined, merged = mode === "merge" ? new TextEncoder().encode(draft) : undefined;
       submitting = true; refreshChoices();
       try { await draftWrites; await this.plugin.resolveConflict(frozen, selected, copyPath, merged); this.close(); }

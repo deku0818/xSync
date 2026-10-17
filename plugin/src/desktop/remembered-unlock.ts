@@ -5,7 +5,7 @@ import { enrollmentSchema, type Enrollment } from "../../../protocol/src/enrollm
 export interface StoredMaterial extends RememberedMaterial { token?: string; enrollment?: Enrollment }
 
 export interface UnlockIdentity { vaultId: string; deviceId: string; databaseId: string; endpoint: string }
-export interface LocalTextFiles { exists(path: string): Promise<boolean>; read(path: string): Promise<string>; write(path: string, text: string): Promise<void> }
+export interface LocalTextFiles { exists(path: string): Promise<boolean>; read(path: string): Promise<string>; write(path: string, text: string): Promise<void>; remove?(path: string): Promise<void> }
 const secretHex = z.string().regex(/^[a-f0-9]{64}$/);
 const materialSchema = z.strictObject({ format: z.literal(0), vaultId: z.string(), keyPackageFingerprint: secretHex,
   session: z.strictObject({ format: z.literal(0), vaultId: z.string(), content: secretHex, metadata: secretHex, paths: secretHex, local: secretHex, auth: secretHex }),
@@ -44,5 +44,22 @@ export class RememberedUnlock {
   async clear(): Promise<void> {
     // A durable tombstone also prevents later auto-restore if the old ciphertext once existed.
     await this.files.write(this.path, JSON.stringify({ format: 0, disabled: true }));
+  }
+  /** Caller has durably installed another record; this path is no longer a recovery pointer. */
+  async retire(active?: RememberedUnlock): Promise<void> {
+    if (active?.path === this.path) return;
+    if (!this.files.remove || !await this.files.exists(this.path)) return;
+    const raw: unknown = JSON.parse(await this.files.read(this.path));
+    if (!z.strictObject({ format: z.literal(0), disabled: z.literal(true) }).safeParse(raw).success) {
+      const envelope = envelopeSchema.parse(raw);
+      if (envelope.provider !== this.protector.name) throw new Error("UNLOCK_PROVIDER_CHANGED");
+      let activeCiphertext: Uint8Array | undefined;
+      if (active) {
+        const current = envelopeSchema.parse(JSON.parse(await active.files.read(active.path)));
+        if (current.provider === envelope.provider) activeCiphertext = new Uint8Array(current.ciphertext);
+      }
+      await this.protector.forget?.(new Uint8Array(envelope.ciphertext), activeCiphertext);
+    }
+    await this.files.remove(this.path);
   }
 }

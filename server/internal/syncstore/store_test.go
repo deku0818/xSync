@@ -300,6 +300,7 @@ func TestHTTPAuthenticationAndStrictJSON(t *testing.T) {
 			r.Header.Set("X-Sync-Content", ContentCapability)
 			r.Header.Set("X-Sync-Objects", ObjectCapability)
 			r.Header.Set("X-Sync-Continuity", ContinuityCapability)
+			r.Header.Set("X-Sync-Snapshots", SnapshotCapability)
 			continuityToken, err := s.Continuity(context.Background(), "computer-a")
 			if err != nil {
 				t.Fatal(err)

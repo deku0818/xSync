@@ -1,28 +1,29 @@
-import { timerHost, type TimerHandle } from "./runtime/timers";
 // Based on obsidianmd/obsidian-sample-plugin, commit 07ceb81d1fb3384af611ebf665a1ec42a7e5926d (0BSD).
 import { Modal, Notice, Platform, Plugin, TFile, requestUrl, type App } from "obsidian";
 import { z } from "zod";
+
 import buildManifest from "../../manifest.json";
-import { SyncEngine, type EngineStatus, type Review } from "./sync/engine";
-import { SyncDB } from "./sync/store";
-import { ObsidianVaultPort } from "./sync/vault-port";
-import { Transport, boundedRequest, normalizeEndpoint } from "./sync/transport";
-import { SyncOverview } from "./ui/sync-panels";
-import { syncPresentation } from "./ui/sync-status";
-import { AutomaticSync, RemoteEvents, SerialWork } from "./sync/realtime";
-import { desktopProtector } from "./desktop/protector";
-import { iosProtector } from "./mobile/ios-protector";
-import { RememberedUnlock, type StoredMaterial } from "./desktop/remembered-unlock";
-import { randomId, fingerprint, VaultCrypto } from "./sync/crypto";
-import { enrollConnection } from "./sync/enrollment";
-import { connectionSettings } from "./sync/connection-settings";
-import { connectionFailure, type ConnectionObserver, type ConnectionStep } from "./sync/connection-check";
-import { connectionForm } from "./ui/connection-form";
-import { SyncSettingTab } from "./ui/settings-tab";
-import { SyncPolicy, defaultRules, validateRules, type SyncRules, type FileEntry } from "./sync/policy";
-import { decodeProfile, type ClientView, type ClientConfiguration, type PendingProfile } from "./sync/client-profile";
-import { clientName } from "../../protocol/src/client-profile";
-import { canonical } from "../../protocol/src/model";
+import { clientName } from "../../protocol/src/client-profile.js";
+import { canonical } from "../../protocol/src/model.js";
+import { desktopProtector } from "./desktop/protector.js";
+import { RememberedUnlock, type StoredMaterial } from "./desktop/remembered-unlock.js";
+import { iosProtector } from "./mobile/ios-protector.js";
+import { timerHost, type TimerHandle } from "./runtime/timers.js";
+import { decodeProfile, type ClientView, type ClientConfiguration, type PendingProfile } from "./sync/client-profile.js";
+import { connectionFailure, type ConnectionObserver, type ConnectionStep } from "./sync/connection-check.js";
+import { connectionSettings } from "./sync/connection-settings.js";
+import { randomId, fingerprint, VaultCrypto } from "./sync/crypto.js";
+import { SyncEngine, type EngineStatus, type Review } from "./sync/engine.js";
+import { enrollConnection } from "./sync/enrollment.js";
+import { SyncPolicy, defaultRules, validateRules, type SyncRules, type FileEntry } from "./sync/policy.js";
+import { AutomaticSync, RemoteEvents, SerialWork } from "./sync/realtime.js";
+import { SyncDB } from "./sync/store.js";
+import { Transport, boundedRequest, normalizeEndpoint } from "./sync/transport.js";
+import { ObsidianVaultPort } from "./sync/vault-port.js";
+import { connectionForm } from "./ui/connection-form.js";
+import { SyncSettingTab } from "./ui/settings-tab.js";
+import { SyncOverview } from "./ui/sync-panels.js";
+import { syncPresentation } from "./ui/sync-status.js";
 
 const configSchema = z.strictObject({ endpoint: z.string().default(""), developmentEndpoint: z.string().optional(), token: z.union([z.string().min(32).max(128), z.literal("")]).default(""), deviceId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/), deviceName: z.string().default(""), vaultId: z.string().default(""), databaseId: z.string().regex(/^[a-f0-9]{64}$/) });
 export default class ObsidianSyncPlugin extends Plugin {
@@ -158,6 +159,7 @@ export default class ObsidianSyncPlugin extends Plugin {
         } catch { this.storageState = "暂时无法读取保存的密钥；回到前台后重试，原记录保留。持续失败时请重新填写并保存"; }
       }
       if (this.disposed) { this.engine.lock(); return; }
+      if (this.engine.unlocked) await this.cleanupConnectionRecords();
       this.publishStatus(await this.engine.status(), false); this.updateAutomation();
     });
   }
@@ -199,6 +201,34 @@ export default class ObsidianSyncPlugin extends Plugin {
     };
     const protector = Platform.isDesktop ? desktopProtector(true) : iosProtector(Platform.isIosApp, identity);
     return new RememberedUnlock(this.app.vault.adapter, `${this.root}/${record}`, identity, protector);
+  }
+  private async cleanupConnectionRecords(): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    try {
+      let active: StoredMaterial | null | undefined;
+      const listing = await adapter.list(this.root);
+      for (const path of listing.files) {
+        const name = path.slice(this.root.length + 1);
+        if (name === this.connectionRecord || path !== `${this.root}/${name}` ||
+            !/^(?:(?:connection|pending)-[a-f0-9]{64}|desktop-unlock)\.json$/.test(name)) continue;
+        if (!active) {
+          active = await this.remembered?.load();
+          if (!active?.token) return;
+        }
+        try {
+          const record = this.unlockStore(this.endpoint, name);
+          const material = await record.load();
+          // An unreferenced candidate can still be the only receipt for a rotated token.
+          // Retire only disabled records or credentials already held by the durable active record.
+          if (material && (
+            material.token !== active.token ||
+            material.keyPackageFingerprint !== active.keyPackageFingerprint ||
+            canonical(material.session) !== canonical(active.session)
+          )) continue;
+          await record.retire(this.remembered);
+        } catch { /* Keep uncertain records; retry after the next successful restore/save. */ }
+      }
+    } catch { /* Housekeeping must not invalidate an installed protected connection. */ }
   }
   private connectEvents(remote: Transport): void {
     this.events?.stop();
@@ -284,9 +314,12 @@ export default class ObsidianSyncPlugin extends Plugin {
           // Immutable protected records keep the previous configuration usable if saving the pointer fails.
           await this.saveData({ format: 4, vaultId, autoSync: this.autoSync, endpoint, record, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: receipt.revision, profileDirty: false });
           if (this.disposed) throw new Error("PLUGIN_UNLOADED");
+          const previousRecord = this.remembered;
           this.engine?.lock(); this.engine = candidate; installed = true; this.config.vaultId = vaultId; this.config.token = token;
           this.endpoint = endpoint; this.remote = remote; this.deviceName = name; this.profileRevision = receipt.revision; this.profileDirty = false; this.profilePending = undefined; this.connectionRecord = record; this.restoreAllowed = true; this.remembered = remembered;
           this.hasSavedKey = true;
+          try { await previousRecord?.retire(remembered); } catch { /* The previous pointer is no longer active; a later cleanup can retry. */ }
+          await this.cleanupConnectionRecords();
           this.storageState = "配置已保存"; this.hostError = ""; this.connectEvents(remote);
           observe?.({ step: "storage", state: "passed" });
         } finally {

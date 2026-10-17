@@ -88,5 +88,11 @@ export function iosProtector(isIos: boolean, identity: UnlockIdentity, runtime?:
         try { return decoder.decode(plaintext); } finally { sodium.memzero(plaintext); }
       } finally { sodium.memzero(key); }
     },
+    async forget(ciphertext, activeCiphertext) {
+      const envelope = envelopeSchema.parse(JSON.parse(decoder.decode(ciphertext)));
+      if (!envelope.reference.startsWith(await prefix)) throw new Error("IOS_KEYCHAIN_IDENTITY_MISMATCH");
+      if (activeCiphertext && envelopeSchema.parse(JSON.parse(decoder.decode(activeCiphertext))).reference === envelope.reference) return;
+      await storage.internalRemoveItem({ prefixedKey: envelope.reference, sync: false });
+    },
   };
 }

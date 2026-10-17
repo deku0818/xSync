@@ -265,7 +265,7 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 		return zero, code("UNSUPPORTED_PROTOCOL")
 	}
 	for _, f := range c.Required {
-		if !contains([]string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", ContentCapability, MetadataCapability, CompactCapability, ObjectCapability, ContinuityCapability}, f) {
+		if !contains([]string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", ContentCapability, MetadataCapability, CompactCapability, ObjectCapability, ContinuityCapability, SnapshotCapability}, f) {
 			return zero, code("UNSUPPORTED_PROTOCOL")
 		}
 	}
@@ -370,10 +370,19 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 			}
 		}
 	}
-	for _, id := range sortedKeys(st.files) {
+	affected := map[string]bool{}
+	for _, action := range c.Actions {
+		affected[action.FileID] = true
+		if action.Decision != nil && action.Decision.Companion != nil {
+			affected[action.Decision.Companion.FileID] = true
+		}
+	}
+	for _, id := range sortedKeys(affected) {
 		f := st.files[id]
 		l, _ := json.Marshal(f.Location)
-		if _, e = tx.Exec(ctx, "INSERT INTO files(vault_id,id,kind,location,path_key) VALUES($1,$2,$3,$4,$5) ON CONFLICT(vault_id,id) DO UPDATE SET location=excluded.location,path_key=excluded.path_key", c.VaultID, f.ID, f.EntryKind, l, f.Location.PathKey); e != nil {
+		if _, e = tx.Exec(ctx, `INSERT INTO files(vault_id,id,kind,location,path_key) VALUES($1,$2,$3,$4,$5)
+ ON CONFLICT(vault_id,id) DO UPDATE SET location=excluded.location,path_key=excluded.path_key
+ WHERE files.location IS DISTINCT FROM excluded.location OR files.path_key IS DISTINCT FROM excluded.path_key`, c.VaultID, f.ID, f.EntryKind, l, f.Location.PathKey); e != nil {
 			return zero, e
 		}
 	}
@@ -418,11 +427,14 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 			}
 		}
 	}
-	if _, e = tx.Exec(ctx, "DELETE FROM heads WHERE vault_id=$1", c.VaultID); e != nil {
-		return zero, e
-	}
-	for _, id := range sortedKeys(st.files) {
+	for _, id := range sortedKeys(affected) {
 		f := st.files[id]
+		if sameSet(previousHeads[id], f.Heads) {
+			continue
+		}
+		if _, e = tx.Exec(ctx, "DELETE FROM heads WHERE vault_id=$1 AND file_id=$2", c.VaultID, id); e != nil {
+			return zero, e
+		}
 		for _, h := range f.Heads {
 			if _, e = tx.Exec(ctx, "INSERT INTO heads(vault_id,file_id,revision_id) VALUES($1,$2,$3)", c.VaultID, id, h); e != nil {
 				return zero, e
@@ -578,7 +590,7 @@ func (s *Store) Handshake(ctx context.Context) (map[string]any, error) {
 		}
 		ds = append(ds, d)
 	}
-	result := map[string]any{"protocol": 0, "vaultId": s.Config.VaultID, "epoch": epoch, "seq": seq, "features": []string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", ContentCapability, MetadataCapability, CompactCapability, ObjectCapability, ContinuityCapability}, "keyPackage": json.RawMessage(pkg), "devices": ds, "maxObjectBytes": 16 << 20, "continuity": true}
+	result := map[string]any{"protocol": 0, "vaultId": s.Config.VaultID, "epoch": epoch, "seq": seq, "features": []string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", ContentCapability, MetadataCapability, CompactCapability, ObjectCapability, ContinuityCapability, SnapshotCapability}, "keyPackage": json.RawMessage(pkg), "devices": ds, "maxObjectBytes": 16 << 20, "continuity": true}
 	if s.compact {
 		result["metadataCheckpoint"] = checkpoint
 	}

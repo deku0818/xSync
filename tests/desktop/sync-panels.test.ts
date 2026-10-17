@@ -110,3 +110,23 @@ it("keeps transient failures quiet and does not expose arbitrary error text or p
   expect(query("diagnostic-message").textContent).toBe("UPLOAD_STAGE_UNAVAILABLE\nSYNC_INCOMPLETE"); expect(query("diagnostics").hasAttribute("open")).toBe(false);
   await savePreview("problem"); expect(host.notices).toEqual([]);
 });
+
+it("allows binary version selection and keep-both without enabling text merge", async () => {
+  latest = { ...latest, path: "attachment.bin", versions: latest.versions.map(version => ({ ...version, text: null, bytes: new Uint8Array(), length: 80000 })) };
+  new ConflictReview({} as App, plugin, "F", latest.path).open();
+  await vi.waitFor(() => expect(button("choice-a").disabled).toBe(false));
+  expect(button("manual-merge").disabled).toBe(true); expect(query("pane-a").textContent).toContain("80000");
+  await savePreview("binary-conflict"); button("choice-both").click();
+  expect(button("confirm").disabled).toBe(false); button("confirm").click();
+  await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest,"computer-1","attachment（iPhone 15）.bin",undefined));
+});
+
+it("allows an explicit choice among three heads and retains the complete observed set", async () => {
+  latest = { ...latest, heads: [...latest.heads,"third"], versions: [...latest.versions,{ ...latest.versions[0]!,revision:"third",device:"Tablet",deviceId:"third",text:"third content" }] };
+  new ConflictReview({} as App, plugin,"F",latest.path).open();
+  await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-mode="version:third"]')).not.toBeNull());
+  expect(button("choice-both").disabled).toBe(true); expect(button("manual-merge").disabled).toBe(true);
+  await savePreview("three-head-conflict"); document.querySelector<HTMLButtonElement>('[data-mode="version:third"]')!.click();
+  expect(button("confirm").disabled).toBe(false); button("confirm").click();
+  await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest,"third",undefined,undefined));
+});

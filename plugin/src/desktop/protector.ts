@@ -5,6 +5,8 @@ export interface SecretProtector {
   readonly name: string;
   protect(plaintext: string): Promise<Uint8Array>;
   unprotect(ciphertext: Uint8Array): Promise<string>;
+  /** Release only the native wrapping key named by this exact retired envelope. */
+  forget?(ciphertext: Uint8Array, activeCiphertext?: Uint8Array): Promise<void>;
 }
 interface SafeStorage {
   isEncryptionAvailable(): boolean;

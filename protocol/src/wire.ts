@@ -27,7 +27,8 @@ export const actionSchema = z.discriminatedUnion("type", [createSchema, editSche
 export const commitSchema = z.strictObject({ protocol: z.literal(0), vaultId: id, epoch: id, requiredFeatures: z.array(z.string().max(128)).max(32), deviceId: id, opId: id, actions: z.array(actionSchema).min(1).max(1000) });
 export const changeSchema = z.strictObject({ seq: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), deviceId: id, opId: id, actions: z.array(actionSchema).min(1).max(1000) });
 export const baseProofSchema = z.strictObject({ vaultId: id, epoch: id, fileId: id, revisionId: id, digest: opaque, boundary: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), token: opaque });
-export const snapshotSchema = z.strictObject({ epoch: id, boundary: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), files: z.array(fileSchema).max(10000), revisions: z.array(revisionSchema).max(100000), checkpoint: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), bases: z.array(baseProofSchema).max(100000).optional() });
+export const snapshotSchema = z.strictObject({ epoch: id, boundary: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), files: z.array(fileSchema), revisions: z.array(revisionSchema), checkpoint: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), bases: z.array(baseProofSchema).optional() });
+export const snapshotPageSchema = snapshotSchema.extend({ files: z.array(fileSchema).max(256), revisions: z.array(revisionSchema).max(256), bases: z.array(baseProofSchema).max(256).optional(), total: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), next: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable() });
 export const handshakeSchema = z.strictObject({ protocol: z.literal(0), vaultId: id, epoch: id, seq: z.number().int().nonnegative(), features: z.array(z.string()),
   keyPackage: z.unknown(), devices: z.array(z.strictObject({ id, name: z.string().min(1).max(128) })), maxObjectBytes: z.number().int().positive(),
   metadataCheckpoint: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
@@ -38,4 +39,5 @@ export const receiptSchema = z.strictObject({ epoch: id, seq: z.number().int().p
 export const CONTENT_CAPABILITY = "content-leases-v1";
 export const METADATA_CAPABILITY = "metadata-anchors-v1";
 export const COMPACT_CAPABILITY = "compact-heads-v1";
-export const SYNC_FEATURES = ["causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", CONTENT_CAPABILITY, METADATA_CAPABILITY, COMPACT_CAPABILITY, OBJECT_CAPABILITY, CONTINUITY_CAPABILITY] as const;
+export const SNAPSHOT_CAPABILITY = "snapshot-pages-v1";
+export const SYNC_FEATURES = ["causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", CONTENT_CAPABILITY, METADATA_CAPABILITY, COMPACT_CAPABILITY, OBJECT_CAPABILITY, CONTINUITY_CAPABILITY, SNAPSHOT_CAPABILITY] as const;

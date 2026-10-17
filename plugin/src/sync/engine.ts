@@ -1,17 +1,17 @@
-import { timerHost } from "../runtime/timers";
-import { SYNC_FEATURES } from "../../../protocol/src/wire";
-import { sharedConfig, hasDeviceFields } from "./config-projection";
-import { isSharedConfigPath } from "./config-path";
-import type { Action, Commit, FileState, Revision, Snapshot } from "../../../protocol/src/types";
-import { canonical } from "../../../protocol/src/model";
-import { VaultCrypto, MAX_FILE_BYTES, bytesEqual, fingerprint, randomId, type SessionMaterial } from "./crypto";
-import { SyncDB, type ApplyTask, type Inbox, type LocalFile, type Outbox } from "./store";
-import { isAncestor, project } from "./projection";
-import { RemoteError, Transport } from "./transport";
-import { MetadataClient } from "./metadata-client";
-import { derivedID, derivedOperation } from "../../../protocol/src/metadata";
-import { CHUNK_BYTES, SyncPolicy, fixedExclusion } from "./policy";
-import { cleanupLocalData, type StageCleanupPort } from "./local-cleanup";
+import { derivedID, derivedOperation } from "../../../protocol/src/metadata.js";
+import { canonical } from "../../../protocol/src/model.js";
+import type { Action, Commit, FileState, Revision, Snapshot } from "../../../protocol/src/types.js";
+import { SYNC_FEATURES } from "../../../protocol/src/wire.js";
+import { timerHost } from "../runtime/timers.js";
+import { isSharedConfigPath } from "./config-path.js";
+import { sharedConfig, hasDeviceFields } from "./config-projection.js";
+import { VaultCrypto, MAX_FILE_BYTES, bytesEqual, fingerprint, randomId, type SessionMaterial } from "./crypto.js";
+import { cleanupLocalData, type StageCleanupPort } from "./local-cleanup.js";
+import { MetadataClient } from "./metadata-client.js";
+import { CHUNK_BYTES, SyncPolicy, fixedExclusion } from "./policy.js";
+import { isAncestor, project } from "./projection.js";
+import { SyncDB, type ApplyTask, type Inbox, type LocalFile, type Outbox } from "./store.js";
+import { RemoteError, Transport } from "./transport.js";
 
 export interface FilePort extends StageCleanupPort {
   /** Host adapters flush pending editor buffers before reading saved file snapshots. */
@@ -44,6 +44,7 @@ export class SyncEngine {
   private stopping = false;
   private keyPackageFingerprint?: string;
   private compactExpected = false;
+  private captured = new Map<string, LocalFile>();
   fault?: (point: string) => void;
   constructor(readonly db: SyncDB, private remote: Transport, private files: FilePort,
     readonly deviceId: string, readonly vaultId: string, private policy = new SyncPolicy()) {}
@@ -142,9 +143,12 @@ export class SyncEngine {
     if (previous?.checkpoint !== undefined && s.checkpoint! < previous.checkpoint) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
     if (previous && (s.epoch !== previous.epoch || s.boundary < previous.received)) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
     // File identities and tombstones survive compaction; a snapshot cannot forget a known identity.
-    for (const f of await this.db.remoteFiles.toArray()) if (!s.files.some(next => next.id === f.id)) throw new Error("INCOMPLETE_SNAPSHOT");
+    const snapshotFiles = new Set(s.files.map(file => file.id));
+    const snapshotRevisions = new Map(s.revisions.map(revision => [revision.id, revision]));
+    if (snapshotFiles.size !== s.files.length || snapshotRevisions.size !== s.revisions.length) throw new Error("INVALID_SNAPSHOT");
+    for (const f of await this.db.remoteFiles.toArray()) if (!snapshotFiles.has(f.id)) throw new Error("INCOMPLETE_SNAPSHOT");
     for (const r of s.revisions) keys.manifest(r);
-    for (const f of s.files) { keys.path(f.id, f.location); if (f.heads.some(h => !s.revisions.some(r => r.id === h && r.fileId === f.id))) throw new Error("INVALID_SNAPSHOT"); }
+    for (const f of s.files) { keys.path(f.id, f.location); if (f.heads.some(h => snapshotRevisions.get(h)?.fileId !== f.id)) throw new Error("INVALID_SNAPSHOT"); }
     const anchors = await this.metadata().snapshotAnchors(s);
     await this.db.transaction("rw", [this.db.leases, this.db.remoteFiles, this.db.revisions, this.db.inbox, this.db.progress, this.db.baseProofs, this.db.writerState], async () => {
       await this.checkLease();
@@ -164,10 +168,10 @@ export class SyncEngine {
     const coordinate = await this.metadata().nextCoordinate();
     return { protocol: 0, vaultId: this.vaultId, epoch: p.epoch, requiredFeatures: [...SYNC_FEATURES], deviceId: this.deviceId, opId: coordinate ? derivedOperation(coordinate) : randomId(), actions };
   }
-  private async enqueue(request: Commit, local: LocalFile[], revisions: Revision[], objects: Outbox["objects"]): Promise<void> {
+  private async enqueue(request: Commit, local: LocalFile[], revisions: Revision[], objects: Outbox["objects"], superseded: Outbox[] = []): Promise<void> {
     // All ciphertext snapshots have already been staged before the short DB transaction.
     await this.checkLease();
-    await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.revisions, this.db.outbox, this.db.writerState], async () => {
+    await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.revisions, this.db.outbox, this.db.writerState, this.db.rejectedOutbox], async () => {
       await this.checkLease();
       await this.db.localFiles.bulkPut(local); await this.db.revisions.bulkPut(revisions);
       const writer = await this.db.writerState.get("writer");
@@ -175,16 +179,22 @@ export class SyncEngine {
       const coordinate = writer ? { stream: writer.stream, number: writer.next++ } : undefined;
       if (writer) await this.db.writerState.put(writer);
       await this.db.outbox.add({ opId: request.opId, request, objects, ...(coordinate ? { coordinate } : {}) });
+      for (const prior of superseded) {
+        const saved = await this.db.rejectedOutbox.get(prior.opId);
+        if (saved?.error === "REVIEW_STALE" && canonical(saved.request) === canonical(prior.request)) {
+          await this.db.rejectedOutbox.put({ ...saved, supersededBy: revisions[0]!.id });
+        }
+      }
       this.fault?.("before-outbox-commit");
     });
     this.fault?.("after-outbox-commit");
   }
-  private async captureOne(path: string, bytes: Uint8Array | null, local?: LocalFile): Promise<void> {
+  private async captureOne(path: string, bytes: Uint8Array | null, local?: LocalFile): Promise<LocalFile | undefined> {
     const keys = this.crypto(); if (bytes && bytes.length > MAX_FILE_BYTES) { this.errors.push(`FILE_TOO_LARGE: ${path}`); return; }
     if (local && await this.db.applyTasks.get(local.id)) return;
     if (!bytes && (!local || local.deleted)) return;
     const fp = await fingerprint(bytes ?? new Uint8Array());
-    if (local && local.fingerprint === fp && local.deleted === (bytes === null)) return;
+    if (local && local.fingerprint === fp && local.deleted === (bytes === null)) return local;
     let independent: FileState | undefined;
     if (!local && bytes) {
       const samePath = (await this.db.remoteFiles.toArray()).find(f => keys.pathKey(path) === f.location.pathKey);
@@ -193,7 +203,8 @@ export class SyncEngine {
           const revision = await this.db.revisions.get(samePath.heads[0]!);
           if (revision && revision.payload.kind === "file" && keys.manifest(revision).fingerprint === fp) {
             await this.metadata().ensureBase(revision.id);
-            await this.db.localFiles.put({ id: samePath.id, path, location: samePath.location, revision: revision.id, fingerprint: fp, deleted: false }); return;
+            const adopted = { id: samePath.id, path, location: samePath.location, revision: revision.id, fingerprint: fp, deleted: false };
+            await this.db.localFiles.put(adopted); return adopted;
           }
         }
         // Preserve untracked bytes as an independent root; never invent a displayed parent.
@@ -212,10 +223,13 @@ export class SyncEngine {
     this.fault?.("after-capture-stage");
     const r: Revision = { id: revisionId, fileId, parents, deviceId: this.deviceId, payload: await keys.payload({ id: revisionId, fileId, parents, deviceId: this.deviceId }, bytes ?? new Uint8Array(), kind, objectIds) };
     const location = local?.location ?? independent?.location ?? keys.location(fileId, path, coordinate ? derivedID(coordinate, "l") : undefined);
-    const action: Action = local
-      ? { type: "edit", fileId, revisionId, displayedRevision: local.revision, payload: r.payload }
-      : independent ? { type: "branch", fileId, revisionId, payload: r.payload } : { type: "create", fileId, revisionId, payload: r.payload, location };
-    await this.enqueue(await this.request([action]), [{ id: fileId, path, revision: revisionId, fingerprint: fp, deleted: bytes === null, location }], [r], objects);
+    let action: Action;
+    if (local) action = { type: "edit", fileId, revisionId, displayedRevision: local.revision, payload: r.payload };
+    else if (independent) action = { type: "branch", fileId, revisionId, payload: r.payload };
+    else action = { type: "create", fileId, revisionId, payload: r.payload, location };
+    const captured = { id: fileId, path, revision: revisionId, fingerprint: fp, deleted: bytes === null, location };
+    await this.enqueue(await this.request([action]), [captured], [r], objects);
+    return captured;
   }
   private async capture(): Promise<void> {
     const paths = await this.files.list(); // Throws on scan errors; never translate a failed scan to deletions.
@@ -228,14 +242,20 @@ export class SyncEngine {
         this.crypto().pathKey(path); const bytes = await this.files.read(path);
         if (bytes && this.policy.reason(path, bytes.length)) { await this.skip(path, this.policy.reason(path, bytes.length)!); continue; }
         if (bytes === null) { this.errors.push(`SCAN_CHANGED: ${path}`); continue; }
-        await this.captureOne(path, bytes, byPath.get(path));
+        const captured = await this.captureOne(path, bytes, byPath.get(path));
+        if (captured) this.captured.set(captured.id, captured);
       } catch (error) { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
     }
     const set = new Set(paths);
     for (const f of locals) if (!set.has(f.path) && !f.deleted) {
       const reason = this.policy.reason(f.path); if (reason) { await this.skip(f.path, reason); continue; }
       // A second successful absence check is required, never an I/O exception.
-      try { await this.files.flushEdits?.(f.path); if (await this.files.read(f.path) === null) await this.captureOne(f.path, null, f); }
+      try {
+        await this.files.flushEdits?.(f.path);
+        if (await this.files.read(f.path) === null) {
+          const captured = await this.captureOne(f.path, null, f); if (captured) this.captured.set(captured.id, captured);
+        }
+      }
       catch (error) { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
     }
   }
@@ -395,13 +415,18 @@ export class SyncEngine {
     if (!task.deleted && task.sourcePath !== task.targetPath && await this.files.read(task.sourcePath) !== null) {
       throw new Error("APPLY_VERIFY_FAILED");
     }
-    await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.applyTasks, this.db.conflicts], async () => {
+    await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.applyTasks, this.db.conflicts, this.db.rejectedOutbox], async () => {
       this.crypto();
       const lease = await this.db.leases.get("engine");
       if (lease?.owner !== this.owner || lease.until <= Date.now()) throw new Error("LOCAL_LEASE_LOST");
       if ((await this.db.applyTasks.get(task.id))?.stage !== task.stage) throw new Error("APPLY_TASK_CHANGED");
       await this.db.localFiles.put({ id: task.id, path: task.targetPath, location: task.location, revision: task.revision, fingerprint: task.desiredFingerprint, deleted: task.deleted });
       await this.db.applyTasks.delete(task.id); await this.db.conflicts.delete(task.id);
+      for (const rejected of await this.db.rejectedOutbox.toArray()) {
+        if (rejected.error === "REVIEW_STALE" && rejected.supersededBy === task.revision && rejected.request.actions.length === 1 && rejected.request.actions[0]!.fileId === task.id) {
+          await this.db.rejectedOutbox.delete(rejected.opId);
+        }
+      }
       this.fault?.("before-apply-ack");
     });
     this.fault?.("after-apply-ack");
@@ -477,6 +502,12 @@ export class SyncEngine {
         const owner = await this.db.localFiles.where("path").equals(path).first();
         if (owner && owner.id !== f.id) { await this.db.conflicts.put({ id: f.id, path, heads: f.heads, reason: "INITIAL_PATH_COLLISION" }); continue; }
         const sourcePath = local?.path ?? path;
+        const captured = this.captured.get(f.id);
+        // No filesystem mutation is needed for an already displayed remote version. Reuse only
+        // this run's verified baseline; incoming changes and recovery journals still reread bytes.
+        if (local && captured && canonical(local) === canonical(captured) && local.revision === r.id && local.location.revision === f.location.revision) {
+          settled.add(f.id); await this.db.conflicts.delete(f.id); continue;
+        }
         const stat = await this.files.stat?.(sourcePath);
         const sourceReason = this.policy.reason(sourcePath, stat?.size);
         if (sourceReason) { await this.skip(path, sourceReason); settled.add(f.id); continue; }
@@ -553,6 +584,7 @@ export class SyncEngine {
   async sync(): Promise<EngineStatus> {
     if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.crypto(); this.busy = true; this.errors = [];
     this.activity = "checking";
+    this.captured.clear();
     let stopRenewing: (() => Promise<void>) | undefined;
     try {
       await this.lease(); await this.db.skipped.clear();
@@ -578,6 +610,7 @@ export class SyncEngine {
       await this.remote.releaseSnapshots();
       try { await this.endRun(); } catch { this.errors.push("LEASE_RELEASE_FAILED"); }
       this.activity = undefined;
+      this.captured.clear();
     }
     return this.status();
   }
@@ -623,12 +656,14 @@ export class SyncEngine {
   async resolve(review: Review, selectedRevision: string, companionPath?: string, mergedBytes?: Uint8Array): Promise<void> {
     if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.busy = true; this.errors = [];
     review = structuredClone(review); mergedBytes = mergedBytes?.slice();
+    this.captured.clear();
     let stopRenewing: (() => Promise<void>) | undefined;
     try {
       if (mergedBytes && isSharedConfigPath(review.path) && review.path.endsWith(".json")) { if (hasDeviceFields(review.path, mergedBytes)) throw new Error("MERGE_CONTAINS_DEVICE_FIELDS"); mergedBytes = sharedConfig(review.path, mergedBytes); }
       await this.lease();
       stopRenewing = this.keepLease();
       const draft = await this.db.mergeDrafts.get(review.fileId);
+      const superseded = (await this.db.rejectedOutbox.toArray()).filter(row => row.error === "REVIEW_STALE" && row.request.actions.length === 1 && row.request.actions[0]!.type === "resolve" && row.request.actions[0]!.fileId === review.fileId);
       await this.prepareSynchronization();
       // Freeze displayed review; flush+receive updates the CURRENT set without silently changing the chosen snapshot.
       await this.capture(); await this.flush(); await this.receive();
@@ -637,9 +672,11 @@ export class SyncEngine {
       if (!f || f.location.revision !== review.location.revision || canonical([...f.heads].sort()) !== canonical([...review.heads].sort())) throw new Error("REVIEW_STALE");
       if (this.policy.reason(review.path)) throw new Error("FILE_EXCLUDED");
       if (mergedBytes && (mergedBytes.length > this.policy.maxBytes || mergedBytes.length > 65536 || companionPath)) throw new Error("INVALID_MERGE");
-      const selected = mergedBytes ? { revision: "", bytes: mergedBytes, kind: "file" } : review.versions.find(v => v.revision === selectedRevision); if (!selected) throw new Error("INVALID_SELECTION");
+      let selected = mergedBytes ? { revision: "", bytes: mergedBytes, kind: "file" } : review.versions.find(v => v.revision === selectedRevision); if (!selected) throw new Error("INVALID_SELECTION");
       const coordinate = await this.metadata().nextCoordinate();
       const source = mergedBytes ? undefined : (await this.db.revisions.get(selectedRevision))!; const revisionId = coordinate ? derivedID(coordinate, "r") : randomId();
+      if (source && this.policy.reason(review.path, this.crypto().manifest(source).length)) throw new Error("FILE_EXCLUDED");
+      if (source && "length" in selected) selected = { ...selected, bytes: await this.bytes(source) };
       if (source && await fingerprint(selected.bytes) !== this.crypto().manifest(source).fingerprint) throw new Error("REVIEW_BYTES_CHANGED");
       const objects: Outbox["objects"] = []; let objectIds = source?.payload.objects ?? [];
       if (mergedBytes) { const obj = this.crypto().object(mergedBytes); await this.files.stageWrite(obj.id, obj.bytes); objects.push({ id: obj.id, stage: obj.id }); objectIds = [obj.id]; }
@@ -648,8 +685,10 @@ export class SyncEngine {
       const action: Extract<Action, { type: "resolve" }> = { type: "resolve", fileId: f.id, expectedLocation: review.location.revision, observedHeads: review.heads, revisionId, payload: revision.payload, decision: source ? { kind: "select", selectedRevision } : { kind: "manual" } };
       if (companionPath) {
         if (review.versions.length !== 2) throw new Error("KEEP_BOTH_REQUIRES_TWO_HEADS"); this.crypto().pathKey(companionPath);
-        if (this.policy.reason(companionPath, selected.bytes.length) || (await this.files.read(companionPath)) !== null || companionPath.normalize("NFC").toLowerCase() === review.path.normalize("NFC").toLowerCase()) throw new Error("COMPANION_PATH_UNAVAILABLE");
-        const other = review.versions.find(v => v.revision !== selectedRevision)!; const original = (await this.db.revisions.get(other.revision))!;
+        if (this.policy.reason(companionPath) || (await this.files.read(companionPath)) !== null || companionPath.normalize("NFC").toLowerCase() === review.path.normalize("NFC").toLowerCase()) throw new Error("COMPANION_PATH_UNAVAILABLE");
+        let other = review.versions.find(v => v.revision !== selectedRevision)!; const original = (await this.db.revisions.get(other.revision))!;
+        if (this.policy.reason(companionPath, this.crypto().manifest(original).length)) throw new Error("COMPANION_PATH_UNAVAILABLE");
+        if (other.length !== undefined) other = { ...other, bytes: await this.bytes(original) };
         if (await fingerprint(other.bytes) !== this.crypto().manifest(original).fingerprint) throw new Error("REVIEW_BYTES_CHANGED");
         if (original.payload.kind === "deleted") throw new Error("EXPORT_DELETE_CONFLICT_MANUALLY");
         const companionId = randomId(); const id = coordinate ? derivedID(coordinate, "rc") : randomId();
@@ -658,7 +697,7 @@ export class SyncEngine {
       }
       // Persist exact immutable resolution before network; retry retains IDs and ciphertext.
       await this.assertReviewLocalReady(review.fileId, review.path);
-      const request = await this.request([action]); await this.enqueue(request, [], [revision], objects);
+      const request = await this.request([action]); await this.enqueue(request, [], [revision], objects, superseded);
       await this.flush(); await this.receive();
       const rejected = await this.db.rejectedOutbox.get(request.opId);
       if (rejected) throw new RemoteError(rejected.error ?? "REVIEW_STALE");
@@ -687,6 +726,6 @@ export class SyncEngine {
         }
       });
       await this.cleanup();
-    } finally { await stopRenewing?.(); await this.remote.releaseSnapshots(); await this.endRun(); }
+    } finally { this.captured.clear(); await stopRenewing?.(); await this.remote.releaseSnapshots(); await this.endRun(); }
   }
 }

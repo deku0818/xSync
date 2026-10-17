@@ -1,9 +1,69 @@
-export interface DiffRow { type: string; a?: string; b?: string; aLine?: number; bLine?: number }
+export interface DiffRow {
+  type: "same" | "change" | "remove" | "add";
+  a?: string; b?: string; aLine?: number; bLine?: number;
+}
 export function compareLines(left: string, right: string): DiffRow[] {
- const x=left.split('\n'),y=right.split('\n');
- // Huge line counts use an exact prefix/suffix view instead of allocating a quadratic matrix.
- if(x.length*y.length>1_000_000){const rows:DiffRow[]=[];let start=0;while(start<Math.min(x.length,y.length)&&x[start]===y[start]){rows.push({type:'same',a:x[start],b:y[start],aLine:start+1,bLine:start+1});start++;}let suffix=0;while(suffix<Math.min(x.length,y.length)-start&&x[x.length-1-suffix]===y[y.length-1-suffix])suffix++;for(let k=start;k<Math.max(x.length-suffix,y.length-suffix);k++)rows.push({type:'change',a:k<x.length-suffix?x[k]:undefined,b:k<y.length-suffix?y[k]:undefined,aLine:k<x.length-suffix?k+1:undefined,bLine:k<y.length-suffix?k+1:undefined});for(let k=0;k<suffix;k++)rows.push({type:'same',a:x[x.length-suffix+k],b:y[y.length-suffix+k],aLine:x.length-suffix+k+1,bLine:y.length-suffix+k+1});return rows;}
- const dp=Array.from({length:x.length+1},()=>new Uint32Array(y.length+1));for(let i=x.length-1;i>=0;i--)for(let j=y.length-1;j>=0;j--)dp[i]![j]=x[i]===y[j]?dp[i+1]![j+1]!+1:Math.max(dp[i+1]![j]!,dp[i]![j+1]!);
- const ops:DiffRow[]=[];let i=0,j=0;while(i<x.length||j<y.length){if(i<x.length&&j<y.length&&x[i]===y[j])ops.push({type:'same',a:x[i],b:y[j],aLine:++i,bLine:++j});else if(i<x.length&&(j===y.length||dp[i+1]![j]!>=dp[i]![j+1]!))ops.push({type:'remove',a:x[i],aLine:++i});else ops.push({type:'add',b:y[j],bLine:++j});}
- const rows:DiffRow[]=[];for(let n=0;n<ops.length;){if(ops[n]!.type==='same'){rows.push(ops[n++]!);continue;}const aa:DiffRow[]=[],bb:DiffRow[]=[];while(n<ops.length&&ops[n]!.type!=='same'){const op=ops[n++]!;(op.type==='remove'?aa:bb).push(op);}for(let k=0;k<Math.max(aa.length,bb.length);k++)rows.push({type:aa[k]&&bb[k]?'change':aa[k]?'remove':'add',a:aa[k]?.a,b:bb[k]?.b,aLine:aa[k]?.aLine,bLine:bb[k]?.bLine});}return rows;
+  const a = left.split("\n");
+  const b = right.split("\n");
+  // Large line counts keep exact prefix/suffix context without a quadratic matrix.
+  if (a.length * b.length > 1_000_000) {
+    const rows: DiffRow[] = [];
+    let start = 0;
+    while (start < Math.min(a.length, b.length) && a[start] === b[start]) {
+      rows.push({ type: "same", a: a[start], b: b[start], aLine: start + 1, bLine: start + 1 });
+      start++;
+    }
+    let suffix = 0;
+    while (suffix < Math.min(a.length, b.length) - start && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
+    for (let index = start; index < Math.max(a.length - suffix, b.length - suffix); index++) {
+      const hasA = index < a.length - suffix, hasB = index < b.length - suffix;
+      rows.push({ type: "change", a: hasA ? a[index] : undefined, b: hasB ? b[index] : undefined,
+        aLine: hasA ? index + 1 : undefined, bLine: hasB ? index + 1 : undefined });
+    }
+    for (let index = 0; index < suffix; index++) {
+      rows.push({ type: "same", a: a[a.length - suffix + index], b: b[b.length - suffix + index],
+        aLine: a.length - suffix + index + 1, bLine: b.length - suffix + index + 1 });
+    }
+    return rows;
+  }
+  const lengths = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      if (a[i] === b[j]) lengths[i]![j] = lengths[i + 1]![j + 1]! + 1;
+      else lengths[i]![j] = Math.max(lengths[i + 1]![j]!, lengths[i]![j + 1]!);
+    }
+  }
+  const operations: DiffRow[] = [];
+  let i = 0, j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) {
+      operations.push({ type: "same", a: a[i], b: b[j], aLine: ++i, bLine: ++j });
+    } else if (i < a.length && (j === b.length || lengths[i + 1]![j]! >= lengths[i]![j + 1]!)) {
+      operations.push({ type: "remove", a: a[i], aLine: ++i });
+    } else {
+      operations.push({ type: "add", b: b[j], bLine: ++j });
+    }
+  }
+  const rows: DiffRow[] = [];
+  let index = 0;
+  while (index < operations.length) {
+    if (operations[index]!.type === "same") {
+      rows.push(operations[index++]!);
+      continue;
+    }
+    const removed: DiffRow[] = [];
+    const added: DiffRow[] = [];
+    while (index < operations.length && operations[index]!.type !== "same") {
+      const operation = operations[index++]!;
+      if (operation.type === "remove") removed.push(operation);
+      else added.push(operation);
+    }
+    for (let k = 0; k < Math.max(removed.length, added.length); k++) {
+      let type: DiffRow["type"] = "change";
+      if (!removed[k]) type = "add";
+      else if (!added[k]) type = "remove";
+      rows.push({ type, a: removed[k]?.a, b: added[k]?.b, aLine: removed[k]?.aLine, bLine: added[k]?.bLine });
+    }
+  }
+  return rows;
 }

@@ -43,10 +43,10 @@ describe("completed local data cleanup", () => {
   });
   afterEach(async () => { keys.close(); await db.delete(); });
 
-  it("only prunes completed inbox rows behind the durable contiguous applied cursor", async () => {
+  it("compacts completed inbox runs while retaining unfinished groups and their completion endpoint", async () => {
     await db.inbox.bulkPut([1, 2, 3, 4].map(seq => ({ seq, fileIds: [], done: seq !== 2 })));
     await cleanupLocalData(db, files, context());
-    expect((await db.inbox.toArray()).map(row => row.seq)).toEqual([2, 3, 4]);
+    expect((await db.inbox.toArray()).map(row => row.seq)).toEqual([2, 4]);
     expect((await db.progress.get("progress"))?.applied).toBe(2);
   });
 

@@ -1,14 +1,14 @@
-import { timerHost, type TimerHandle } from "../runtime/timers";
 import { z } from "zod";
-import { CONTINUITY_CAPABILITY, continuitySchema, migrationStateSchema } from "../../../protocol/src/continuity";
-import { OBJECT_CAPABILITY, objectIDSchema, isAddressedObject } from "../../../protocol/src/objects";
-import { commitSchema, changeSchema, handshakeSchema, receiptSchema, snapshotSchema, CONTENT_CAPABILITY, METADATA_CAPABILITY, COMPACT_CAPABILITY } from "../../../protocol/src/wire";
-import { baseAnchorSchema, requestStreamSchema, trackedResultSchema, type BaseProof, type RequestCoordinate, type RequestAck } from "../../../protocol/src/metadata";
-import type { Revision } from "../../../protocol/src/types";
-import type { Commit } from "../../../protocol/src/types";
-import { devicesSchema, deviceProfileSchema } from "../../../protocol/src/client-profile";
-import { fingerprint, randomId } from "./crypto";
-import { onboardingSchema, challengeSchema, enrollmentSchema, type Enrollment } from "../../../protocol/src/enrollment";
+
+import { devicesSchema, deviceProfileSchema } from "../../../protocol/src/client-profile.js";
+import { CONTINUITY_CAPABILITY, continuitySchema, migrationStateSchema } from "../../../protocol/src/continuity.js";
+import { onboardingSchema, challengeSchema, enrollmentSchema, type Enrollment } from "../../../protocol/src/enrollment.js";
+import { baseAnchorSchema, requestStreamSchema, trackedResultSchema, type BaseProof, type RequestCoordinate, type RequestAck } from "../../../protocol/src/metadata.js";
+import { OBJECT_CAPABILITY, objectIDSchema, isAddressedObject } from "../../../protocol/src/objects.js";
+import type { Commit, Revision, Snapshot } from "../../../protocol/src/types.js";
+import { commitSchema, changeSchema, handshakeSchema, receiptSchema, snapshotSchema, snapshotPageSchema, SNAPSHOT_CAPABILITY, CONTENT_CAPABILITY, METADATA_CAPABILITY, COMPACT_CAPABILITY } from "../../../protocol/src/wire.js";
+import { timerHost, type TimerHandle } from "../runtime/timers.js";
+import { fingerprint, randomId } from "./crypto.js";
 
 export interface HTTPRequest { url: string; method: string; headers: Record<string, string>; body?: Uint8Array }
 export interface HTTPResponse { status: number; headers: Record<string, string>; bytes: Uint8Array }
@@ -45,7 +45,7 @@ export class Transport {
   setToken(token: string): void { this.token = token; }
   private async request(path: string, method = "GET", body?: Uint8Array, extra: Record<string, string> = {}, publicRequest = false): Promise<HTTPResponse> {
     const guarded = path.startsWith("/changes?") || path === "/metadata/base" || path === "/metadata/commits" || path === "/commits" || (path === "/snapshots" && method === "POST");
-    const send = (protection: Record<string, string>) => this.http({ url: `${this.endpoint}${path}`, method, body, headers: { "X-Sync-Content": CONTENT_CAPABILITY, "X-Sync-Metadata": METADATA_CAPABILITY, "X-Sync-Compaction": COMPACT_CAPABILITY, "X-Sync-Objects": OBJECT_CAPABILITY, "X-Sync-Continuity": CONTINUITY_CAPABILITY, ...(!publicRequest && this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...extra, ...protection } });
+    const send = (protection: Record<string, string>) => this.http({ url: `${this.endpoint}${path}`, method, body, headers: { "X-Sync-Content": CONTENT_CAPABILITY, "X-Sync-Metadata": METADATA_CAPABILITY, "X-Sync-Compaction": COMPACT_CAPABILITY, "X-Sync-Objects": OBJECT_CAPABILITY, "X-Sync-Continuity": CONTINUITY_CAPABILITY, "X-Sync-Snapshots": SNAPSHOT_CAPABILITY, ...(!publicRequest && this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...extra, ...protection } });
     const r = guarded && this.continuityGuard ? await this.continuityGuard(send) : await send(guarded ? { "X-Sync-Read-Only": "1" } : {});
     if (r.status < 200 || r.status >= 300) { let code = `HTTP_${r.status}`; try { code = z.strictObject({ code: z.string().max(128) }).parse(JSON.parse(new TextDecoder().decode(r.bytes))).code; } catch { /* preserve HTTP status */ } throw new RemoteError(code, r.status); }
     return r;
@@ -81,14 +81,45 @@ export class Transport {
   async eventTicket(): Promise<string> {
     return z.strictObject({ ticket: z.string().regex(/^[a-f0-9]{48}$/) }).parse(await this.json("/events/tickets", "POST", {})).ticket;
   }
-  async snapshot() {
+  async snapshot(): Promise<z.infer<typeof snapshotSchema>> {
     await this.releaseSnapshots();
     this.snapshotRequest ??= randomId();
     const ticket = z.strictObject({ id: z.string().regex(/^[a-f0-9]{32}$/), leaseId: z.string().regex(/^[a-f0-9]{64}$/) })
       .parse(await this.json("/snapshots", "POST", { requestId: this.snapshotRequest }));
-    this.activeSnapshot = ticket; this.snapshotRequest = undefined;
+    this.activeSnapshot = ticket;
+    this.snapshotRequest = undefined;
     this.leaseRenewed.set(ticket.leaseId, Date.now());
-    return snapshotSchema.parse(await this.json(`/snapshots/${ticket.id}`));
+    let snapshot: Snapshot | undefined;
+    let offset = 0;
+    let total = 0;
+    for (;;) {
+      await this.renewContent(ticket.leaseId);
+      const page = snapshotPageSchema.parse(await this.json(`/snapshots/${ticket.id}/pages?offset=${offset}`));
+      if (!snapshot) {
+        snapshot = { epoch: page.epoch, boundary: page.boundary, files: [], revisions: [] };
+        if (page.checkpoint !== undefined) {
+          snapshot.checkpoint = page.checkpoint;
+          snapshot.bases = [];
+        }
+        total = page.total;
+      }
+      if (page.epoch !== snapshot.epoch || page.boundary !== snapshot.boundary || page.checkpoint !== snapshot.checkpoint || page.total !== total) throw new Error("INVALID_SNAPSHOT");
+      const count = page.files.length + page.revisions.length + (page.bases?.length ?? 0);
+      offset += count;
+      if (offset > total) throw new Error("INVALID_SNAPSHOT");
+      if (page.next === null) {
+        if (offset !== total) throw new Error("INVALID_SNAPSHOT");
+      } else if (!count || page.next !== offset || offset >= total) {
+        throw new Error("INVALID_SNAPSHOT");
+      }
+      snapshot.files.push(...page.files);
+      snapshot.revisions.push(...page.revisions);
+      if (page.bases) {
+        snapshot.bases ??= [];
+        snapshot.bases.push(...page.bases);
+      }
+      if (page.next === null) return snapshotSchema.parse(snapshot);
+    }
   }
   async releaseSnapshots(): Promise<void> {
     const ticket = this.activeSnapshot; this.activeSnapshot = undefined;

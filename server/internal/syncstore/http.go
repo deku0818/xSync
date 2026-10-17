@@ -406,6 +406,19 @@ func (s *Store) Handler() http.Handler {
 		}
 		writeJSON(w, 200, b)
 	})
+	mux.HandleFunc("GET /snapshots/{id}/pages", func(w http.ResponseWriter, r *http.Request) {
+		offset, e := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+		if e != nil {
+			writeError(w, code("INVALID_REQUEST"))
+			return
+		}
+		page, e := s.ReadSnapshotPage(r.Context(), deviceOf(r), r.PathValue("id"), offset)
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, page)
+	})
 	mux.HandleFunc("PUT /objects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		b, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<20))
 		if e == nil {
@@ -455,6 +468,10 @@ func (s *Store) Handler() http.Handler {
 			return
 		}
 		if s.compact && r.Header.Get("X-Sync-Compaction") != CompactCapability {
+			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
+			return
+		}
+		if (r.URL.Path == "/handshake" || r.URL.Path == "/changes" || r.URL.Path == "/commits" || strings.HasPrefix(r.URL.Path, "/objects/") || strings.HasPrefix(r.URL.Path, "/snapshots") || strings.HasPrefix(r.URL.Path, "/content/") || strings.HasPrefix(r.URL.Path, "/metadata/")) && r.Header.Get("X-Sync-Snapshots") != SnapshotCapability {
 			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
 			return
 		}

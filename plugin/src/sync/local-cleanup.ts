@@ -1,7 +1,8 @@
-import type { Action, Revision } from "../../../protocol/src/types";
-import { canonical } from "../../../protocol/src/model";
-import type { ApplyTask, Outbox, SyncDB } from "./store";
-import { pruneLocalMetadata } from "./metadata-cleanup";
+import { actionEntries } from "../../../protocol/src/actions.js";
+import { canonical } from "../../../protocol/src/model.js";
+import type { Action, Revision } from "../../../protocol/src/types.js";
+import { pruneLocalMetadata } from "./metadata-cleanup.js";
+import type { ApplyTask, Outbox, SyncDB } from "./store.js";
 
 export interface StageCleanupPort {
   /** Only direct, valid stage IDs in this device's private staging directory. */
@@ -26,8 +27,21 @@ export async function cleanupLocalData(db: SyncDB, files: StageCleanupPort, cont
     await context.assertLease();
     const progress = await db.progress.get("progress");
     if (progress) {
-      const completed = (await db.inbox.toArray()).filter(row => row.done && row.seq <= progress.applied);
-      await db.inbox.bulkDelete(completed.map(row => row.seq));
+      let previousCompleted: number | undefined;
+      for (const row of await db.inbox.orderBy("seq").toArray()) {
+        if (!row.done) {
+          previousCompleted = undefined;
+          continue;
+        }
+        if (row.seq <= progress.applied) {
+          await db.inbox.delete(row.seq);
+          continue;
+        }
+        // One endpoint preserves each completed run across an unfinished group, without its payloads.
+        if (previousCompleted !== undefined) await db.inbox.delete(previousCompleted);
+        await db.inbox.put({ seq: row.seq, fileIds: [], done: true });
+        previousCompleted = row.seq;
+      }
     }
 
     const revisions = new Map((await db.revisions.toArray()).map(row => [row.id, row]));
@@ -86,30 +100,36 @@ export async function cleanupLocalData(db: SyncDB, files: StageCleanupPort, cont
     }
 
     const roots = new Set<string>();
-    const actionRoots = (action: Action) => {
-      if ("payload" in action) for (const id of action.payload.objects) roots.add(id);
-      if (action.type === "resolve" && action.decision.kind === "keep-both") actionRoots(action.decision.companion);
-    };
-    const outboxRoots = (row: Outbox) => {
+    function retainActionObjects(action: Action): void {
+      for (const entry of actionEntries([action])) {
+        if ("payload" in entry) for (const id of entry.payload.objects) roots.add(id);
+      }
+    }
+    function retainOutboxObjects(row: Outbox): void {
       for (const object of row.objects) roots.add(object.stage);
-      for (const action of row.request.actions) actionRoots(action);
-    };
-    const taskRoots = (task: ApplyTask) => { roots.add(task.stage); if (task.backup) roots.add(task.backup); };
-    for (const row of outgoing) outboxRoots(row); // Includes paused/excluded/failed uploads.
-    for (const row of await db.rejectedOutbox.toArray()) outboxRoots(row);
-    for (const row of tasks) taskRoots(row);
+      for (const action of row.request.actions) retainActionObjects(action);
+    }
+    function retainApplyStages(task: ApplyTask): void {
+      roots.add(task.stage);
+      if (task.backup) roots.add(task.backup);
+    }
+    for (const row of outgoing) retainOutboxObjects(row); // Includes paused/excluded/failed uploads.
+    for (const row of await db.rejectedOutbox.toArray()) retainOutboxObjects(row);
+    for (const row of tasks) retainApplyStages(row);
     for (const row of await db.reconciliations.toArray()) {
-      for (const intent of row.outbox) outboxRoots(intent);
-      for (const task of row.tasks) taskRoots(task);
+      for (const intent of row.outbox) retainOutboxObjects(intent);
+      for (const task of row.tasks) retainApplyStages(task);
       for (const id of revisions.get(row.local.revision)?.payload.objects ?? []) roots.add(id);
     }
     for (const conflict of conflicts) for (const head of conflict.heads) {
       for (const id of revisions.get(head)?.payload.objects ?? []) roots.add(id);
     }
     for (const row of await db.inbox.toArray()) if (!row.done && row.change) {
-      for (const action of row.change.actions) actionRoots(action);
+      for (const action of row.change.actions) retainActionObjects(action);
     }
-    for (const migration of await db.metadataMigration.toArray()) for (const request of migration.requests) for (const action of request.actions) actionRoots(action);
+    for (const migration of await db.metadataMigration.toArray()) {
+      for (const request of migration.requests) for (const action of request.actions) retainActionObjects(action);
+    }
     if (progress?.checkpoint !== undefined) {
       await pruneLocalMetadata(db);
       context.fault?.("before-local-metadata-cleanup-commit");

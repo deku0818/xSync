@@ -78,7 +78,7 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("accepted baseli
         if (kind === "file") anchor.proof.fileId = "other-file";
         response.bytes = new TextEncoder().encode(JSON.stringify(anchor));
       }
-      if (/\/snapshots\/[a-f0-9]+$/.test(request.url) && response.status === 200) {
+      if (/\/snapshots\/[a-f0-9]+(?:\/pages)?$/.test(new URL(request.url).pathname) && response.status === 200) {
         const snapshot = JSON.parse(new TextDecoder().decode(response.bytes)), proof = snapshot.bases?.[0];
         if (proof) {
           if (kind === "epoch") proof.epoch = "other-epoch";

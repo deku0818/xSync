@@ -1,12 +1,17 @@
-# 文档索引
+# 文档
 
-- [当前交接](HANDOFF.md)：实现状态、运行边界和下一步。
-- [需求与决策](DECISIONS.md)：用户确认的合同、技术选择与限制。
-- [安装与接入](SETUP.md)、[自建服务](DEPLOYMENT.md)、[发布准备](RELEASING.md)。
-- [PostgreSQL Compose 部署](deployment/postgres.md)、[SQLite 支持状态](deployment/sqlite.md)。
-- [更新记录](../CHANGELOG.md)、[贡献指南](../CONTRIBUTING.md)。
-- [架构 HTML](../design/architecture.html)、[连接与规则 HTML](../design/connection-settings.html)、[冲突 HTML](../design/sync-conflicts.html)。
-- [协议模型](../protocol/MODEL.md)、[LiveSync 参考调研](research/self-hosted-livesync.md)。
-- [测试流程](testing/DEVELOPMENT.md)、[电脑开发](testing/desktop.md)、[移动验证](testing/mobile-probe.md)。
+[English README](../README.md) · [中文 README](../README.zh-CN.md)
 
-历史截图、JSON 报告和逐轮验收记录已按用户要求清理；保留自动测试源码与长期开发说明。今后的测试结果写入忽略目录，不纳入此索引。
+## 使用与运维
+
+- [安装与设备接入](SETUP.md)：安装、密钥保存、设备撤销与凭据恢复。
+- [服务部署](DEPLOYMENT.md)：运行配置、HTTPS、升级兼容与联合备份。
+- [PostgreSQL Compose 部署](deployment/postgres.md)：容器、Nginx、证书和持久化目录。
+
+## 开发与维护
+
+- [贡献指南](../CONTRIBUTING.md)：环境、检查命令与提交范围。
+- [开发与验证流程](testing/DEVELOPMENT.md)：测试入口和验证边界。
+- [电脑开发环境](testing/desktop.md)、[移动端探针](testing/mobile-probe.md)。
+- [协议说明](../protocol/README.md)：源码职责与同步不变量。
+- [发布流程](RELEASING.md)、[更新记录](../CHANGELOG.md)。

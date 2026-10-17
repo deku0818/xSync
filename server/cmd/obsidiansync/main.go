@@ -219,8 +219,8 @@ func main() {
 						log.Print("content maintenance incomplete; will retry")
 					}
 				}
-			} else if report.Deleted+report.Orphans > 0 || report.Changes+report.Snapshots+report.Revisions+report.Locations > 0 || policy.DryRun {
-				log.Printf("sync maintenance: candidates=%d deleted=%d logs=%d snapshots=%d revisions=%d locations=%d orphans=%d dryRun=%t", report.Candidates, report.Deleted, report.Changes, report.Snapshots, report.Revisions, report.Locations, report.Orphans, policy.DryRun)
+			} else if report.Deleted+report.Orphans > 0 || report.Changes+report.Snapshots+report.Revisions+report.Locations > 0 || policy.DryRun || report.LogDeferred {
+				log.Printf("sync maintenance: candidates=%d deleted=%d logs=%d snapshots=%d revisions=%d locations=%d orphans=%d dryRun=%t logDeferred=%t", report.Candidates, report.Deleted, report.Changes, report.Snapshots, report.Revisions, report.Locations, report.Orphans, policy.DryRun, report.LogDeferred)
 			}
 			select {
 			case <-ctx.Done():

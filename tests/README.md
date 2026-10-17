@@ -9,4 +9,4 @@
 
 npm test 运行默认测试；npm run check 另做类型检查和构建。npm run test:desktop 在 setup 后运行数据库/race、多客户端与恢复，并在浏览器可用时运行独立 Chrome 原生 IndexedDB/SIGKILL，不操作已有用户浏览器。
 
-生成假库、构建文件、截图、日志和 JSON 结果均不提交。它们已清理；开发重建与平台边界见[测试流程](../docs/testing/DEVELOPMENT.md)。
+生成假库、构建文件、截图、日志和 JSON 结果均不提交。开发环境与平台边界见[测试流程](../docs/testing/DEVELOPMENT.md)。

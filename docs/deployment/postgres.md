@@ -1,6 +1,6 @@
 # PostgreSQL Docker Compose 部署
 
-适用于单实例 xSync 0.1.1、自建 Linux Docker Engine、已有 Nginx Docker 容器的环境。SQLite 当前不支持，见 [SQLite 状态](sqlite.md)。本说明不包含 CouchDB 数据迁移；保留原数据，xSync 创建独立同步库。
+适用于单实例 xSync 0.1.1、自建 Linux Docker Engine、已有 Nginx Docker 容器的环境。SQLite 当前尚未实现。本说明不包含 CouchDB 数据迁移；保留原数据，xSync 创建独立同步库。
 
 ## 版本与文件
 

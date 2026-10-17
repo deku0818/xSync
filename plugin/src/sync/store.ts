@@ -7,6 +7,8 @@ export interface LocalFile {
 }
 export interface Outbox {
   queueId?: number; opId: string; request: Commit; objects: { id: string; stage: string }[]; error?: string; coordinate?: RequestCoordinate;
+  /** A later explicit decision replaces this rejected intent only after that revision is applied. */
+  supersededBy?: string;
 }
 export interface Inbox { seq: number; fileIds: string[]; done: boolean; change?: Change }
 export interface Progress { id: "progress"; vaultId: string; epoch: string; received: number; applied: number; checkpoint?: number }

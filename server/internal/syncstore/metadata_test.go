@@ -210,6 +210,7 @@ func TestMetadataHTTPGatesAndImmutableEnvelopeValidation(t *testing.T) {
 		request.Header.Set("X-Sync-Content", content)
 		request.Header.Set("X-Sync-Objects", ObjectCapability)
 		request.Header.Set("X-Sync-Continuity", ContinuityCapability)
+		request.Header.Set("X-Sync-Snapshots", SnapshotCapability)
 		continuityToken, err := s.Continuity(context.Background(), "computer-a")
 		if err != nil {
 			t.Fatal(err)

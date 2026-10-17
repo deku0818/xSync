@@ -7,9 +7,9 @@ npm ci
 npm run check
 ```
 
-check 执行类型检查、默认测试与探针/同步插件构建。默认跳过需要真实后端或原生浏览器的集成；不得将跳过统计成通过。文件事件开发可用 npm run dev:plugin，回归可用 npm run test:watch。
+`check` 执行类型检查、默认测试和探针/同步插件构建。默认跳过需要真实后端或原生浏览器的集成，跳过不能计为通过。文件事件开发可用 `npm run dev:plugin`，持续回归可用 `npm run test:watch`。
 
-## 后端与恢复
+## 后端与恢复测试
 
 需要 Go >=1.27、Docker/Compose v2：
 
@@ -18,47 +18,42 @@ npm run desktop:setup
 npm run test:desktop
 ```
 
-PostgreSQL 只使用 obsidiansync-dev 专属 Docker 项目。test:desktop 执行 Go 合同/race、双客户端、普通设备接入与故障恢复；找到 Chrome/Chromium 后运行独立 profile 的真实 IndexedDB/SIGKILL 套件，不操作已有浏览器会话。可用 OBSIDIAN_SYNC_CHROME 指定路径；CI 要求浏览器存在。
+PostgreSQL 使用 `obsidiansync-dev` 专属 Docker 项目。Go 编译器依次取 `OBSIDIAN_SYNC_GO`、`.local/toolchains/go/bin/go`、PATH 中的 `go`。资源位置、手动启动与清理见[电脑开发环境](desktop.md)。
 
-接入测试覆盖所有者本地初始化、不覆盖原身份、无标记宿主初始化、密钥/本地修订核对、保护存储失败、接入回执与设置指针丢失、重复请求、并发名称、挑战过期/容量、接入窗口、同身份令牌恢复、撤销及事件票据/连接。实际 Go HTTP/PG 互通不代表原生安全存储或新版手机安装已验收。`npm run package:plugin` 另验证标准包元数据；产物只收录固定插件文件，不收录运行配置。
+`test:desktop` 运行 Go 合同/race、设备接入、多客户端同步和故障恢复。找到 Chrome/Chromium 后，使用独立 profile 执行真实 IndexedDB/SIGKILL 套件；可用 `OBSIDIAN_SYNC_CHROME` 指定浏览器路径。缺少浏览器时必须记录为未执行，CI 要求浏览器存在。
 
-模型测试验证因果、幂等、分支、位置 CAS 和过期选择；文件/HTTP/PG 集成使用 fake IndexedDB；原生浏览器套件验证真实桌面 IndexedDB 的进程恢复。这些均不能替代 iOS/Android 的 Vault API、安全存储、系统终止和资源验收。错误注入、进程强杀、物理断电及联合备份实际还原须分别记录。
+| 测试入口 | 验证范围 |
+| --- | --- |
+| `tests/protocol/` | 因果图、幂等、分支、位置 CAS、过期选择及独立图 oracle |
+| `tests/desktop/` | 宿主适配、队列、接入、HTTP/PG 多客户端、冲突与恢复 |
+| `server/internal/syncstore/` | 数据库事务、回执、快照、压缩、对象回收与设备连续性 |
+| `tests/desktop/continuity-recovery.integration.test.ts` | 联合旧备份还原、序号追平和客户端阻断 |
+| `tests/desktop/repository-lifecycle.integration.test.ts` | 单文件写入范围、冲突后的 inbox 压缩、拒绝意图退休及回滚、大库分页、附件选择和同轮读取复用 |
+| `tests/desktop/plugin-connection.test.ts` | 宿主连接保存与凭据清理；`test:desktop` 另启用真实后端的令牌轮换、回执/配置指针丢失和重开恢复 |
+| `tests/desktop/recovery-browser.integration.test.ts` | 原生 IndexedDB 持久化边界与进程强杀 |
+| `tests/mobile/` | iOS 保护器的假 native backend 合同 |
 
-第三步 3A 的长期回归包括独立图 oracle 与直接父版本头投影对照、真实 PG 的基线凭据和请求确认合同、HTTP 信封/设备/能力校验、跨语言凭据摘要、旧 outbox 正文保持、失败序号空洞、确认响应丢失、计数回退及错误基线。原生 IndexedDB 套件在本机结果事务提交前后和确认发送前后强杀。所有测试客户端必须使用自己的设备身份；不能用两个独立数据库复用同一写入身份规避计数回退保护。3B 已启用修订/位置/新回执与缓存压缩；3C 已加入新格式对象身份回收；旧格式摘要作为迁移证据保留。新增完整图对照、旧队列一次登记与响应丢失、压缩后的离线旧父、真实维护事务和原生缓存/迁移强杀；一致的旧备份测试必须恢复基线修订/凭据与对应远端投影，不能只改游标和 localFiles 冒充完整备份。
+所有测试客户端使用独立设备身份，不以两个活动数据库复用同一写入身份。完整备份恢复测试应包含修订、凭据、远端投影和连续性状态，不能只修改游标模拟恢复。
 
-## 真机
+冲突回归需覆盖比较前、上传中及提交响应前继续编辑，确保最新字节保留、旧选择失效、草稿和持久任务可恢复，且其他文件继续同步。宿主 DOM fixture 与 FilePort 模拟不代表真实编辑器验收。
 
-仅用独立假库，按[移动说明](mobile-probe.md)验证。重点包括并发修改、删除/编辑、重命名/编辑、过期审阅、暂停保持、前台补齐、强退/系统回收、弱网和资源限制。iOS 后台测试关闭调试连接，不承诺持续后台执行。进程内存使用原生证据，JS heap 不代替进程峰值。
+## 真机与探针
 
-## 结果与清理
+按[移动端说明](mobile-probe.md)使用独立假库，验证并发修改、删除/编辑、重命名、过期审阅、暂停保持、回前台补齐、弱网、系统终止、安全存储和资源限制。iOS 后台测试关闭调试连接；JS heap 不替代进程峰值内存证据。
 
-截图、JSON、日志和临时结果放在 .local/reports/ 等忽略目录，不提交到 docs 或源码目录。保留测试源码、固定依赖、协议不变量与长期说明；历史验收结果已按用户要求移除。
-
-复测前检查现有假库、配置和服务：已清理时先 setup，不复用旧客户端身份；已有服务时不要重复启动或清理正在使用的资源。[电脑说明](desktop.md)列出资源位置和清理方式。无需验证时不要运行构建后再将生成物作为源码提交。
-
-浏览器探针仍可复现：
+浏览器探针：
 
 ```sh
 npm run build:probe
 python3 -m http.server 8872 --bind 127.0.0.1 --directory tests/probe
 ```
 
-打开 tests/probe/browser-smoke.html 对应的本机地址。它不读取 Vault，也不是手机验证。
+打开 `http://127.0.0.1:8872/browser-smoke.html`。该探针不读取 Vault，不能作为手机验证。
 
-3C 长期回归以真实 v0 fixture 和 v1 捕获覆盖格式区分、独立 SHA256 对照、密文/对象列表认证、旧对象队列在 3B 已完成后的登记、响应丢失与未知意图保留。Go 套件使用私有测试子进程在预约、fsync、发布和确认处实际 SIGKILL，不给生产程序增加崩溃端点；验证尝试登记/临时硬链接的完整回收。维护与原生 IndexedDB 套件扩充对象身份删除和对象迁移确认边界。持续编辑的行数量/文件断言不能代替真机、磁盘峰值、大库吞吐或联合备份实际还原。
+`tests/desktop/sync-panels.test.ts` 可通过环境变量 `OBSIDIAN_SYNC_UI_PREVIEW_DIR` 向忽略目录输出实际组件的静态预览；预览不代表 Obsidian 安装或真机运行结果。
 
+## 结果与清理
 
-恢复连续性回归入口为 `tests/desktop/continuity-client.test.ts`、`continuity-recovery.integration.test.ts`、`server/internal/syncstore/continuity_test.go` 与原生 IndexedDB 恢复套件。真实 HTTP/PG 三设备测试先停服联合备份数据库和对象，产生接受或接收证据，再还原旧备份、由另一设备推进序号并截断日志，断言保留本机字节/准确修订且要求核对。升级测试覆盖旧基线补证、未知基线、中断恢复；数据库丢失测试覆盖非空旧迁移后的相同文件与离线分歧文件。超时测试验证 pending fence 拒绝迟到请求，丢失响应不能重复提交；Go 测试断言连续性 CAS 与数据/冻结快照事务一起提交或回滚。原生浏览器在连续性意图、响应、确认及升级补证提交边界实际强杀；这些仍不能替代生产或手机验收。
+截图、JSON、日志和临时结果放在 `.local/reports/` 等忽略目录，不提交到文档或源码目录。复测前检查已有假库、配置和服务；完整环境清理后重新 setup，已有服务不要重复启动。
 
-
-本机租约恢复测试用真实文件/HTTP/PG，在 stage 读取暂停期间使租约过期，或模拟另一执行已完成并释放，然后触发迟到心跳，断言不能重新获取、不能写文件或清理 journal/staging。重新创建引擎后从持久任务恢复。显式冲突提交测试推进本机租约时钟并触发续期，跨过原期限后仍须按用户选择完成并释放租约。完整本机旧数据库恢复必须包括连续性表，断言未知标记阻断并保留新文件字节；部分基线恢复不能替代此测试。
-
-
-最新冲突内容保护以 `tests/desktop/recovery.integration.test.ts` 的 post-conflict / capture / submission 场景回归：先形成冲突，再继续修改本机文件，注入上传繁忙或写暂存失败；断言旧选择没有创建解决请求、实际文件仍为最新内容，重开后原不可变队列、暂存和草稿保留，无关文件仍可同步。恢复上传后只有包含最新内容的比较才可确认。另在服务器接受选择后、客户端收到响应前继续编辑，断言文件写回不覆盖新字节。
-
-`tests/desktop/sync-panels.test.ts` 用宿主 DOM/净化器合同 fixture 验证紧凑状态、自动等待最新内容、旧选择失效、合并草稿保留与错误代码脱敏。可设置 `OBSIDIAN_SYNC_UI_PREVIEW_DIR` 到忽略目录后单独运行此文件，生成实际组件的静态布局预览；它们不包含 Obsidian 安装或真机证据。
-
-
-宿主编辑器合同测试覆盖待自动保存内容的主动保存、宿主保存仍在途时保留等待，以及写入/删除不能跳过编辑器里的新输入。真实 HTTP/PG 测试通过 FilePort 的宿主保存边界模拟“对比前尚未落盘”和“提交响应期间仍在编辑”，验证新内容先保存并进入后续比较或冲突；这些不代替实际 Obsidian/iPhone 的编辑器与系统终止验收。
-
-继续编辑的回归还包括：单笔记保存等待不阻断其他上传/下载；CRLF 文件与宿主 LF 缓冲区的核对；选择版本、都保留、合并和删除在写回前出现新内容时，原文件保留且下一轮可进入最新冲突；准备后尚未写入的 journal 重开能继续捕获，而旧 journal 或可能部分写入的任务保留备份。写入返回后、确认前仍在编辑器中的输入必须保存并核对，结果不符时不推进本机基线，保留 journal 和备份。原生 IndexedDB 套件在进入文件操作标记持久化后强杀，并在准备后强杀、编辑文件再重开，验证标记的耐久性及新内容保护。草稿覆盖未变化时清理、提交期间新草稿保留，以及新编辑尚未应用解决结果时保留原草稿。
+模型、fake IndexedDB、HTTP/PG 集成、原生浏览器强杀、物理断电和生产联合备份还原分别说明验证范围。自动测试通过不能替代移动真机、安全存储或生产安全验收。

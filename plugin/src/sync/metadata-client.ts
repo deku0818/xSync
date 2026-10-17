@@ -1,11 +1,12 @@
-import { canonical } from "../../../protocol/src/model";
-import { baseAnchorSchema, derivedOperation, type BaseAnchor, type BaseProof, type RequestCoordinate } from "../../../protocol/src/metadata";
-import type { Snapshot } from "../../../protocol/src/types";
-import { isAddressedObject } from "../../../protocol/src/objects";
-import { fingerprint } from "./crypto";
-import type { SyncDB, Outbox } from "./store";
-import { Transport, RemoteError } from "./transport";
-import { ContinuityClient } from "./continuity-client";
+import { actionEntries } from "../../../protocol/src/actions.js";
+import { baseAnchorSchema, derivedOperation, type BaseAnchor, type BaseProof, type RequestCoordinate } from "../../../protocol/src/metadata.js";
+import { canonical } from "../../../protocol/src/model.js";
+import { isAddressedObject } from "../../../protocol/src/objects.js";
+import type { Snapshot } from "../../../protocol/src/types.js";
+import { ContinuityClient } from "./continuity-client.js";
+import { fingerprint } from "./crypto.js";
+import type { SyncDB, Outbox } from "./store.js";
+import { Transport, RemoteError } from "./transport.js";
 
 export async function revisionDigest(revision: unknown): Promise<string> {
   const escaped: Record<string, string> = { "<": "\\u003c", ">": "\\u003e", "&": "\\u0026", "\u2028": "\\u2028", "\u2029": "\\u2029" };
@@ -71,9 +72,10 @@ export class MetadataClient {
     if (!migration) {
       migration = await this.db.transaction("rw", [this.db.leases, this.db.metadataMigration, this.db.outbox], async () => {
         await this.assertLease();
-        const requests = (await this.db.outbox.orderBy("queueId").toArray()).filter(row => kind === "migration"
-          ? !row.coordinate || row.request.opId !== derivedOperation(row.coordinate)
-          : row.request.actions.some(action => ("payload" in action && action.payload.objects.some(id => !isAddressedObject(id))) || (action.type === "resolve" && action.decision.kind === "keep-both" && action.decision.companion.payload.objects.some(id => !isAddressedObject(id))))).map(row => row.request);
+        const requests = (await this.db.outbox.orderBy("queueId").toArray()).filter(function needsRegistration(row: Outbox): boolean {
+          if (kind === "migration") return !row.coordinate || row.request.opId !== derivedOperation(row.coordinate);
+          return actionEntries(row.request.actions).some(action => "payload" in action && action.payload.objects.some(id => !isAddressedObject(id)));
+        }).map(row => row.request);
         const value = { id: kind, complete: false, requests };
         await this.db.metadataMigration.put(value); return value;
       });

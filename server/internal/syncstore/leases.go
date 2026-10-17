@@ -158,8 +158,8 @@ func (s *Store) UploadLease(ctx context.Context, device string, c Commit) (strin
 	return id, nil
 }
 
-func (s *Store) pinRevision(ctx context.Context, tx pgx.Tx, lease string, r Revision) error {
-	for _, id := range r.Payload.Objects {
+func (s *Store) pinObjects(ctx context.Context, tx pgx.Tx, lease string, objects []string) error {
+	for _, id := range objects {
 		var generation int64
 		var state, storage string
 		if e := tx.QueryRow(ctx, "SELECT generation,state,storage_token FROM objects WHERE vault_id=$1 AND id=$2", s.Config.VaultID, id).Scan(&generation, &state, &storage); e != nil {
@@ -233,7 +233,7 @@ func (s *Store) ReadLease(ctx context.Context, device string, view ReadView) (st
 		return "", e
 	}
 	if !reused {
-		if e = s.pinRevision(ctx, tx, id, r); e != nil {
+		if e = s.pinObjects(ctx, tx, id, r.Payload.Objects); e != nil {
 			return "", e
 		}
 	}
@@ -269,125 +269,4 @@ func (s *Store) ReleaseLease(ctx context.Context, device, id string) error {
 		return e
 	}
 	return tx.Commit(ctx)
-}
-
-type SnapshotTicket struct {
-	ID      string `json:"id"`
-	LeaseID string `json:"leaseId"`
-}
-
-func (s *Store) CreateSnapshot(ctx context.Context, device, key string) (SnapshotTicket, error) {
-	tx, e := s.locked(ctx)
-	if e != nil {
-		return SnapshotTicket{}, e
-	}
-	defer tx.Rollback(ctx)
-	if e = s.advanceContinuity(ctx, tx, device); e != nil {
-		return SnapshotTicket{}, e
-	}
-	lease, reused, e := s.newLease(ctx, tx, device, "snapshot", key, key)
-	if e != nil {
-		return SnapshotTicket{}, e
-	}
-	if reused {
-		var id string
-		e = tx.QueryRow(ctx, "SELECT id FROM snapshots WHERE vault_id=$1 AND lease_id=$2", s.Config.VaultID, lease).Scan(&id)
-		if e == nil {
-			e = tx.Commit(ctx)
-		}
-		return SnapshotTicket{id, lease}, e
-	}
-	snap, encoded, e := s.snapshotContents(ctx, tx)
-	if e != nil {
-		return SnapshotTicket{}, e
-	}
-	revisions := map[string]Revision{}
-	for _, r := range snap.Revisions {
-		revisions[r.ID] = r
-	}
-	for _, f := range snap.Files {
-		for _, head := range f.Heads {
-			if e = s.pinRevision(ctx, tx, lease, revisions[head]); e != nil {
-				return SnapshotTicket{}, e
-			}
-		}
-	}
-	id := opaqueID()[:32]
-	if _, e = tx.Exec(ctx, "INSERT INTO snapshots(vault_id,id,value,lease_id,device_id) VALUES($1,$2,$3,$4,$5)", s.Config.VaultID, id, encoded, lease, device); e != nil {
-		return SnapshotTicket{}, e
-	}
-	if e = s.fault("before-server-snapshot-commit"); e != nil {
-		return SnapshotTicket{}, e
-	}
-	if e = tx.Commit(ctx); e != nil {
-		return SnapshotTicket{}, e
-	}
-	if e = s.fault("after-server-snapshot-commit"); e != nil {
-		return SnapshotTicket{}, e
-	}
-	return SnapshotTicket{id, lease}, nil
-}
-func (s *Store) ReadSnapshot(ctx context.Context, device, id string) (json.RawMessage, error) {
-	var b []byte
-	e := s.Pool.QueryRow(ctx, `SELECT s.value FROM snapshots s JOIN content_leases l ON l.vault_id=s.vault_id AND l.id=s.lease_id
- WHERE s.vault_id=$1 AND s.id=$2 AND l.device_id=$3 AND l.epoch=$4 AND l.expires_at>clock_timestamp()`, s.Config.VaultID, id, device, s.Config.Epoch).Scan(&b)
-	if e == pgx.ErrNoRows {
-		return nil, code("VIEW_EXPIRED")
-	}
-	return b, e
-}
-
-// Use the same encoding and limits for snapshot creation and log-retention admission.
-func (s *Store) snapshotContents(ctx context.Context, tx pgx.Tx) (Snapshot, []byte, error) {
-	snap := Snapshot{Epoch: s.Config.Epoch, Files: []File{}, Revisions: []Revision{}}
-	st, e := s.load(ctx, tx)
-	if e != nil {
-		return snap, nil, e
-	}
-	if len(st.files) > 10000 || (!s.compact && len(st.revisions) > 100000) {
-		return snap, nil, code("SNAPSHOT_TOO_LARGE")
-	}
-	if e = tx.QueryRow(ctx, "SELECT seq FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&snap.Boundary); e != nil {
-		return snap, nil, e
-	}
-	for _, id := range sortedKeys(st.files) {
-		snap.Files = append(snap.Files, *st.files[id])
-	}
-	if s.compact {
-		var checkpoint int64
-		if e = tx.QueryRow(ctx, "SELECT metadata_checkpoint FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&checkpoint); e != nil {
-			return snap, nil, e
-		}
-		snap.Checkpoint = &checkpoint
-		for _, f := range snap.Files {
-			for _, id := range f.Heads {
-				r, ok := st.revisions[id]
-				if !ok {
-					return snap, nil, code("PARENT_MISSING")
-				}
-				anchor, err := s.anchor(r, snap.Boundary)
-				if err != nil {
-					return snap, nil, err
-				}
-				snap.Revisions = append(snap.Revisions, r)
-				snap.Bases = append(snap.Bases, anchor.Proof)
-			}
-		}
-		if len(snap.Revisions) > 100000 {
-			return snap, nil, code("SNAPSHOT_TOO_LARGE")
-		}
-	} else {
-		for _, id := range sortedKeys(st.revisions) {
-			snap.Revisions = append(snap.Revisions, st.revisions[id])
-		}
-	}
-	encoded, e := json.Marshal(snap)
-	if e != nil {
-		return snap, nil, e
-	}
-	// HTTP's JSON encoder adds a trailing newline; include it in the client's response budget.
-	if len(encoded)+1 > 32<<20 {
-		return snap, nil, code("SNAPSHOT_TOO_LARGE")
-	}
-	return snap, encoded, nil
 }

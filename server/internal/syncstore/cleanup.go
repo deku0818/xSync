@@ -21,13 +21,14 @@ func DefaultCleanupPolicy() CleanupPolicy {
 }
 
 type CleanupReport struct {
-	Revisions  int64 `json:"revisions"`
-	Locations  int64 `json:"locations"`
-	Candidates int   `json:"candidates"`
-	Deleted    int   `json:"deleted"`
-	Changes    int64 `json:"changes"`
-	Snapshots  int64 `json:"snapshots"`
-	Orphans    int   `json:"orphans"`
+	Revisions   int64 `json:"revisions"`
+	Locations   int64 `json:"locations"`
+	Candidates  int   `json:"candidates"`
+	Deleted     int   `json:"deleted"`
+	Changes     int64 `json:"changes"`
+	Snapshots   int64 `json:"snapshots"`
+	Orphans     int   `json:"orphans"`
+	LogDeferred bool  `json:"logDeferred"`
 }
 type objectGeneration struct {
 	ID         string
@@ -198,9 +199,13 @@ func (s *Store) Collect(ctx context.Context, p CleanupPolicy) (CleanupReport, er
 	if cutoff > 0 {
 		// Never retire the only incremental recovery route when a replacement snapshot exceeds wire limits.
 		if _, _, e = s.snapshotContents(ctx, tx); e != nil {
-			return report, e
+			if e.Error() != "SNAPSHOT_TOO_LARGE" {
+				return report, e
+			}
+			report.LogDeferred = true
 		}
-
+	}
+	if cutoff > 0 && !report.LogDeferred {
 		if _, e = tx.Exec(ctx, "UPDATE vaults SET min_seq=GREATEST(min_seq,$2) WHERE id=$1", s.Config.VaultID, cutoff); e != nil {
 			return report, e
 		}

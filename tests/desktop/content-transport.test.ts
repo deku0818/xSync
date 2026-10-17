@@ -32,12 +32,25 @@ it("reuses snapshot creation identity after a lost response and releases the kno
       if (lose) { lose = false; throw new Error("LOST_RESPONSE"); }
       return json({ id: id.slice(0, 32), leaseId: id });
     }
-    return json({ epoch: "epoch", boundary: 0, files: [], revisions: [] });
+    return json({ epoch: "epoch", boundary: 0, files: [], revisions: [], total: 0, next: null });
   });
   await expect(transport.snapshot()).rejects.toThrow("LOST_RESPONSE");
   expect(await transport.snapshot()).toMatchObject({ boundary: 0 });
   expect(creations[1]).toEqual(creations[0]); await transport.releaseSnapshots();
   expect(released).toEqual([`http://127.0.0.1:8873/content/leases/${id}`]);
+});
+
+it.each(["boundary", "total", "cursor", "truncated"])("rejects an inconsistent %s while assembling frozen pages", async kind => {
+  let pages=0;
+  const file={id:"file",entryKind:"file",location:{revision:"L",pathKey:id,encryptedPath:"opaque"},heads:["R"]};
+  const transport=new Transport("http://127.0.0.1:8873","synthetic-token",async call=>{
+    if(call.method==="POST") return json({id:id.slice(0,32),leaseId:id});
+    pages++;
+    if(pages===1) return json({epoch:"epoch",boundary:1,files:[file],revisions:[],total:2,next:1});
+    return json({epoch:"epoch",boundary:kind==="boundary"?2:1,files:[file],revisions:[],total:kind==="total"?3:2,next:kind==="cursor"?1:null,
+      ...(kind==="truncated"?{files:[]}:{} )});
+  });
+  await expect(transport.snapshot()).rejects.toThrow("INVALID_SNAPSHOT");
 });
 
 it("renews active transfers before more chunks and keeps protection attached to each object read", async () => {

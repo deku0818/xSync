@@ -27,6 +27,7 @@ func TestContinuityHTTPRequiresProtectionForWritesButAllowsReadOnlyInspection(t 
 		r.Header.Set("X-Sync-Read-Only", "1")
 		if capability {
 			r.Header.Set("X-Sync-Continuity", ContinuityCapability)
+			r.Header.Set("X-Sync-Snapshots", SnapshotCapability)
 		}
 		response, e := http.DefaultClient.Do(r)
 		if e != nil {

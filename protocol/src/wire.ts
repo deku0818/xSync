@@ -39,5 +39,5 @@ export const receiptSchema = z.strictObject({ epoch: id, seq: z.number().int().p
 export const CONTENT_CAPABILITY = "content-leases-v1";
 export const METADATA_CAPABILITY = "metadata-anchors-v1";
 export const COMPACT_CAPABILITY = "compact-heads-v1";
-export const SNAPSHOT_CAPABILITY = "snapshot-pages-v1";
+export const SNAPSHOT_CAPABILITY = "snapshot-pages-v2";
 export const SYNC_FEATURES = ["causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", CONTENT_CAPABILITY, METADATA_CAPABILITY, COMPACT_CAPABILITY, OBJECT_CAPABILITY, CONTINUITY_CAPABILITY, SNAPSHOT_CAPABILITY] as const;

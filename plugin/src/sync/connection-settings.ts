@@ -8,15 +8,14 @@ const currentConnection = z.strictObject({ format: z.literal(3), ...fields, reco
 const ordinaryConnection = currentConnection.extend({ format: z.literal(4), vaultId: z.string().regex(/^(?:[a-zA-Z0-9_-]{1,128})?$/) });
 export interface ConnectionSettings { endpoint: string; vaultId?: string; autoSync: boolean; record: string; restoreAllowed: boolean; clientName?: string; rules: SyncRules; profileRevision?: number; profileDirty: boolean; profilePending?: PendingProfile }
 export function connectionSettings(input: unknown, defaultEndpoint: string, developmentEndpoint?: string): ConnectionSettings {
-  if (input && typeof input === "object" && "format" in input && input.format === 4) {
-    const s = ordinaryConnection.parse(input);
-    if (!!s.endpoint !== !!s.vaultId) throw new Error("INVALID_CONNECTION_IDENTITY");
-    return { ...s, endpoint: s.endpoint ? normalizeEndpoint(s.endpoint, developmentEndpoint) : "", rules: validateRules(s.rules) };
+  const format = input && typeof input === "object" && "format" in input ? input.format : undefined;
+  if (format === 3 || format === 4) {
+    const s = (format === 4 ? ordinaryConnection : currentConnection).parse(input);
+    if (s.format === 4 && !!s.endpoint !== !!s.vaultId) throw new Error("INVALID_CONNECTION_IDENTITY");
+    const endpoint = s.format === 4 && !s.endpoint ? "" : normalizeEndpoint(s.endpoint, developmentEndpoint);
+    return { ...s, endpoint, rules: validateRules(s.rules) };
   }
-  if (input && typeof input === "object" && "format" in input && input.format === 3) {
-    const s = currentConnection.parse(input); return { ...s, endpoint: normalizeEndpoint(s.endpoint, developmentEndpoint), restoreAllowed: s.restoreAllowed, rules: validateRules(s.rules) };
-  }
-  if (input && typeof input === "object" && "format" in input && input.format === 2) {
+  if (format === 2) {
     const s = savedConnection.parse(input); return { endpoint: normalizeEndpoint(s.endpoint, developmentEndpoint), autoSync: s.autoSync, record: s.record, restoreAllowed: true, rules: defaultRules(), profileDirty: true };
   }
   const s = z.object({ format: z.literal(1).optional(), autoSync: z.boolean().optional(), rememberDevice: z.boolean().optional(), manualLocked: z.boolean().optional() }).parse(input ?? {});

@@ -42,7 +42,7 @@ function revisionContext(r: Revision): unknown {
 }
 const manifestSchema = z.strictObject({ format: z.literal(0), fingerprint: z.string().regex(/^[a-f0-9]{64}$/), length: z.number().int().min(0).max(MAX_FILE_BYTES) });
 const keyHex = z.string().regex(/^[a-f0-9]{64}$/);
-const sessionSchema = z.strictObject({ format: z.literal(0), vaultId: z.string(), content: keyHex, metadata: keyHex, paths: keyHex, local: keyHex, auth: keyHex });
+export const sessionSchema = z.strictObject({ format: z.literal(0), vaultId: z.string(), content: keyHex, metadata: keyHex, paths: keyHex, local: keyHex, auth: keyHex });
 export type SessionMaterial = z.infer<typeof sessionSchema>;
 function sessionTag(material: Omit<SessionMaterial, "auth">): Uint8Array {
   const local = sodium.from_hex(material.local);
@@ -136,9 +136,16 @@ export class VaultCrypto {
     return open(this.content, new TextDecoder().decode(bytes), { purpose: "object-v0", vaultId: this.vaultId, keyEpoch: 1, blobId: id });
   }
   async payload(r: Omit<Revision, "payload">, bytes: Uint8Array, kind: Payload["kind"], objects: string[]): Promise<Payload> {
-    const payload: Payload = { kind, keyEpoch: 1, objects, encryptedManifest: "" };
+    return this.sealManifest(r, { format: 0, fingerprint: await fingerprint(bytes), length: bytes.length }, kind, objects);
+  }
+  /** Rebind authenticated metadata; callers still verify selected bytes before committing a choice. */
+  copyPayload(r: Omit<Revision, "payload">, source: Revision): Payload {
+    return this.sealManifest(r, this.manifest(source), source.payload.kind, source.payload.objects);
+  }
+  private sealManifest(r: Omit<Revision, "payload">, manifest: z.infer<typeof manifestSchema>, kind: Payload["kind"], objects: string[]): Payload {
+    const payload: Payload = { kind, keyEpoch: 1, objects: [...objects], encryptedManifest: "" };
     const ctx = { ...revisionContext({ ...r, payload }) as Record<string, unknown>, vaultId: this.vaultId };
-    payload.encryptedManifest = seal(this.metadata, text.encode(JSON.stringify({ format: 0, fingerprint: await fingerprint(bytes), length: bytes.length })), ctx);
+    payload.encryptedManifest = seal(this.metadata, text.encode(JSON.stringify(manifest)), ctx);
     return payload;
   }
   manifest(r: Revision): z.infer<typeof manifestSchema> {

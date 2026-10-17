@@ -37,9 +37,9 @@ export class ObsidianVaultPort implements FilePort {
   inScope(path: string): boolean { return !this.policy().reason(this.logical(path)); }
   isOwnWrite(path: string): boolean { return this.ownWrites.has(this.logical(path)); }
   private async writing(path: string, task: () => Promise<void>): Promise<void> { this.ownWrites.add(path); try { await task(); if (isSharedConfigPath(path)) this.configurationChanged = true; } finally { this.ownWrites.delete(path); } }
-  async inventory(): Promise<FileEntry[]> {
+  async inventory(configurationOnly = false): Promise<FileEntry[]> {
     const dir = this.app.vault.configDir; const adapter = this.app.vault.adapter;
-    const entries: FileEntry[] = this.app.vault.getFiles().filter(f => f.path !== dir && !f.path.startsWith(`${dir}/`) && !f.path.split("/").some(p => p.startsWith("."))).map(f => ({ path: f.path, size: f.stat?.size ?? 0 }));
+    const entries: FileEntry[] = configurationOnly ? [] : this.app.vault.getFiles().filter(f => f.path !== dir && !f.path.startsWith(`${dir}/`) && !f.path.split("/").some(p => p.startsWith("."))).map(f => ({ path: f.path, size: f.stat?.size ?? 0 }));
     const walk = async (physical: string, depth: number): Promise<void> => {
       if (depth > 32 || entries.length > 100000) throw new Error("CONFIG_SCAN_LIMIT");
       const listing = await adapter.list(physical);
@@ -55,22 +55,23 @@ export class ObsidianVaultPort implements FilePort {
         // Other hidden files remain device local and never reach path crypto.
         const fixed = fixedExclusion(path); if (fixed) { entries.push({ path, size: 0, reason: fixed }); continue; }
         canonicalPath(path); const stat = await adapter.stat(file); if (!stat || stat.type !== "file") throw new Error("CONFIG_SCAN_CHANGED");
-        entries.push({ path, size: stat.size });
+        entries.push({ path, size: stat.size, mtime: stat.mtime });
       }
     };
     if (await adapter.exists(dir)) await walk(dir, 0);
-    this.cachedInventory = entries.map(e => ({ ...e, reason: e.reason ?? this.policy().reason(e.path, e.size, e.directory) }));
-    return this.cachedInventory;
+    const inventory = entries.map(e => ({ ...e, reason: e.reason ?? this.policy().reason(e.path, e.size, e.directory) }));
+    if (!configurationOnly) this.cachedInventory = inventory;
+    return inventory;
   }
   async excludedChildren(path: string): Promise<FileEntry[]> {
     canonicalPath(path); const physical = this.physical(path); const listing = await this.app.vault.adapter.list(physical);
     if ([...listing.folders, ...listing.files].some(p => !p.startsWith(`${physical}/`))) throw new Error("UNSAFE_ADAPTER_LIST");
     return [...listing.folders.map(p => ({ path: this.logical(p), size: 0, directory: true })), ...await Promise.all(listing.files.map(async p => ({ path: this.logical(p), size: (await this.app.vault.adapter.stat(p))?.size ?? 0 })))];
   }
-  async configurationStamp(): Promise<string> {
-    const inventory = await this.inventory(); const adapter = this.app.vault.adapter;
-    const values = await Promise.all(inventory.filter(e => isSharedConfigPath(e.path) && !e.directory && !e.reason).map(async e => { const stat = await adapter.stat(this.physical(e.path)); return `${e.path}:${stat?.size}:${stat?.mtime}`; }));
-    return values.sort().join("\n");
+  async configurationStats(): Promise<Map<string, string>> {
+    const inventory = await this.inventory(true);
+    return new Map(inventory.filter(entry => isSharedConfigPath(entry.path) && !entry.directory && !entry.reason)
+      .map(entry => [entry.path, `${entry.size}:${entry.mtime ?? 0}`]));
   }
   async list(): Promise<string[]> { return (await this.inventory()).filter(e => !e.directory && !fixedExclusion(e.path)).map(e => e.path).sort(); }
   async stat(path: string): Promise<{ size: number } | null> { canonicalPath(path); const stat = await this.app.vault.adapter.stat(this.physical(path)); return stat?.type === "file" ? { size: stat.size } : null; }

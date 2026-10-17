@@ -38,7 +38,7 @@ export default class ObsidianSyncPlugin extends Plugin {
   private profilePending?: PendingProfile;
   private remote?: Transport;
   private configTimer?: TimerHandle;
-  private configStamp = "";
+  private configStamp = new Map<string, string>();
   private configScanning = false;
   private config?: z.infer<typeof configSchema>;
   private root = "";
@@ -47,9 +47,7 @@ export default class ObsidianSyncPlugin extends Plugin {
   private restoreAllowed = true;
   private configuring = false;
   hasSavedKey = false;
-  storageState = "未检查";
   eventState = "stopped";
-  lastSyncAt = "";
   hostError = "";
   localPending = false;
   syncing = false;
@@ -65,6 +63,7 @@ export default class ObsidianSyncPlugin extends Plugin {
   private layoutReady = false;
   private disposed = false;
   private changeGeneration = 0;
+  private lastFullCheck = 0;
   private lastStatus?: EngineStatus;
   private listeners = new Set<() => void>();
   deviceName = "";
@@ -113,21 +112,22 @@ export default class ObsidianSyncPlugin extends Plugin {
       try {
         if (this.endpoint && config.vaultId) this.remembered = this.unlockStore(this.endpoint, this.connectionRecord);
         this.hasSavedKey = this.restoreAllowed && (this.remembered ? await this.remembered.hasRecord() : false);
-        this.storageState = "请填写服务器地址和同步密钥并保存";
-      } catch (error) { this.storageState = `无法安全保存密钥：${String(error)}`; }
-      this.automatic = new AutomaticSync(() => this.sync(false), error => { this.hostError = String(error); this.emit(); });
+      } catch { /* Saving a connection reports unavailable secure storage through its observer. */ }
+      this.automatic = new AutomaticSync(full => this.sync(false, full || Date.now() - this.lastFullCheck >= 300000), error => { this.hostError = String(error); this.emit(); });
       if (remote) this.connectEvents(remote);
-      const changed = (file: { path: string }) => {
+      const changed = (file: { path: string }, full = false) => {
         if (port.isOwnWrite(file.path)) return;
         if (!port.inScope(file.path)) { this.emit(); return; }
-        this.changeGeneration++; this.localPending = true; this.showPending(); this.automatic?.trigger("file");
+        this.changeGeneration++; this.localPending = true; this.showPending();
+        if (full) { this.automatic?.trigger("foreground", true); return; }
+        void this.db!.markDirty(port.logical(file.path)).then(() => this.automatic?.trigger("file"), error => { this.hostError = String(error); this.automatic?.trigger("foreground", true); this.emit(); });
       };
       this.registerEvent(this.app.vault.on("modify", changed));
       this.registerEvent(this.app.vault.on("create", file => { if (file instanceof TFile) changed(file); }));
-      this.registerEvent(this.app.vault.on("delete", changed));
+      this.registerEvent(this.app.vault.on("delete", file => changed(file, !(file instanceof TFile))));
       this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
         if (port.isOwnRename(oldPath, file.path)) return;
-        changed(file);
+        changed(file, !(file instanceof TFile));
         if (file instanceof TFile && this.engine?.unlocked) {
           void this.work.run(async () => {
             if (this.disposed || !this.engine?.unlocked) return;
@@ -154,9 +154,9 @@ export default class ObsidianSyncPlugin extends Plugin {
       if (!this.engine.unlocked && this.restoreAllowed && this.remembered) {
         try {
           const material = await this.remembered.load();
-          if (material && !this.disposed) { this.config!.token = material.token ?? this.config!.token; this.remote?.setToken(this.config!.token); await this.engine.restoreRemembered(material); this.hasSavedKey = true; this.storageState = "配置已保存"; }
+          if (material && !this.disposed) { this.config!.token = material.token ?? this.config!.token; this.remote?.setToken(this.config!.token); await this.engine.restoreRemembered(material); this.hasSavedKey = true; }
           else if (!material) this.hasSavedKey = false;
-        } catch { this.storageState = "暂时无法读取保存的密钥；回到前台后重试，原记录保留。持续失败时请重新填写并保存"; }
+        } catch { /* Preserve the protected record and retry on the next foreground wake. */ }
       }
       if (this.disposed) { this.engine.lock(); return; }
       if (this.engine.unlocked) await this.cleanupConnectionRecords();
@@ -207,9 +207,9 @@ export default class ObsidianSyncPlugin extends Plugin {
     try {
       let active: StoredMaterial | null | undefined;
       const listing = await adapter.list(this.root);
-      for (const path of listing.files) {
-        const name = path.slice(this.root.length + 1);
-        if (name === this.connectionRecord || path !== `${this.root}/${name}` ||
+      const names = new Set(listing.files.filter(path => path.startsWith(`${this.root}/`)).map(path => path.slice(this.root.length + 1).replace(/\.retiring$/, "")));
+      for (const name of names) {
+        if (name === this.connectionRecord ||
             !/^(?:(?:connection|pending)-[a-f0-9]{64}|desktop-unlock)\.json$/.test(name)) continue;
         if (!active) {
           active = await this.remembered?.load();
@@ -217,6 +217,11 @@ export default class ObsidianSyncPlugin extends Plugin {
         }
         try {
           const record = this.unlockStore(this.endpoint, name);
+          const retirement = await record.retirementIdentity();
+          if (retirement) {
+            await this.unlockStore(retirement.endpoint, name, retirement.vaultId).retire(this.remembered);
+            continue;
+          }
           const material = await record.load();
           // An unreferenced candidate can still be the only receipt for a rotated token.
           // Retire only disabled records or credentials already held by the durable active record.
@@ -320,7 +325,7 @@ export default class ObsidianSyncPlugin extends Plugin {
           this.hasSavedKey = true;
           try { await previousRecord?.retire(remembered); } catch { /* The previous pointer is no longer active; a later cleanup can retry. */ }
           await this.cleanupConnectionRecords();
-          this.storageState = "配置已保存"; this.hostError = ""; this.connectEvents(remote);
+          this.hostError = ""; this.connectEvents(remote);
           observe?.({ step: "storage", state: "passed" });
         } finally {
           if (!installed) candidate?.lock();
@@ -335,7 +340,7 @@ export default class ObsidianSyncPlugin extends Plugin {
       throw error;
     }
   }
-  async sync(notify = true): Promise<void> {
+  async sync(notify = true, full = true): Promise<void> {
     await this.work.run(async () => {
       if (!this.engine || this.disposed || !this.autoSync || this.configuring) return;
       const generation = this.changeGeneration;
@@ -354,10 +359,11 @@ export default class ObsidianSyncPlugin extends Plugin {
       try {
         let profileError = "";
         try { await this.flushProfile(); } catch (error) { profileError = `客户端配置快照未更新：${String(error)}`; }
-        const status = await this.engine.sync();
+        const status = full ? await this.engine.sync() : await this.engine.sync({ full: false });
+        if (full && !status.errors.length) this.lastFullCheck = Date.now();
         finished = true; this.syncing = false;
         this.localPending = this.changeGeneration !== generation;
-        this.lastSyncAt = new Date().toLocaleTimeString(); this.hostError = profileError; this.publishStatus(status, notify);
+        this.hostError = profileError; this.publishStatus(status, notify);
       } catch (error) {
         this.hostError = String(error);
         this.lastStatus = { outbox: 0, inbox: 0, conflicts: 0, ...this.lastStatus,
@@ -443,7 +449,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     await this.work.run(async () => {
       const prior = this.rules; this.rules = rules; this.profileDirty = true;
       try { await this.saveSettings(); } catch (error) { this.rules = prior; throw error; }
-      this.policy = policy; this.engine?.setPolicy(policy); this.configStamp = ""; this.emit();
+      this.policy = policy; this.engine?.setPolicy(policy); this.configStamp = new Map(); this.emit();
     });
     this.automatic?.trigger("rules", true);
     void this.work.run(async () => { try { await this.flushProfile(); } catch (error) { this.hostError = `配置已在本机保存，快照待上报：${String(error)}`; this.emit(); } });
@@ -454,7 +460,13 @@ export default class ObsidianSyncPlugin extends Plugin {
   private async pollConfiguration(): Promise<void> {
     if (this.configScanning || this.disposed || !this.autoSync || !this.port) return;
     this.configScanning = true;
-    try { const stamp = await this.port.configurationStamp(); if (stamp !== this.configStamp) { this.configStamp = stamp; this.automatic?.trigger("configuration"); } }
+    try {
+      const stats = await this.port.configurationStats();
+      const changed = [...new Set([...stats.keys(), ...this.configStamp.keys()])].filter(path => stats.get(path) !== this.configStamp.get(path));
+      for (const path of changed) await this.db!.markDirty(path);
+      this.configStamp = stats;
+      if (changed.length) this.automatic?.trigger("file");
+    }
     catch (error) { this.hostError = `配置扫描失败：${String(error)}`; this.emit(); }
     finally { this.configScanning = false; }
   }

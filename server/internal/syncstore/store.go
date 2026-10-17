@@ -156,10 +156,39 @@ func (s *Store) Authorize(ctx context.Context, token string) (string, error) {
 	}
 	return id, nil
 }
-func (s *Store) load(ctx context.Context, tx pgx.Tx) (*state, error) {
+
+type commitScope struct{ files, paths, objects []string }
+
+func (s *Store) loadCommit(ctx context.Context, tx pgx.Tx, c Commit) (*state, error) {
+	if !s.compact {
+		// The compatibility model still needs its complete ancestry graph.
+		return s.loadState(ctx, tx, nil)
+	}
+	files, paths, objects := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, a := range c.Actions {
+		for _, entry := range actionEntries(a) {
+			files[entry.FileID] = true
+			if entry.Location != nil {
+				paths[entry.Location.PathKey] = true
+			}
+		}
+		for _, id := range actionObjects(a) {
+			objects[id] = true
+		}
+	}
+	return s.loadState(ctx, tx, &commitScope{sortedKeys(files), sortedKeys(paths), sortedKeys(objects)})
+}
+
+func (s *Store) loadState(ctx context.Context, tx pgx.Tx, scope *commitScope) (*state, error) {
 	st := newState()
 	v := s.Config.VaultID
-	rows, e := tx.Query(ctx, "SELECT id,kind,location FROM files WHERE vault_id=$1", v)
+	fileQuery := "SELECT id,kind,location FROM files WHERE vault_id=$1"
+	fileArgs := []any{v}
+	if scope != nil {
+		fileQuery += " AND (id=ANY($2) OR path_key=ANY($3))"
+		fileArgs = append(fileArgs, scope.files, scope.paths)
+	}
+	rows, e := tx.Query(ctx, fileQuery, fileArgs...)
 	if e != nil {
 		return nil, e
 	}
@@ -181,8 +210,16 @@ func (s *Store) load(ctx context.Context, tx pgx.Tx) (*state, error) {
 	if e != nil {
 		return nil, e
 	}
-	rows, e = tx.Query(ctx, `SELECT r.value FROM revisions r WHERE r.vault_id=$1 AND
- (NOT $2::boolean OR EXISTS(SELECT 1 FROM heads h WHERE h.vault_id=r.vault_id AND h.revision_id=r.id))`, v, s.compact)
+	revisionQuery := `SELECT r.value FROM revisions r WHERE r.vault_id=$1 AND
+ (NOT $2::boolean OR EXISTS(SELECT 1 FROM heads h WHERE h.vault_id=r.vault_id AND h.revision_id=r.id))`
+	revisionArgs := []any{v, s.compact}
+	selectedFiles := sortedKeys(st.files)
+	if scope != nil {
+		revisionQuery = `SELECT r.value FROM heads h JOIN revisions r ON r.vault_id=h.vault_id AND r.id=h.revision_id
+ WHERE h.vault_id=$1 AND h.file_id=ANY($2)`
+		revisionArgs = []any{v, selectedFiles}
+	}
+	rows, e = tx.Query(ctx, revisionQuery, revisionArgs...)
 	if e != nil {
 		return nil, e
 	}
@@ -203,7 +240,13 @@ func (s *Store) load(ctx context.Context, tx pgx.Tx) (*state, error) {
 	if e != nil {
 		return nil, e
 	}
-	rows, e = tx.Query(ctx, "SELECT file_id,revision_id FROM heads WHERE vault_id=$1 ORDER BY revision_id", v)
+	headQuery := "SELECT file_id,revision_id FROM heads WHERE vault_id=$1"
+	headArgs := []any{v}
+	if scope != nil {
+		headQuery += " AND file_id=ANY($2)"
+		headArgs = append(headArgs, selectedFiles)
+	}
+	rows, e = tx.Query(ctx, headQuery+" ORDER BY revision_id", headArgs...)
 	if e != nil {
 		return nil, e
 	}
@@ -220,8 +263,18 @@ func (s *Store) load(ctx context.Context, tx pgx.Tx) (*state, error) {
 	if e != nil {
 		return nil, e
 	}
-	rows, e = tx.Query(ctx, `SELECT l.id,l.value FROM locations l WHERE l.vault_id=$1 AND
- (NOT $2::boolean OR EXISTS(SELECT 1 FROM files f WHERE f.vault_id=l.vault_id AND f.location->>'revision'=l.id))`, v, s.compact)
+	locationQuery := `SELECT l.id,l.value FROM locations l WHERE l.vault_id=$1 AND
+ (NOT $2::boolean OR EXISTS(SELECT 1 FROM files f WHERE f.vault_id=l.vault_id AND f.location->>'revision'=l.id))`
+	locationArgs := []any{v, s.compact}
+	if scope != nil {
+		locationIDs := []string{}
+		for _, f := range st.files {
+			locationIDs = append(locationIDs, f.Location.Revision)
+		}
+		locationQuery = "SELECT id,value FROM locations WHERE vault_id=$1 AND id=ANY($2)"
+		locationArgs = []any{v, locationIDs}
+	}
+	rows, e = tx.Query(ctx, locationQuery, locationArgs...)
 	if e != nil {
 		return nil, e
 	}
@@ -243,7 +296,13 @@ func (s *Store) load(ctx context.Context, tx pgx.Tx) (*state, error) {
 	if e != nil {
 		return nil, e
 	}
-	rows, e = tx.Query(ctx, "SELECT id FROM objects WHERE vault_id=$1 AND state IN ('ready','candidate')", v)
+	objectQuery := "SELECT id FROM objects WHERE vault_id=$1 AND state IN ('ready','candidate')"
+	objectArgs := []any{v}
+	if scope != nil {
+		objectQuery += " AND id=ANY($2)"
+		objectArgs = append(objectArgs, scope.objects)
+	}
+	rows, e = tx.Query(ctx, objectQuery, objectArgs...)
 	if e != nil {
 		return nil, e
 	}
@@ -265,7 +324,7 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 		return zero, code("UNSUPPORTED_PROTOCOL")
 	}
 	for _, f := range c.Required {
-		if !contains([]string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", ContentCapability, MetadataCapability, CompactCapability, ObjectCapability, ContinuityCapability, SnapshotCapability}, f) {
+		if !contains([]string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", ContentCapability, MetadataCapability, CompactCapability, ObjectCapability, ContinuityCapability, SnapshotCapability, legacySnapshotCapability}, f) {
 			return zero, code("UNSUPPORTED_PROTOCOL")
 		}
 	}
@@ -339,7 +398,7 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 			return zero, e
 		}
 	}
-	st, e := s.load(ctx, tx)
+	st, e := s.loadCommit(ctx, tx, c)
 	if e != nil {
 		return zero, e
 	}
@@ -388,11 +447,7 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 	}
 	// Retain every location version, including a create followed by a move in one group.
 	for _, a := range c.Actions {
-		entries := []Action{a}
-		if a.Decision != nil && a.Decision.Companion != nil {
-			entries = append(entries, *a.Decision.Companion)
-		}
-		for _, entry := range entries {
+		for _, entry := range actionEntries(a) {
 			if entry.Location == nil {
 				continue
 			}
@@ -477,35 +532,6 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 		return zero, e
 	}
 	return r, nil
-}
-func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
-	tx, e := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if e != nil {
-		return Snapshot{}, e
-	}
-	defer tx.Rollback(ctx)
-	if s.compact {
-		snap, _, err := s.snapshotContents(ctx, tx)
-		if err != nil {
-			return snap, err
-		}
-		return snap, tx.Commit(ctx)
-	}
-	snap := Snapshot{Files: []File{}, Revisions: []Revision{}}
-	if e = tx.QueryRow(ctx, "SELECT epoch,seq FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&snap.Epoch, &snap.Boundary); e != nil {
-		return snap, e
-	}
-	st, e := s.load(ctx, tx)
-	if e != nil {
-		return snap, e
-	}
-	for _, id := range sortedKeys(st.files) {
-		snap.Files = append(snap.Files, *st.files[id])
-	}
-	for _, id := range sortedKeys(st.revisions) {
-		snap.Revisions = append(snap.Revisions, st.revisions[id])
-	}
-	return snap, tx.Commit(ctx)
 }
 func (s *Store) Pull(ctx context.Context, epoch string, after int64) ([]Change, error) {
 	var tx pgx.Tx

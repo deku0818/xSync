@@ -1,16 +1,18 @@
+import { actionEntries } from "../../../protocol/src/actions.js";
 import { derivedID, derivedOperation } from "../../../protocol/src/metadata.js";
 import { canonical } from "../../../protocol/src/model.js";
-import type { Action, Commit, FileState, Revision, Snapshot } from "../../../protocol/src/types.js";
+import type { Action, Commit, FileState, Revision } from "../../../protocol/src/types.js";
 import { SYNC_FEATURES } from "../../../protocol/src/wire.js";
 import { timerHost } from "../runtime/timers.js";
 import { isSharedConfigPath } from "./config-path.js";
 import { sharedConfig, hasDeviceFields } from "./config-projection.js";
 import { VaultCrypto, MAX_FILE_BYTES, bytesEqual, fingerprint, randomId, type SessionMaterial } from "./crypto.js";
-import { cleanupLocalData, type StageCleanupPort } from "./local-cleanup.js";
+import { cleanupLocalData, compactInbox, type StageCleanupPort } from "./local-cleanup.js";
 import { MetadataClient } from "./metadata-client.js";
 import { CHUNK_BYTES, SyncPolicy, fixedExclusion } from "./policy.js";
 import { isAncestor, project } from "./projection.js";
-import { SyncDB, type ApplyTask, type Inbox, type LocalFile, type Outbox } from "./store.js";
+import { receiveSnapshot } from "./snapshot-cache.js";
+import { databaseBatches, SyncDB, type ApplyTask, type Inbox, type LocalFile, type Outbox } from "./store.js";
 import { RemoteError, Transport } from "./transport.js";
 
 export interface FilePort extends StageCleanupPort {
@@ -43,15 +45,15 @@ export class SyncEngine {
   private errors: string[] = [];
   private stopping = false;
   private keyPackageFingerprint?: string;
-  private compactExpected = false;
   private captured = new Map<string, LocalFile>();
+  private counts?: { version: number; outbox: number; inbox: number; conflicts: number; skipped: number; dirty: number };
   fault?: (point: string) => void;
   constructor(readonly db: SyncDB, private remote: Transport, private files: FilePort,
     readonly deviceId: string, readonly vaultId: string, private policy = new SyncPolicy()) {}
   private metadata(): MetadataClient {
     return new MetadataClient(this.db, this.remote, this.vaultId, () => this.checkLease(), anchor => { this.crypto().manifest(anchor.revision); }, point => this.fault?.(point));
   }
-  setPolicy(policy: SyncPolicy): void { if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.policy = policy; }
+  setPolicy(policy: SyncPolicy): void { if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.policy = policy; this.counts = undefined; }
   private async skip(path: string, reason: string): Promise<void> { await this.db.skipped.put({ id: path, path, reason }); }
 
   private async verifiedHandshake(onAuthenticated?: () => void) {
@@ -131,37 +133,20 @@ export class SyncEngine {
     }, 10000);
     return async () => { timerHost().clearInterval(heartbeat); await Promise.all(renewals); };
   }
-  private async initialize(epoch: string): Promise<void> {
+  private async initialize(epoch: string, compact: boolean): Promise<void> {
     if (await this.db.progress.get("progress")) return;
     if (await this.db.localFiles.count() || await this.db.outbox.count()) throw new Error("LOCAL_STATE_INCOMPLETE");
-    const snapshot = await this.remote.snapshot(); if (snapshot.epoch !== epoch) throw new Error("RECOVERY_RECONCILIATION_REQUIRED"); await this.acceptSnapshot(snapshot);
+    await this.readSnapshot(epoch, compact);
   }
-  private async acceptSnapshot(s: Snapshot): Promise<void> {
-    const keys = this.crypto();
-    const previous = await this.db.progress.get("progress");
-    if ((this.compactExpected || previous?.checkpoint !== undefined) && s.checkpoint === undefined) throw new Error("INVALID_SNAPSHOT");
-    if (previous?.checkpoint !== undefined && s.checkpoint! < previous.checkpoint) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
-    if (previous && (s.epoch !== previous.epoch || s.boundary < previous.received)) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
-    // File identities and tombstones survive compaction; a snapshot cannot forget a known identity.
-    const snapshotFiles = new Set(s.files.map(file => file.id));
-    const snapshotRevisions = new Map(s.revisions.map(revision => [revision.id, revision]));
-    if (snapshotFiles.size !== s.files.length || snapshotRevisions.size !== s.revisions.length) throw new Error("INVALID_SNAPSHOT");
-    for (const f of await this.db.remoteFiles.toArray()) if (!snapshotFiles.has(f.id)) throw new Error("INCOMPLETE_SNAPSHOT");
-    for (const r of s.revisions) keys.manifest(r);
-    for (const f of s.files) { keys.path(f.id, f.location); if (f.heads.some(h => snapshotRevisions.get(h)?.fileId !== f.id)) throw new Error("INVALID_SNAPSHOT"); }
-    const anchors = await this.metadata().snapshotAnchors(s);
-    await this.db.transaction("rw", [this.db.leases, this.db.remoteFiles, this.db.revisions, this.db.inbox, this.db.progress, this.db.baseProofs, this.db.writerState], async () => {
-      await this.checkLease();
-      await this.db.remoteFiles.clear(); await this.db.inbox.clear();
-      await this.db.remoteFiles.bulkPut(s.files); await this.db.revisions.bulkPut(s.revisions);
-      for (const anchor of anchors) await this.db.baseProofs.put({ id: anchor.revision.id, proof: anchor.proof });
-      const writer = await this.db.writerState.get("writer");
-      if (writer) { writer.highestServerSeq = Math.max(writer.highestServerSeq, s.boundary); await this.db.writerState.put(writer); }
-      await this.db.inbox.put({ seq: s.boundary, fileIds: s.files.map(f => f.id), done: false });
-      await this.db.progress.put({ id: "progress", vaultId: this.vaultId, epoch: s.epoch, received: s.boundary, applied: previous?.applied ?? 0, ...(s.checkpoint === undefined ? {} : { checkpoint: s.checkpoint }) });
-      this.fault?.("before-snapshot-commit");
+  private async readSnapshot(epoch?: string, compact = false): Promise<void> {
+    await receiveSnapshot(this.db, this.remote, {
+      vaultId: this.vaultId, compact, epoch,
+      assertLease: () => this.checkLease(),
+      authenticateFile: file => { this.crypto().path(file.id, file.location); },
+      authenticateRevision: revision => { this.crypto().manifest(revision); },
+      verifyAnchor: anchor => this.metadata().verify(anchor),
+      fault: point => this.fault?.(point),
     });
-    this.fault?.("after-snapshot-commit");
   }
   private async request(actions: Action[]): Promise<Commit> {
     const p = await this.db.progress.get("progress"); if (!p) throw new Error("NOT_INITIALIZED");
@@ -197,7 +182,7 @@ export class SyncEngine {
     if (local && local.fingerprint === fp && local.deleted === (bytes === null)) return local;
     let independent: FileState | undefined;
     if (!local && bytes) {
-      const samePath = (await this.db.remoteFiles.toArray()).find(f => keys.pathKey(path) === f.location.pathKey);
+      const samePath = await this.db.remoteFiles.where("location.pathKey").equals(keys.pathKey(path)).first();
       if (samePath) {
         if (samePath.heads.length === 1) {
           const revision = await this.db.revisions.get(samePath.heads[0]!);
@@ -231,32 +216,103 @@ export class SyncEngine {
     await this.enqueue(await this.request([action]), [captured], [r], objects);
     return captured;
   }
-  private async capture(): Promise<void> {
-    const paths = await this.files.list(); // Throws on scan errors; never translate a failed scan to deletions.
-    const locals = await this.db.localFiles.toArray(); const byPath = new Map(locals.map(f => [f.path, f]));
+  private recordCaptureError(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("LEASE") || message === "LOCKED") throw error;
+    this.errors.push(message);
+  }
+  private async capture(full = true): Promise<void> {
+    const dirty = new Map((await this.db.dirtyFiles.toArray()).map(row => [row.path, row.generation]));
+    const requested = new Set(dirty.keys());
+    if (!full) {
+      const ids = [...new Set((await this.db.inbox.toArray()).filter(task => !task.done).flatMap(task => task.fileIds))];
+      for (let offset = 0; offset < ids.length; offset += 64) {
+        const batch = ids.slice(offset, offset + 64);
+        const locals = await this.db.localFiles.bulkGet(batch);
+        const remotes = await this.db.remoteFiles.bulkGet(batch);
+        for (let index = 0; index < batch.length; index++) {
+          const local = locals[index];
+          const remote = remotes[index];
+          if (local) requested.add(local.path);
+          else if (remote) requested.add(this.crypto().path(remote.id, remote.location));
+        }
+      }
+    }
+    const paths = full ? await this.files.list() : [...requested];
+    const locals = full ? await this.db.localFiles.toArray() : await this.db.localFiles.where("path").anyOf(paths).toArray();
+    const byPath = new Map(locals.map(file => [file.path, file]));
+    const completeDirty = async (path: string): Promise<void> => {
+      const generation = dirty.get(path);
+      if (generation === undefined) return;
+      await this.db.transaction("rw", [this.db.leases, this.db.dirtyFiles], async () => {
+        await this.checkLease();
+        const current = await this.db.dirtyFiles.get(path);
+        if (current?.generation === generation) await this.db.dirtyFiles.delete(path);
+      });
+    };
     for (const path of paths) {
       try {
         await this.files.flushEdits?.(path);
         const stat = await this.files.stat?.(path);
-        const reason = this.policy.reason(path, stat?.size); if (reason) { await this.skip(path, reason); continue; }
-        this.crypto().pathKey(path); const bytes = await this.files.read(path);
-        if (bytes && this.policy.reason(path, bytes.length)) { await this.skip(path, this.policy.reason(path, bytes.length)!); continue; }
-        if (bytes === null) { this.errors.push(`SCAN_CHANGED: ${path}`); continue; }
-        const captured = await this.captureOne(path, bytes, byPath.get(path));
+        const reason = this.policy.reason(path, stat?.size);
+        if (reason) {
+          await this.skip(path, reason);
+          await completeDirty(path);
+          continue;
+        }
+        this.crypto().pathKey(path);
+        const bytes = await this.files.read(path);
+        const contentReason = bytes ? this.policy.reason(path, bytes.length) : undefined;
+        if (contentReason) {
+          await this.skip(path, contentReason);
+          await completeDirty(path);
+          continue;
+        }
+        if (bytes === null && full) {
+          this.errors.push(`SCAN_CHANGED: ${path}`);
+          continue;
+        }
+        await this.db.skipped.delete(path);
+        const local = byPath.get(path);
+        const captured = await this.captureOne(path, bytes, local);
         if (captured) this.captured.set(captured.id, captured);
-      } catch (error) { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
+        if (captured || bytes === null && (!local || local.deleted)) await completeDirty(path);
+      } catch (error) {
+        this.recordCaptureError(error);
+      }
     }
-    const set = new Set(paths);
-    for (const f of locals) if (!set.has(f.path) && !f.deleted) {
-      const reason = this.policy.reason(f.path); if (reason) { await this.skip(f.path, reason); continue; }
+    if (!full) return;
+    const scannedPaths = new Set(paths);
+    for (const local of locals) {
+      if (scannedPaths.has(local.path) || local.deleted) continue;
+      const reason = this.policy.reason(local.path);
+      if (reason) {
+        await this.skip(local.path, reason);
+        await completeDirty(local.path);
+        continue;
+      }
       // A second successful absence check is required, never an I/O exception.
       try {
-        await this.files.flushEdits?.(f.path);
-        if (await this.files.read(f.path) === null) {
-          const captured = await this.captureOne(f.path, null, f); if (captured) this.captured.set(captured.id, captured);
+        await this.files.flushEdits?.(local.path);
+        if (await this.files.read(local.path) === null) {
+          const captured = await this.captureOne(local.path, null, local);
+          if (captured) {
+            this.captured.set(captured.id, captured);
+            await completeDirty(local.path);
+          }
         }
+      } catch (error) {
+        this.recordCaptureError(error);
       }
-      catch (error) { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
+    }
+    for (const path of dirty.keys()) {
+      const local = byPath.get(path);
+      if (scannedPaths.has(path) || local && !local.deleted) continue;
+      try {
+        if (await this.files.read(path) === null) await completeDirty(path);
+      } catch (error) {
+        this.recordCaptureError(error);
+      }
     }
   }
   async rename(oldPath: string, newPath: string): Promise<void> {
@@ -356,13 +412,23 @@ export class SyncEngine {
       try { changes = await this.remote.changes(p.epoch, p.received); }
       catch (error) {
         if (!(error instanceof RemoteError) || error.code !== "NEED_SNAPSHOT") throw error;
-        await this.checkLease(); const snapshot = await this.remote.snapshot();
-        if (snapshot.boundary <= p.received) throw new Error("SNAPSHOT_NO_PROGRESS");
-        await this.acceptSnapshot(snapshot); continue;
+        await this.checkLease(); await this.readSnapshot();
+        if ((await this.db.progress.get("progress"))!.received <= p.received) throw new Error("SNAPSHOT_NO_PROGRESS");
+        continue;
       }
       if (!changes.length) return;
-      const files = new Map((await this.db.remoteFiles.toArray()).map(f => [f.id, f]));
-      const revisions = new Map((await this.db.revisions.toArray()).map(r => [r.id, r]));
+      const ids = new Set(changes.flatMap(change => actionEntries(change.actions).map(action => action.fileId)));
+      const files = new Map((await this.db.remoteFiles.bulkGet([...ids])).filter((file): file is FileState => !!file).map(file => [file.id, file]));
+      const needed = new Set([...files.values()].flatMap(file => file.heads));
+      for (const change of changes) for (const action of actionEntries(change.actions)) {
+        if ("revisionId" in action) needed.add(action.revisionId);
+        if (action.type === "edit") needed.add(action.displayedRevision);
+        if (action.type === "resolve") for (const head of action.observedHeads) needed.add(head);
+      }
+      const priorRevisions = p.checkpoint === undefined ? await this.db.revisions.toArray() :
+        (await this.db.revisions.bulkGet([...needed])).filter((revision): revision is Revision => !!revision);
+      const revisions = new Map(priorRevisions.map(revision => [revision.id, revision]));
+      const changedRevisions = new Set(changes.flatMap(change => actionEntries(change.actions).flatMap(action => "revisionId" in action ? [action.revisionId] : [])));
       const tasks: Inbox[] = []; let seq = p.received;
       for (const change of changes) {
         if (change.seq !== seq + 1) throw new Error("LOG_GAP");
@@ -371,12 +437,12 @@ export class SyncEngine {
         tasks.push({ seq: change.seq, fileIds: ids, done: false, change }); seq = change.seq;
       }
       // Authenticate every new/locally staged revision before recording a receive boundary.
-      for (const r of revisions.values()) this.crypto().manifest(r);
+      for (const id of changedRevisions) this.crypto().manifest(revisions.get(id)!);
       await this.checkLease();
       await this.db.transaction("rw", [this.db.leases, this.db.remoteFiles, this.db.revisions, this.db.inbox, this.db.progress], async () => {
         await this.checkLease();
         if ((await this.db.progress.get("progress"))?.received !== p.received) throw new Error("RECEIVE_BASELINE_CHANGED");
-        await this.db.remoteFiles.bulkPut([...files.values()]); await this.db.revisions.bulkPut([...revisions.values()]);
+        await this.db.remoteFiles.bulkPut([...files.values()]); await this.db.revisions.bulkPut([...changedRevisions].map(id => revisions.get(id)!));
         await this.db.inbox.bulkPut(tasks); await this.db.progress.put({ ...p, received: seq });
         this.fault?.("before-inbox-commit");
       });
@@ -403,6 +469,35 @@ export class SyncEngine {
     } finally { await this.remote.releaseContent(protection); }
   }
 
+  private async stageBytes(bytes: Uint8Array): Promise<string[]> {
+    const stages: string[] = [];
+    for (let offset = 0; offset < Math.max(1, bytes.length); offset += CHUNK_BYTES) {
+      const id = randomId(); await this.files.stageWrite(id, this.crypto().localSeal(id, bytes.subarray(offset, offset + CHUNK_BYTES))); stages.push(id);
+    }
+    return stages;
+  }
+  private async stageApply(task: Omit<ApplyTask, "stage" | "size" | "mutationStarted">,
+    desired: Uint8Array, current: Uint8Array | null): Promise<ApplyTask> {
+    const chunks = await this.stageBytes(desired);
+    const backups = current ? await this.stageBytes(current) : [];
+    return {
+      ...task, stage: chunks[0]!, size: desired.length, mutationStarted: false,
+      ...(chunks.length > 1 ? { chunks } : {}),
+      ...(backups.length ? { backup: backups[0] } : {}),
+      ...(backups.length > 1 ? { backupChunks: backups } : {}),
+    };
+  }
+  private async stagedBytes(task: ApplyTask): Promise<Uint8Array> {
+    if (!task.chunks) return this.crypto().localOpen(task.stage, await this.files.stageRead(task.stage));
+    if (task.size === undefined || task.size > MAX_FILE_BYTES) throw new Error("STAGE_CORRUPT");
+    const bytes = new Uint8Array(task.size); let offset = 0;
+    for (const id of task.chunks) {
+      const part = this.crypto().localOpen(id, await this.files.stageRead(id));
+      if (offset + part.length > bytes.length) throw new Error("STAGE_CORRUPT");
+      bytes.set(part, offset); offset += part.length; part.fill(0);
+    }
+    if (offset !== bytes.length) throw new Error("STAGE_CORRUPT"); return bytes;
+  }
   private async finish(task: ApplyTask): Promise<void> {
     await this.metadata().ensureBase(task.revision);
     // Cleanup may release the only recovery snapshots after acknowledgement. Verify the actual result
@@ -415,18 +510,13 @@ export class SyncEngine {
     if (!task.deleted && task.sourcePath !== task.targetPath && await this.files.read(task.sourcePath) !== null) {
       throw new Error("APPLY_VERIFY_FAILED");
     }
-    await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.applyTasks, this.db.conflicts, this.db.rejectedOutbox], async () => {
+    await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.applyTasks, this.db.conflicts], async () => {
       this.crypto();
       const lease = await this.db.leases.get("engine");
       if (lease?.owner !== this.owner || lease.until <= Date.now()) throw new Error("LOCAL_LEASE_LOST");
       if ((await this.db.applyTasks.get(task.id))?.stage !== task.stage) throw new Error("APPLY_TASK_CHANGED");
       await this.db.localFiles.put({ id: task.id, path: task.targetPath, location: task.location, revision: task.revision, fingerprint: task.desiredFingerprint, deleted: task.deleted });
       await this.db.applyTasks.delete(task.id); await this.db.conflicts.delete(task.id);
-      for (const rejected of await this.db.rejectedOutbox.toArray()) {
-        if (rejected.error === "REVIEW_STALE" && rejected.supersededBy === task.revision && rejected.request.actions.length === 1 && rejected.request.actions[0]!.fileId === task.id) {
-          await this.db.rejectedOutbox.delete(rejected.opId);
-        }
-      }
       this.fault?.("before-apply-ack");
     });
     this.fault?.("after-apply-ack");
@@ -454,7 +544,7 @@ export class SyncEngine {
       if (task.sourcePath === task.targetPath && task.mutationStarted === false) await this.retireUnappliedTask(task);
       await this.db.conflicts.put({ id: task.id, path: task.targetPath, heads: [task.revision], reason: "LOCAL_CHANGED_DURING_APPLY" }); return false;
     }
-    const desired = this.crypto().localOpen(task.stage, await this.files.stageRead(task.stage));
+    const desired = await this.stagedBytes(task);
     if (await fingerprint(desired) !== task.desiredFingerprint) throw new Error("STAGE_CORRUPT");
     await this.db.transaction("rw", [this.db.leases, this.db.applyTasks], async () => {
       await this.checkLease();
@@ -485,63 +575,73 @@ export class SyncEngine {
       catch (error) { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(`APPLY_RECOVERY_FAILED: ${task.targetPath}`); }
     }
   }
-  private async apply(): Promise<void> {
-    const remote = await this.db.remoteFiles.toArray();
-    const revisions = new Map((await this.db.revisions.toArray()).map(r => [r.id, r]));
+  private async apply(full: boolean, verified = new Map<string, Uint8Array>()): Promise<void> {
+    const work = new Set(this.captured.keys());
+    for (const task of await this.db.inbox.toArray()) if (!task.done) for (const id of task.fileIds) work.add(id);
+    for (const task of await this.db.applyTasks.toArray()) work.add(task.id);
+    const progress = (await this.db.progress.get("progress"))!;
+    const graph = progress.checkpoint === undefined ? new Map((await this.db.revisions.toArray()).map(revision => [revision.id, revision])) : undefined;
+    const db = this.db;
+    async function* remoteBatches(): AsyncGenerator<FileState[]> {
+      if (full) { yield* databaseBatches(db.remoteFiles, 64); return; }
+      const ids = [...work];
+      for (let offset = 0; offset < ids.length; offset += 64) yield (await db.remoteFiles.bulkGet(ids.slice(offset, offset + 64))).filter((file): file is FileState => !!file);
+    }
     const settled = new Set<string>();
-    for (const f of remote) {
-      try {
-        const path = this.crypto().path(f.id, f.location);
-        const lengths = f.heads.map(id => this.crypto().manifest(revisions.get(id)!).length);
-        const reason = this.policy.reason(path, Math.max(...lengths));
-        if (reason) { await this.skip(path, reason); settled.add(f.id); continue; }
-        if (f.entryKind !== "file") { this.errors.push(`DIRECTORY_APPLY_NOT_IMPLEMENTED: ${path}`); continue; }
-        if (f.heads.length > 1) { await this.db.conflicts.put({ id: f.id, path, heads: f.heads, reason: "CONCURRENT_REVISIONS" }); continue; }
-        if (await this.db.applyTasks.get(f.id)) continue;
-        const r = revisions.get(f.heads[0]!)!; const local = await this.db.localFiles.get(f.id);
-        const owner = await this.db.localFiles.where("path").equals(path).first();
-        if (owner && owner.id !== f.id) { await this.db.conflicts.put({ id: f.id, path, heads: f.heads, reason: "INITIAL_PATH_COLLISION" }); continue; }
-        const sourcePath = local?.path ?? path;
-        const captured = this.captured.get(f.id);
-        // No filesystem mutation is needed for an already displayed remote version. Reuse only
-        // this run's verified baseline; incoming changes and recovery journals still reread bytes.
-        if (local && captured && canonical(local) === canonical(captured) && local.revision === r.id && local.location.revision === f.location.revision) {
-          settled.add(f.id); await this.db.conflicts.delete(f.id); continue;
-        }
-        const stat = await this.files.stat?.(sourcePath);
-        const sourceReason = this.policy.reason(sourcePath, stat?.size);
-        if (sourceReason) { await this.skip(path, sourceReason); settled.add(f.id); continue; }
-        const current = await this.files.read(sourcePath);
-        const currentFp = current === null ? null : await fingerprint(current);
-        if (local && local.revision !== r.id) {
-          const progress = (await this.db.progress.get("progress"))!;
-          if (progress.checkpoint === undefined) { if (!isAncestor(local.revision, r.id, revisions)) continue; }
-          else {
-            // Complete heads + an accepted unchanged baseline suffice; pending work never authorizes replacement.
-            const pending = (await this.db.outbox.toArray()).some(row => row.request.actions.some(action => action.fileId === f.id));
-            if (pending) continue;
-            const proof = await this.metadata().ensureBase(local.revision);
-            if (proof.fileId !== f.id) throw new Error("BASE_ANCHOR_MISMATCH");
+    for await (const remote of remoteBatches()) {
+      const needed = [...new Set(remote.flatMap(file => file.heads))];
+      const revisions = graph ?? new Map((await this.db.revisions.bulkGet(needed)).filter((revision): revision is Revision => !!revision).map(revision => [revision.id, revision]));
+      for (const f of remote) {
+        try {
+          const path = this.crypto().path(f.id, f.location);
+          const lengths = f.heads.map(id => this.crypto().manifest(revisions.get(id)!).length);
+          const reason = this.policy.reason(path, Math.max(...lengths));
+          if (reason) { await this.skip(path, reason); settled.add(f.id); continue; }
+          if (f.entryKind !== "file") { this.errors.push(`DIRECTORY_APPLY_NOT_IMPLEMENTED: ${path}`); continue; }
+          if (f.heads.length > 1) { await this.db.conflicts.put({ id: f.id, path, heads: f.heads, reason: "CONCURRENT_REVISIONS" }); continue; }
+          if (await this.db.applyTasks.get(f.id)) continue;
+          const r = revisions.get(f.heads[0]!)!; const local = await this.db.localFiles.get(f.id);
+          const owner = await this.db.localFiles.where("path").equals(path).first();
+          if (owner && owner.id !== f.id) { await this.db.conflicts.put({ id: f.id, path, heads: f.heads, reason: "INITIAL_PATH_COLLISION" }); continue; }
+          const sourcePath = local?.path ?? path;
+          const captured = this.captured.get(f.id);
+          // No filesystem mutation is needed for an already displayed remote version. Reuse only
+          // this run's verified baseline; incoming changes and recovery journals still reread bytes.
+          if (local && captured && canonical(local) === canonical(captured) && local.revision === r.id && local.location.revision === f.location.revision) {
+            settled.add(f.id); await this.db.conflicts.delete(f.id); continue;
           }
-        }
-        if (local && local.revision === r.id && local.location.revision === f.location.revision && currentFp === (local.deleted ? null : local.fingerprint)) { settled.add(f.id); await this.db.conflicts.delete(f.id); continue; }
-        const desired = await this.bytes(r); const desiredFp = await fingerprint(desired);
-        const deleted = r.payload.kind === "deleted";
-        if (local && currentFp !== (local.deleted ? null : local.fingerprint)) {
-          await this.db.conflicts.put({ id: f.id, path, heads: f.heads, reason: "LOCAL_CHANGED_BEFORE_APPLY" }); continue;
-        }
-        if (!local && current !== null && (deleted || currentFp !== desiredFp)) {
-          await this.db.conflicts.put({ id: f.id, path, heads: f.heads, reason: "UNTRACKED_LOCAL_CONTENT" }); continue;
-        }
-        const stage = randomId(); await this.files.stageWrite(stage, this.crypto().localSeal(stage, desired));
-        let backup: string | undefined;
-        if (current) { backup = randomId(); await this.files.stageWrite(backup, this.crypto().localSeal(backup, current)); }
-        const task: ApplyTask = { id: f.id, sourcePath, targetPath: path, oldFingerprint: currentFp, desiredFingerprint: desiredFp, revision: r.id, location: f.location, deleted, stage, size: desired.length, mutationStarted: false };
-        if (backup) task.backup = backup;
-        this.fault?.("after-apply-stage");
-        await this.checkLease(); await this.db.applyTasks.put(task); this.fault?.("after-apply-prepare");
-        if (await this.applyTask(task)) settled.add(f.id);
-      } catch (error) { const message = error instanceof Error ? error.message : String(error); if (error instanceof RemoteError && error.code === "VIEW_EXPIRED") throw error; if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
+          const stat = await this.files.stat?.(sourcePath);
+          const sourceReason = this.policy.reason(sourcePath, stat?.size);
+          if (sourceReason) { await this.skip(path, sourceReason); settled.add(f.id); continue; }
+          const current = await this.files.read(sourcePath);
+          const currentFp = current === null ? null : await fingerprint(current);
+          if (local && local.revision !== r.id) {
+            const progress = (await this.db.progress.get("progress"))!;
+            if (progress.checkpoint === undefined) { if (!isAncestor(local.revision, r.id, revisions)) continue; }
+            else {
+              // Complete heads + an accepted unchanged baseline suffice; pending work never authorizes replacement.
+              const pending = (await this.db.outbox.toArray()).some(row => row.request.actions.some(action => action.fileId === f.id));
+              if (pending) continue;
+              const proof = await this.metadata().ensureBase(local.revision);
+              if (proof.fileId !== f.id) throw new Error("BASE_ANCHOR_MISMATCH");
+            }
+          }
+          if (local && local.revision === r.id && local.location.revision === f.location.revision && currentFp === (local.deleted ? null : local.fingerprint)) { settled.add(f.id); await this.db.conflicts.delete(f.id); continue; }
+          const desired = verified.get(r.id) ?? await this.bytes(r); verified.delete(r.id); const desiredFp = await fingerprint(desired);
+          const deleted = r.payload.kind === "deleted";
+          if (local && currentFp !== (local.deleted ? null : local.fingerprint)) {
+            await this.db.conflicts.put({ id: f.id, path, heads: f.heads, reason: "LOCAL_CHANGED_BEFORE_APPLY" }); continue;
+          }
+          if (!local && current !== null && (deleted || currentFp !== desiredFp)) {
+            await this.db.conflicts.put({ id: f.id, path, heads: f.heads, reason: "UNTRACKED_LOCAL_CONTENT" }); continue;
+          }
+          const task = await this.stageApply({ id: f.id, sourcePath, targetPath: path, oldFingerprint: currentFp,
+            desiredFingerprint: desiredFp, revision: r.id, location: f.location, deleted }, desired, current);
+          this.fault?.("after-apply-stage");
+          await this.checkLease(); await this.db.applyTasks.put(task); this.fault?.("after-apply-prepare");
+          if (await this.applyTask(task)) settled.add(f.id);
+        } catch (error) { const message = error instanceof Error ? error.message : String(error); if (error instanceof RemoteError && error.code === "VIEW_EXPIRED") throw error; if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
+      }
     }
     await this.db.transaction("rw", [this.db.leases, this.db.inbox, this.db.progress], async () => {
       await this.checkLease();
@@ -573,37 +673,41 @@ export class SyncEngine {
     const h = await this.remote.handshake(); if (!SYNC_FEATURES.every(f => h.features.includes(f))) throw new Error("SERVER_UPGRADE_REQUIRED"); const p = await this.db.progress.get("progress");
     if (p?.checkpoint !== undefined && h.metadataCheckpoint === undefined) throw new Error("METADATA_DOWNGRADE_REFUSED");
     if (p?.checkpoint !== undefined && h.metadataCheckpoint! < p.checkpoint) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
-    this.compactExpected = h.metadataCheckpoint !== undefined;
+    const compact = h.metadataCheckpoint !== undefined;
     if (h.vaultId !== this.vaultId || (p && (p.epoch !== h.epoch || p.received > h.seq))) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
     if (await fingerprint(new TextEncoder().encode(canonical(h.keyPackage))) !== this.keyPackageFingerprint) throw new Error("KEY_PACKAGE_CHANGED");
     this.devices = new Map(h.devices.map(d => [d.id, d.name]));
     await this.metadata().initialize(h.seq, h.metadataCheckpoint, h.continuity === true);
-    if (p && p.checkpoint === undefined && this.compactExpected) await this.acceptSnapshot(await this.remote.snapshot());
-    await this.initialize(h.epoch);
+    if (p && p.checkpoint === undefined && compact) await this.readSnapshot(undefined, compact);
+    await this.initialize(h.epoch, compact);
   }
-  async sync(): Promise<EngineStatus> {
+  async sync(options: { full?: boolean } = {}): Promise<EngineStatus> {
     if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.crypto(); this.busy = true; this.errors = [];
     this.activity = "checking";
     this.captured.clear();
     let stopRenewing: (() => Promise<void>) | undefined;
     try {
-      await this.lease(); await this.db.skipped.clear();
+      await this.lease();
+      const initializing = !await this.db.progress.get("progress");
+      const full = options.full !== false || initializing;
+      if (full) await this.db.skipped.clear();
       stopRenewing = this.keepLease();
       await this.prepareSynchronization(); this.activity = "downloading"; await this.receive();
-      this.activity = "checking"; await this.reconcileInitialCollisions(); await this.recover(); await this.capture();
+      this.activity = "checking"; await this.reconcileInitialCollisions(); await this.recover(); await this.capture(full);
       this.activity = "uploading"; await this.flush(); this.activity = "downloading"; await this.receive();
       if (await this.reconcileInitialCollisions()) { this.activity = "uploading"; await this.flush(); this.activity = "downloading"; await this.receive(); }
       this.activity = "applying";
       for (let attempt = 0; ; attempt++) {
-        try { await this.apply(); break; }
+        try { await this.apply(full); break; }
         catch (error) {
           if (!(error instanceof RemoteError) || error.code !== "VIEW_EXPIRED" || attempt >= 2) throw error;
-          const snapshot = await this.remote.snapshot(); await this.acceptSnapshot(snapshot);
+          await this.readSnapshot();
           // Capture changed local bytes before applying the refreshed remote view.
           await this.capture(); await this.flush(); await this.receive();
         }
       }
-      await this.cleanup();
+      if (full) await this.cleanup();
+      else await this.db.transaction("rw", [this.db.leases, this.db.inbox, this.db.progress], async () => { await this.checkLease(); await compactInbox(this.db); });
     } catch (error) { this.errors.push(error instanceof Error ? error.message : String(error)); }
     finally {
       await stopRenewing?.();
@@ -615,14 +719,23 @@ export class SyncEngine {
     return this.status();
   }
   async status(): Promise<EngineStatus> {
-    const [outgoing, tasks, conflictRows, applyRows, skips] = await Promise.all([this.db.outbox.toArray(), this.db.inbox.toArray(), this.db.conflicts.toArray(), this.db.applyTasks.toArray(), this.db.skipped.toArray()]);
-    const skippedPaths = new Set(skips.map(s => s.path));
-    const conflicts = conflictRows.filter(c => !this.policy.reason(c.path) && !skippedPaths.has(c.path)).length;
-    const outbox = outgoing.filter(r => r.error !== "EXCLUDED_BY_RULE").length;
-    const apply = applyRows.filter(t => !this.policy.reason(t.sourcePath, t.size) && !this.policy.reason(t.targetPath, t.size)).length;
-    const inbox = tasks.filter(t => !t.done).length + apply;
-    const state = !this.keys ? "locked" : conflicts || this.errors.length ? "needs-attention" : this.activity || outbox || inbox ? "pending" : "complete";
-    return { state, outbox, inbox, conflicts, skipped: skips.length, errors: [...this.errors], ...(this.activity ? { activity: this.activity } : {}) };
+    const version = this.db.writeVersion;
+    if (this.counts?.version !== version) {
+      const [outgoing, tasks, conflictRows, applyRows, skips, dirty] = await Promise.all([this.db.outbox.toArray(), this.db.inbox.toArray(), this.db.conflicts.toArray(), this.db.applyTasks.toArray(), this.db.skipped.toArray(), this.db.dirtyFiles.toArray()]);
+      const skippedPaths = new Set(skips.map(row => row.path));
+      this.counts = {
+        version, conflicts: conflictRows.filter(row => !this.policy.reason(row.path) && !skippedPaths.has(row.path)).length,
+        outbox: outgoing.filter(row => row.error !== "EXCLUDED_BY_RULE").length,
+        inbox: tasks.filter(row => !row.done).length + applyRows.filter(row => !this.policy.reason(row.sourcePath, row.size) && !this.policy.reason(row.targetPath, row.size)).length,
+        skipped: skips.length, dirty: dirty.filter(row => !this.policy.reason(row.path)).length,
+      };
+    }
+    const { outbox, inbox, conflicts, skipped, dirty } = this.counts;
+    let state: EngineStatus["state"] = "complete";
+    if (!this.keys) state = "locked";
+    else if (conflicts || this.errors.length) state = "needs-attention";
+    else if (this.activity || outbox || inbox || dirty) state = "pending";
+    return { state, outbox, inbox, conflicts, skipped, errors: [...this.errors], ...(this.activity ? { activity: this.activity } : {}) };
   }
 
   async saveMergeDraft(fileId: string, text: string): Promise<void> { const bytes = new TextEncoder().encode(text); if (bytes.length > 65536) throw new Error("MERGE_TOO_LARGE"); const ciphertext = this.crypto().localSeal(`merge:${fileId}`, bytes); await this.db.mergeDrafts.put({ id: fileId, ciphertext }); }
@@ -676,23 +789,31 @@ export class SyncEngine {
       const coordinate = await this.metadata().nextCoordinate();
       const source = mergedBytes ? undefined : (await this.db.revisions.get(selectedRevision))!; const revisionId = coordinate ? derivedID(coordinate, "r") : randomId();
       if (source && this.policy.reason(review.path, this.crypto().manifest(source).length)) throw new Error("FILE_EXCLUDED");
-      if (source && "length" in selected) selected = { ...selected, bytes: await this.bytes(source) };
-      if (source && await fingerprint(selected.bytes) !== this.crypto().manifest(source).fingerprint) throw new Error("REVIEW_BYTES_CHANGED");
+      if (source) {
+        const manifest = this.crypto().manifest(source);
+        if ("length" in selected && selected.length !== undefined) {
+          if (!("fingerprint" in selected) || selected.fingerprint !== manifest.fingerprint || selected.length !== manifest.length) throw new Error("REVIEW_BYTES_CHANGED");
+          selected = { ...selected, bytes: await this.bytes(source) };
+        } else if (await fingerprint(selected.bytes) !== manifest.fingerprint) throw new Error("REVIEW_BYTES_CHANGED");
+      }
       const objects: Outbox["objects"] = []; let objectIds = source?.payload.objects ?? [];
       if (mergedBytes) { const obj = this.crypto().object(mergedBytes); await this.files.stageWrite(obj.id, obj.bytes); objects.push({ id: obj.id, stage: obj.id }); objectIds = [obj.id]; }
       const base = { id: revisionId, fileId: f.id, parents: review.heads, deviceId: this.deviceId, ...(source ? { selectedFrom: source.id } : {}) };
-      const revision: Revision = { ...base, payload: await this.crypto().payload(base, selected.bytes, source?.payload.kind ?? "file", objectIds) };
+      const revision: Revision = { ...base, payload: source ? this.crypto().copyPayload(base, source) : await this.crypto().payload(base, selected.bytes, "file", objectIds) };
+      const verified = new Map<string, Uint8Array>([[revisionId, selected.bytes]]);
       const action: Extract<Action, { type: "resolve" }> = { type: "resolve", fileId: f.id, expectedLocation: review.location.revision, observedHeads: review.heads, revisionId, payload: revision.payload, decision: source ? { kind: "select", selectedRevision } : { kind: "manual" } };
       if (companionPath) {
         if (review.versions.length !== 2) throw new Error("KEEP_BOTH_REQUIRES_TWO_HEADS"); this.crypto().pathKey(companionPath);
         if (this.policy.reason(companionPath) || (await this.files.read(companionPath)) !== null || companionPath.normalize("NFC").toLowerCase() === review.path.normalize("NFC").toLowerCase()) throw new Error("COMPANION_PATH_UNAVAILABLE");
         let other = review.versions.find(v => v.revision !== selectedRevision)!; const original = (await this.db.revisions.get(other.revision))!;
         if (this.policy.reason(companionPath, this.crypto().manifest(original).length)) throw new Error("COMPANION_PATH_UNAVAILABLE");
-        if (other.length !== undefined) other = { ...other, bytes: await this.bytes(original) };
-        if (await fingerprint(other.bytes) !== this.crypto().manifest(original).fingerprint) throw new Error("REVIEW_BYTES_CHANGED");
+        const manifest = this.crypto().manifest(original);
+        if (other.length !== undefined ? other.length !== manifest.length || other.fingerprint !== manifest.fingerprint : await fingerprint(other.bytes) !== manifest.fingerprint) throw new Error("REVIEW_BYTES_CHANGED");
         if (original.payload.kind === "deleted") throw new Error("EXPORT_DELETE_CONFLICT_MANUALLY");
+        if (other.length !== undefined) other = { ...other, bytes: await this.bytes(original) };
         const companionId = randomId(); const id = coordinate ? derivedID(coordinate, "rc") : randomId();
-        const payload = await this.crypto().payload({ id, fileId: companionId, parents: [], deviceId: this.deviceId, selectedFrom: original.id }, other.bytes, original.payload.kind, original.payload.objects);
+        verified.set(id, other.bytes);
+        const payload = this.crypto().copyPayload({ id, fileId: companionId, parents: [], deviceId: this.deviceId, selectedFrom: original.id }, original);
         action.decision = { kind: "keep-both", selectedRevision, companionSource: original.id, companion: { type: "create", fileId: companionId, revisionId: id, payload, location: this.crypto().location(companionId, companionPath, coordinate ? derivedID(coordinate, "lc") : undefined) } };
       }
       // Persist exact immutable resolution before network; retry retains IDs and ciphertext.
@@ -710,13 +831,14 @@ export class SyncEngine {
       if (current && (bytes === null ? current.deleted : await fingerprint(bytes) === current.fingerprint)) {
         const remoteHead = (await this.db.remoteFiles.get(f.id))?.heads;
         if (remoteHead?.length === 1 && remoteHead[0] === revisionId) {
-          const desired = selected.bytes; const stage = randomId(); await this.files.stageWrite(stage, this.crypto().localSeal(stage, desired));
-          const task: ApplyTask = { id: f.id, sourcePath: current.path, targetPath: this.crypto().path(f.id, f.location), oldFingerprint: bytes === null ? null : await fingerprint(bytes), desiredFingerprint: await fingerprint(desired), revision: revisionId, location: f.location, deleted: revision.payload.kind === "deleted", stage, size: desired.length, mutationStarted: false };
-          if (bytes) { task.backup = randomId(); await this.files.stageWrite(task.backup, this.crypto().localSeal(task.backup, bytes)); }
+          const desired = selected.bytes;
+          const task = await this.stageApply({ id: f.id, sourcePath: current.path, targetPath: this.crypto().path(f.id, f.location),
+            oldFingerprint: bytes === null ? null : await fingerprint(bytes), desiredFingerprint: await fingerprint(desired),
+            revision: revisionId, location: f.location, deleted: revision.payload.kind === "deleted" }, desired, bytes);
           await this.db.applyTasks.put(task); await this.applyTask(task);
         }
       }
-      await this.apply();
+      await this.apply(true, verified);
       if (draft) await this.db.transaction("rw", [this.db.leases, this.db.localFiles, this.db.conflicts, this.db.mergeDrafts], async () => {
         await this.checkLease();
         const currentDraft = await this.db.mergeDrafts.get(review.fileId);

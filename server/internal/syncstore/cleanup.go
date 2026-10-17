@@ -198,7 +198,7 @@ func (s *Store) Collect(ctx context.Context, p CleanupPolicy) (CleanupReport, er
 	}
 	if cutoff > 0 {
 		// Never retire the only incremental recovery route when a replacement snapshot exceeds wire limits.
-		if _, _, e = s.snapshotContents(ctx, tx); e != nil {
+		if e = s.validateSnapshot(ctx, tx); e != nil {
 			if e.Error() != "SNAPSHOT_TOO_LARGE" {
 				return report, e
 			}

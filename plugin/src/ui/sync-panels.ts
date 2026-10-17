@@ -215,7 +215,7 @@ export class ConflictReview extends Modal {
         else if (code === "NO_REMOTE_CONFLICT") message = "这篇笔记的冲突已处理，可以关闭此窗口。";
         q("review-description").setText(message);
         if (localPending && !syncRequested && this.plugin.autoSync) {
-          syncRequested = true; void this.plugin.sync(false).catch(() => {});
+          syncRequested = true; void this.plugin.sync(false, false).catch(() => {});
         }
       } finally {
         refreshing = false;

@@ -27,7 +27,7 @@ it("reports activity and live outbox counts during upload, then retains failures
       if (probe) checking.push(await engine.status());
       return { vaultId, epoch, seq: serverSeq, features: [...SYNC_FEATURES], keyPackage: created.keyPackage, devices: [{ id: deviceId, name: "Status test" }] };
     },
-    snapshot: async () => ({ epoch, boundary: 0, files: [], revisions: [] }), changes: async () => [],
+    snapshotPages: async () => ({ epoch, boundary: 0 }), changes: async () => [],
     requestStream: async () => ({ id: "c".repeat(64), maximum: serverSeq, retired: 0 }),
     acknowledgeRequest: async () => {},
     commitTracked: async (request: Commit) => {

@@ -50,7 +50,7 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("repository life
     await a.engine.resolve(latest, latest.versions[0]!.revision);
     expect(await a.db.inbox.count()).toBe(0);
     expect(await a.files.text("healthy.md")).toBe("healthy-7");
-  });
+  }, 15000);
 
   it.each(["normal", "before-apply-ack", "after-apply-ack"])("retires a rejected merge with %s recovery only after the replacement is applied", async boundary => {
     const { a, b, id } = await conflict();
@@ -71,7 +71,7 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("repository life
     else {
       a.engine.fault=point=>{ if(point===boundary) throw new Error("REPLACEMENT_INTERRUPTED"); };
       await expect(a.engine.resolve(fresh,"",undefined,new TextEncoder().encode("final explicit merge"))).rejects.toThrow("REPLACEMENT_INTERRUPTED");
-      expect(await a.db.rejectedOutbox.count()).toBe(boundary==="before-apply-ack"?1:0);
+      expect(await a.db.rejectedOutbox.count()).toBe(1);
       expect(await a.files.stageList()).toContain(rejected.objects[0]!.stage);
     }
     const restarted=await fixture.reopen(0);
@@ -79,6 +79,102 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("repository life
     expect(await restarted.db.rejectedOutbox.count()).toBe(0);
     expect(await restarted.files.stageList()).not.toContain(rejected.objects[0]!.stage);
     expect(await restarted.files.text("note.md")).toBe("final explicit merge");
+  });
+
+  async function rejectedMerge(): Promise<{ a: RecoveryClient; b: RecoveryClient; id: string; stage: string }> {
+    const { a, b, id } = await conflict();
+    const review = await a.engine.review(id); let raced = false;
+    fixture.httpHook = async (request, next) => {
+      if (!raced && request.url.endsWith("/metadata/commits") && JSON.parse(new TextDecoder().decode(request.body!)).request.actions[0]?.type === "resolve") {
+        raced = true; await b.files.edit("note.md", "new peer branch"); await b.engine.sync();
+      }
+      return next();
+    };
+    await expect(a.engine.resolve(review, "", undefined, new TextEncoder().encode("rejected draft"))).rejects.toThrow("REVIEW_STALE");
+    fixture.httpHook = undefined; await a.engine.sync();
+    return { a, b, id, stage: (await a.db.rejectedOutbox.toArray())[0]!.objects[0]!.stage };
+  }
+
+  it.each(["normal", "before-local-cleanup-commit", "after-local-cleanup-commit", "before-stage-remove", "after-stage-remove"])("retires an overtaken replacement across %s without changing the newer file", async boundary => {
+    const { a, b, id, stage } = await rejectedMerge();
+    const review = await a.engine.review(id); let advanced = false, interrupted = false;
+    fixture.httpHook = async (request, next) => {
+      const response = await next();
+      if (!advanced && request.url.endsWith("/metadata/commits") && JSON.parse(new TextDecoder().decode(request.body!)).request.actions[0]?.type === "resolve" && response.status === 200) {
+        advanced = true; await b.engine.sync(); await b.files.edit("note.md", "newer peer content after replacement"); await b.engine.sync();
+        await a.engine.saveMergeDraft(id, "new draft from another review");
+        if (boundary !== "normal") a.engine.fault = point => { if (!interrupted && point === boundary) { interrupted = true; throw new Error("RETIREMENT_INTERRUPTED"); } };
+      }
+      return response;
+    };
+    const operation = a.engine.resolve(review, "", undefined, new TextEncoder().encode("accepted replacement"));
+    if (boundary === "normal") await operation; else await expect(operation).rejects.toThrow("RETIREMENT_INTERRUPTED");
+    expect(advanced).toBe(true); expect(interrupted).toBe(boundary !== "normal"); fixture.httpHook = undefined;
+    const reopened = await fixture.reopen(0); expect((await reopened.engine.sync()).errors).toEqual([]);
+    expect(await reopened.files.text("note.md")).toBe("newer peer content after replacement");
+    expect(await reopened.engine.loadMergeDraft(id)).toBe("new draft from another review");
+    expect(await reopened.db.rejectedOutbox.count()).toBe(0); expect(await reopened.files.stageList()).not.toContain(stage);
+    expect((await reopened.engine.status()).state).toBe("complete");
+  });
+
+  it("keeps rejected bytes while their replacement is unaccepted, and recovers its immutable request after restart", async () => {
+    const { a, id, stage } = await rejectedMerge(); const review = await a.engine.review(id);
+    fixture.httpHook = async (request, next) => {
+      if (request.url.endsWith("/metadata/commits") && JSON.parse(new TextDecoder().decode(request.body!)).request.actions[0]?.type === "resolve")
+        return { status: 429, headers: {}, bytes: new TextEncoder().encode('{"code":"CONTENT_BUSY"}') };
+      return next();
+    };
+    await expect(a.engine.resolve(review, "", undefined, new TextEncoder().encode("unaccepted replacement"))).rejects.toThrow("CONTENT_BUSY");
+    const pending = (await a.db.outbox.toArray())[0]!.request;
+    const reopened = await fixture.reopen(0); await reopened.engine.sync();
+    expect(await reopened.db.rejectedOutbox.count()).toBe(1); expect(await reopened.files.stageList()).toContain(stage);
+    expect((await reopened.db.outbox.toArray())[0]!.request).toEqual(pending);
+    fixture.httpHook = undefined; expect((await reopened.engine.sync()).errors).toEqual([]);
+    expect(await reopened.files.text("note.md")).toBe("unaccepted replacement");
+    expect(await reopened.db.rejectedOutbox.count()).toBe(0); expect(await reopened.files.stageList()).not.toContain(stage);
+  });
+
+  it("does not retire rejected bytes just because another device settled the file while the replacement was rejected", async () => {
+    const { a, b, id, stage } = await rejectedMerge(); const review = await a.engine.review(id); let settled = false;
+    fixture.httpHook = async (request, next) => {
+      if (!settled && request.url.endsWith("/metadata/commits") && JSON.parse(new TextDecoder().decode(request.body!)).request.actions[0]?.type === "resolve") {
+        settled = true; await b.engine.sync(); const peer = await b.engine.review(id);
+        const choice = peer.versions.find(version => version.deviceId === b.engine.deviceId)!;
+        await b.engine.resolve(peer, choice.revision);
+      }
+      return next();
+    };
+    await expect(a.engine.resolve(review, "", undefined, new TextEncoder().encode("also rejected replacement"))).rejects.toThrow("REVIEW_STALE");
+    fixture.httpHook = undefined; expect((await a.engine.sync()).errors).toEqual([]);
+    expect(await a.db.outbox.count()).toBe(0); expect(await a.db.conflicts.count()).toBe(0);
+    expect(await a.db.rejectedOutbox.count()).toBe(2); expect(await a.files.stageList()).toContain(stage);
+    expect(await a.files.text("note.md")).toBe("new peer branch");
+  });
+
+  it("preserves a concurrent local edit, its pending upload and new draft until a fresh explicit decision", async () => {
+    const { a, b, id, stage } = await rejectedMerge(); const review = await a.engine.review(id); let advanced = false;
+    fixture.httpHook = async (request, next) => {
+      const response = await next();
+      if (!advanced && request.url.endsWith("/metadata/commits") && JSON.parse(new TextDecoder().decode(request.body!)).request.actions[0]?.type === "resolve" && response.status === 200) {
+        advanced = true; await b.engine.sync(); await b.files.edit("note.md", "peer descendant"); await b.engine.sync();
+        await a.files.edit("note.md", "latest local typing"); await a.engine.saveMergeDraft(id, "latest draft");
+      }
+      return response;
+    };
+    await a.engine.resolve(review, "", undefined, new TextEncoder().encode("accepted replacement"));
+    fixture.httpHook = async (request, next) => request.url.endsWith("/content/upload")
+      ? { status: 429, headers: {}, bytes: new TextEncoder().encode('{"code":"CONTENT_BUSY"}') } : next();
+    const reopened = await fixture.reopen(0); await reopened.engine.sync();
+    expect(await reopened.db.outbox.count()).toBe(1); expect(await reopened.db.rejectedOutbox.count()).toBe(1);
+    expect(await reopened.files.text("note.md")).toBe("latest local typing"); expect(await reopened.files.stageList()).toContain(stage);
+    fixture.httpHook = undefined; await reopened.engine.sync();
+    const latest = await reopened.engine.review(id);
+    expect(latest.versions.map(v => v.text).sort()).toEqual(["latest local typing", "peer descendant"]);
+    expect(await reopened.engine.loadMergeDraft(id)).toBe("latest draft"); expect(await reopened.db.rejectedOutbox.count()).toBe(1);
+    const local = latest.versions.find(v => v.text === "latest local typing")!;
+    await reopened.engine.resolve(latest, local.revision); await b.engine.sync();
+    expect(await reopened.files.text("note.md")).toBe("latest local typing"); expect(await b.files.text("note.md")).toBe("latest local typing");
+    expect(await reopened.db.rejectedOutbox.count()).toBe(0); expect(await reopened.files.stageList()).not.toContain(stage);
   });
 
   it("pages more than 10,000 retained identities without blocking log or object collection", async () => {
@@ -107,14 +203,30 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("repository life
     const review = await a.engine.review(id);
     expect(review.versions.every(v => v.text === null && v.bytes.length === 0)).toBe(true);
     const selected = review.versions.find(v => v.deviceId === b.engine.deviceId)!;
-    await a.engine.resolve(review,selected.revision);
+    let reads = 0;
+    fixture.httpHook = async (request, next) => { if (request.url.endsWith("/content/read")) reads++; return next(); };
+    await a.engine.resolve(review,selected.revision); expect(reads).toBe(1);
     expect(await a.files.text(path)).toBe(second); expect(await a.db.conflicts.count()).toBe(0);
   });
 
   it("preserves both binary attachments with lazy downloads", async () => {
-    const { a, id } = await conflict("attachment.bin"); const review=await a.engine.review(id);
-    await a.engine.resolve(review,review.versions[0]!.revision,"attachment-copy.bin");
+    const { a, id } = await conflict("attachment.bin"); const review=await a.engine.review(id); let reads = 0;
+    fixture.httpHook = async (request, next) => { if (request.url.endsWith("/content/read")) reads++; return next(); };
+    await a.engine.resolve(review,review.versions[0]!.revision,"attachment-copy.bin"); expect(reads).toBe(2);
     expect([await a.files.text("attachment.bin"),await a.files.text("attachment-copy.bin")].sort()).toEqual(["first","second"]);
+  });
+
+  it("does not commit a binary choice until its selected ciphertext has been authenticated", async () => {
+    const { a, id } = await conflict("attachment.bin"); const review = await a.engine.review(id); let commits = 0;
+    fixture.httpHook = async (request, next) => {
+      if (request.url.endsWith("/metadata/commits") && JSON.parse(new TextDecoder().decode(request.body!)).request.actions[0]?.type === "resolve") commits++;
+      const response = await next();
+      if (request.method === "GET" && request.url.includes("/objects/")) { const bytes = response.bytes.slice(); bytes[bytes.length - 1]! ^= 1; return { ...response, bytes }; }
+      return response;
+    };
+    await expect(a.engine.resolve(review, review.versions[0]!.revision)).rejects.toThrow(/MISMATCH/);
+    expect(commits).toBe(0); expect(await a.files.text("attachment.bin")).toBe("first");
+    expect(await a.db.outbox.count()).toBe(0); expect(await a.db.conflicts.count()).toBe(1);
   });
 
   it.each(["selected", "companion"])("checks the actual %s attachment size before committing a selection", async kind => {

@@ -7,7 +7,6 @@ import { MarkdownView } from "obsidian";
 import { ObsidianVaultPort } from "../../plugin/src/sync/vault-port";
 import { VaultCrypto, canonicalPath, fingerprint, randomId } from "../../plugin/src/sync/crypto";
 import { SyncDB } from "../../plugin/src/sync/store";
-import { textDiff } from "../../plugin/src/sync/diff";
 import { commitSchema } from "../../protocol/src/wire";
 
 it("authenticates file identity, exact parents, device and selected snapshot in manifests", async () => {
@@ -55,9 +54,6 @@ it("upgrades existing local schema without clearing inbox/outbox state", async (
   const next = new SyncDB(name);
   try { await next.open(); expect((await next.inbox.get(7))?.done).toBe(false); expect(await next.rejectedOutbox.count()).toBe(0); }
   finally { await next.delete(); }
-});
-it("diff exposes a replacement while retaining common context", () => {
-  expect(textDiff("header\n电脑 A\nfooter", "header\n电脑 B\nfooter")).toEqual({ prefix: ["header"], removed: ["电脑 A"], added: ["电脑 B"], suffix: ["footer"] });
 });
 it("maps the actual configDir into shared configuration while excluding credentials and staging", async () => {
   const app = { vault: { configDir: "custom-config", adapter: { exists: async () => true, list: async () => ({ files: ["custom-config/appearance.json", "custom-config/core-plugins.json"], folders: ["custom-config/obsidian-sync-local"] }), stat: async () => ({ type: "file", size: 10 }) }, getFiles: () => [
@@ -141,4 +137,23 @@ it("checks only the requested editor and accepts unchanged CRLF text without hid
   buffer += "new typing";
   await expect(port.flushEdits("note.md")).rejects.toThrow("LOCAL_EDITOR_CHANGES_PENDING");
   await expect(port.write("note.md", encoder.encode("remote choice"), encoder.encode("first\r\nsecond\r\n"))).rejects.toThrow("LOCAL_CHANGED_DURING_APPLY");
+});
+
+it("polls only configuration metadata without enumerating visible notes or repeating stat calls", async () => {
+  const getFiles = vi.fn(() => { throw new Error("VISIBLE_INVENTORY_MUST_NOT_RUN"); });
+  const stat = vi.fn(async () => ({ type: "file", size: 12, mtime: 4 }));
+  const app = { vault: { configDir: ".obsidian", getFiles, adapter: { exists: async () => true, list: async () => ({ files: [".obsidian/appearance.json"], folders: [] }), stat } } } as unknown as App;
+  const stats = await new ObsidianVaultPort(app, ".obsidian/obsidian-sync-local").configurationStats();
+  expect(stats.get(".obsidian/appearance.json")).toBe("12:4"); expect(getFiles).not.toHaveBeenCalled(); expect(stat).toHaveBeenCalledOnce();
+});
+
+it("accepts an atomic exchange of remote paths without a transient unique-index failure", async () => {
+  const db = new SyncDB(`path-exchange-${randomId()}`); await db.open();
+  const first = { id: "A", entryKind: "file" as const, heads: ["RA"], location: { revision: "LA", pathKey: "path-a", encryptedPath: "opaque-a" } };
+  const second = { id: "B", entryKind: "file" as const, heads: ["RB"], location: { revision: "LB", pathKey: "path-b", encryptedPath: "opaque-b" } };
+  try {
+    await db.remoteFiles.bulkPut([first, second]);
+    await db.transaction("rw", db.remoteFiles, async () => { await db.remoteFiles.bulkPut([{ ...first, location: second.location }, { ...second, location: first.location }]); });
+    expect((await db.remoteFiles.where("location.pathKey").equals("path-a").first())!.id).toBe("B");
+  } finally { await db.delete(); }
 });

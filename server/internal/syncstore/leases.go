@@ -98,6 +98,13 @@ func (s *Store) newLease(ctx context.Context, tx pgx.Tx, device, kind, key strin
 	return id, false, e
 }
 
+func actionEntries(a Action) []Action {
+	if a.Decision != nil && a.Decision.Companion != nil {
+		return []Action{a, *a.Decision.Companion}
+	}
+	return []Action{a}
+}
+
 func actionObjects(a Action) []string {
 	ids := []string{}
 	if a.Payload != nil {
@@ -184,6 +191,10 @@ type ReadView struct {
 	RequestKey string `json:"requestId"`
 }
 
+const snapshotHeadQuery = `SELECT EXISTS(SELECT 1 FROM snapshot_items i JOIN snapshots s ON s.vault_id=i.vault_id AND s.id=i.snapshot_id
+ JOIN content_leases l ON l.vault_id=s.vault_id AND l.id=s.lease_id WHERE i.vault_id=$1 AND i.snapshot_id=$2 AND i.kind='files'
+ AND i.value->>'id'=$3 AND i.value->'heads' ? $4 AND l.device_id=$5 AND l.expires_at>clock_timestamp())`
+
 func (s *Store) ReadLease(ctx context.Context, device string, view ReadView) (string, error) {
 	if !validID(view.Revision) {
 		return "", code("INVALID_REQUEST")
@@ -223,6 +234,12 @@ func (s *Store) ReadLease(ctx context.Context, device string, view ReadView) (st
 			}
 		} else if e != pgx.ErrNoRows {
 			return "", e
+		}
+		if !current {
+			e = tx.QueryRow(ctx, snapshotHeadQuery, s.Config.VaultID, view.Snapshot, r.FileID, r.ID, device).Scan(&current)
+			if e != nil {
+				return "", e
+			}
 		}
 	}
 	if !current {

@@ -16,6 +16,27 @@ interface CleanupContext {
   fault?: (point: string) => void;
 }
 
+/** Caller owns a transaction over progress and inbox. Completed payloads need no filesystem GC. */
+export async function compactInbox(db: SyncDB): Promise<void> {
+  const progress = await db.progress.get("progress");
+  if (!progress) return;
+  let previousCompleted: number | undefined;
+  for (const row of await db.inbox.orderBy("seq").toArray()) {
+    if (!row.done) {
+      previousCompleted = undefined;
+      continue;
+    }
+    if (row.seq <= progress.applied) {
+      await db.inbox.delete(row.seq);
+      continue;
+    }
+    // One endpoint preserves each completed run across an unfinished group, without its payloads.
+    if (previousCompleted !== undefined) await db.inbox.delete(previousCompleted);
+    await db.inbox.put({ seq: row.seq, fileIds: [], done: true });
+    previousCompleted = row.seq;
+  }
+}
+
 /** Run inside the engine's serialized, renewable lease. Stage IDs are never reused for new intents. */
 export async function cleanupLocalData(db: SyncDB, files: StageCleanupPort, context: CleanupContext): Promise<void> {
   await context.assertLease();
@@ -26,23 +47,7 @@ export async function cleanupLocalData(db: SyncDB, files: StageCleanupPort, cont
     db.remoteFiles, db.localFiles, db.mergeDrafts, db.baseProofs, db.metadataMigration], async () => {
     await context.assertLease();
     const progress = await db.progress.get("progress");
-    if (progress) {
-      let previousCompleted: number | undefined;
-      for (const row of await db.inbox.orderBy("seq").toArray()) {
-        if (!row.done) {
-          previousCompleted = undefined;
-          continue;
-        }
-        if (row.seq <= progress.applied) {
-          await db.inbox.delete(row.seq);
-          continue;
-        }
-        // One endpoint preserves each completed run across an unfinished group, without its payloads.
-        if (previousCompleted !== undefined) await db.inbox.delete(previousCompleted);
-        await db.inbox.put({ seq: row.seq, fileIds: [], done: true });
-        previousCompleted = row.seq;
-      }
-    }
+    await compactInbox(db);
 
     const revisions = new Map((await db.revisions.toArray()).map(row => [row.id, row]));
     const remoteFiles = await db.remoteFiles.toArray();
@@ -50,6 +55,22 @@ export async function cleanupLocalData(db: SyncDB, files: StageCleanupPort, cont
     const tasks = await db.applyTasks.toArray();
     const conflicts = await db.conflicts.toArray();
     const drafts = await db.mergeDrafts.toArray();
+    for (const rejected of await db.rejectedOutbox.toArray()) {
+      const actions = rejected.request.actions;
+      if (rejected.error !== "REVIEW_STALE" || !rejected.supersededBy || actions.length !== 1 || actions[0]!.type !== "resolve") continue;
+      const fileId = actions[0]!.fileId;
+      // The replacement must have been accepted, even if another device advanced beyond it
+      // before we applied it. Complete remote heads + a settled local baseline prove convergence.
+      const proof = await db.baseProofs.get(rejected.supersededBy);
+      const remote = remoteFiles.find(file => file.id === fileId);
+      const local = await db.localFiles.get(fileId);
+      if (proof?.proof.fileId !== fileId || proof.proof.revisionId !== rejected.supersededBy) continue;
+      if (remote?.heads.length !== 1 || !local ||
+          local.revision !== remote.heads[0] || local.location.revision !== remote.location.revision) continue;
+      if (tasks.some(task => task.id === fileId) || conflicts.some(conflict => conflict.id === fileId) ||
+          outgoing.some(row => actionEntries(row.request.actions).some(action => action.fileId === fileId))) continue;
+      await db.rejectedOutbox.delete(rejected.opId);
+    }
     for (const archive of await db.reconciliations.toArray()) {
       // Only the well-defined, rejected initialization flow can establish completion here.
       // Unclassified archives and archived journals remain recovery evidence.
@@ -112,6 +133,7 @@ export async function cleanupLocalData(db: SyncDB, files: StageCleanupPort, cont
     function retainApplyStages(task: ApplyTask): void {
       roots.add(task.stage);
       if (task.backup) roots.add(task.backup);
+      for (const id of [...(task.chunks ?? []), ...(task.backupChunks ?? [])]) roots.add(id);
     }
     for (const row of outgoing) retainOutboxObjects(row); // Includes paused/excluded/failed uploads.
     for (const row of await db.rejectedOutbox.toArray()) retainOutboxObjects(row);

@@ -82,6 +82,11 @@ export class Transport {
     return z.strictObject({ ticket: z.string().regex(/^[a-f0-9]{48}$/) }).parse(await this.json("/events/tickets", "POST", {})).ticket;
   }
   async snapshot(): Promise<z.infer<typeof snapshotSchema>> {
+    const files: Snapshot["files"] = [], revisions: Snapshot["revisions"] = [], bases: NonNullable<Snapshot["bases"]> = [];
+    const header = await this.snapshotPages(async page => { files.push(...page.files); revisions.push(...page.revisions); if (page.bases) bases.push(...page.bases); });
+    return snapshotSchema.parse({ ...header, files, revisions, ...(header.checkpoint === undefined ? {} : { bases }) });
+  }
+  async snapshotPages(visit: (page: z.infer<typeof snapshotPageSchema>) => Promise<void>): Promise<Pick<Snapshot, "epoch" | "boundary" | "checkpoint">> {
     await this.releaseSnapshots();
     this.snapshotRequest ??= randomId();
     const ticket = z.strictObject({ id: z.string().regex(/^[a-f0-9]{32}$/), leaseId: z.string().regex(/^[a-f0-9]{64}$/) })
@@ -89,17 +94,16 @@ export class Transport {
     this.activeSnapshot = ticket;
     this.snapshotRequest = undefined;
     this.leaseRenewed.set(ticket.leaseId, Date.now());
-    let snapshot: Snapshot | undefined;
+    let snapshot: Pick<Snapshot, "epoch" | "boundary" | "checkpoint"> | undefined;
     let offset = 0;
     let total = 0;
     for (;;) {
       await this.renewContent(ticket.leaseId);
       const page = snapshotPageSchema.parse(await this.json(`/snapshots/${ticket.id}/pages?offset=${offset}`));
       if (!snapshot) {
-        snapshot = { epoch: page.epoch, boundary: page.boundary, files: [], revisions: [] };
+        snapshot = { epoch: page.epoch, boundary: page.boundary };
         if (page.checkpoint !== undefined) {
           snapshot.checkpoint = page.checkpoint;
-          snapshot.bases = [];
         }
         total = page.total;
       }
@@ -112,13 +116,8 @@ export class Transport {
       } else if (!count || page.next !== offset || offset >= total) {
         throw new Error("INVALID_SNAPSHOT");
       }
-      snapshot.files.push(...page.files);
-      snapshot.revisions.push(...page.revisions);
-      if (page.bases) {
-        snapshot.bases ??= [];
-        snapshot.bases.push(...page.bases);
-      }
-      if (page.next === null) return snapshotSchema.parse(snapshot);
+      await visit(page);
+      if (page.next === null) return snapshot;
     }
   }
   async releaseSnapshots(): Promise<void> {

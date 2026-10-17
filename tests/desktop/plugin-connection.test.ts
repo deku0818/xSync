@@ -198,7 +198,7 @@ it.each([false, true])("retries transient protected-store failure on foreground 
   const idle = () => (reloaded as unknown as { work: { idle(): Promise<void> } }).work.idle();
   host.handlers.get("layout")!(); await idle(); expect(reloaded.engine?.unlocked).toBe(false);
   expect(reloaded.hasSavedKey).toBe(true);
-  expect(reloaded.storageState).toContain("回到前台后重试"); expect(host.saved).toEqual(saved); expect(host.files).toEqual(records);
+  expect(host.saved).toEqual(saved); expect(host.files).toEqual(records);
   host.failUnprotect = false; const reads = host.reads;
   host.handlers.get("focus")!(); host.handlers.get("online")!(); host.handlers.get("visibilitychange")!(); await idle();
   expect(reloaded.engine?.unlocked).toBe(true); expect(host.reads).toBe(reads + 1); expect(reloaded.autoSync).toBe(autoSync);

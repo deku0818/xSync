@@ -18,8 +18,10 @@ it("coalesces file bursts and drains changes arriving during a run without overl
   const automatic = new AutomaticSync(run, error => { throw error; }); automatic.start();
   await vi.advanceTimersByTimeAsync(0); expect(run).toHaveBeenCalledTimes(1);
   for (let i = 0; i < 20; i++) automatic.trigger("file");
+  automatic.trigger("foreground");
   finish(); await vi.advanceTimersByTimeAsync(349); expect(run).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(1); expect(run).toHaveBeenCalledTimes(2); expect(maximum).toBe(1);
+  expect(run.mock.calls).toEqual([[true], [true]]);
   automatic.stop(); await vi.advanceTimersByTimeAsync(60000); expect(run).toHaveBeenCalledTimes(2);
 });
 it("reconciles missed hints periodically and carries requests across pause/restart", async () => {
@@ -61,4 +63,14 @@ it("bounds an unresponsive native request without accepting its late result", as
   const pending = boundedRequest(new Promise<string>(resolve => { finish = resolve; }), 1000);
   const rejected = expect(pending).rejects.toThrow("NETWORK_TIMEOUT"); await vi.advanceTimersByTimeAsync(1000); await rejected;
   finish("late commit receipt"); await Promise.resolve(); expect(vi.getTimerCount()).toBe(0);
+});
+
+it("keeps ordinary file and remote wakes incremental while foreground reconciliation requests a full check", async () => {
+  vi.useFakeTimers(); const run = vi.fn(async (_full: boolean) => {});
+  const automatic = new AutomaticSync(run, error => { throw error; }, 10, 1000); automatic.start();
+  await vi.advanceTimersByTimeAsync(0); expect(run).toHaveBeenLastCalledWith(true);
+  automatic.trigger("file"); await vi.advanceTimersByTimeAsync(10); expect(run).toHaveBeenLastCalledWith(false);
+  automatic.trigger("remote", true); await vi.advanceTimersByTimeAsync(0); expect(run).toHaveBeenLastCalledWith(false);
+  automatic.trigger("foreground", true); await vi.advanceTimersByTimeAsync(0); expect(run).toHaveBeenLastCalledWith(true);
+  automatic.stop();
 });

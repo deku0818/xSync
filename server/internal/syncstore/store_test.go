@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -67,6 +68,57 @@ func contractStore(t *testing.T, configure ...func(*Config)) *Store {
 	t.Cleanup(func() { s.Pool.Close(); _, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaName+" CASCADE"); admin.Close() })
 	return s
 }
+
+// Read committed state without creating content leases in database contract tests.
+func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
+	tx, e := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if e != nil {
+		return Snapshot{}, e
+	}
+	defer tx.Rollback(ctx)
+	if s.compact {
+		snap, err := s.snapshotContents(ctx, tx)
+		if err != nil {
+			return snap, err
+		}
+		return snap, tx.Commit(ctx)
+	}
+	snap := Snapshot{Files: []File{}, Revisions: []Revision{}}
+	if e = tx.QueryRow(ctx, "SELECT epoch,seq FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&snap.Epoch, &snap.Boundary); e != nil {
+		return snap, e
+	}
+	st, e := s.loadState(ctx, tx, nil)
+	if e != nil {
+		return snap, e
+	}
+	for _, id := range sortedKeys(st.files) {
+		snap.Files = append(snap.Files, *st.files[id])
+	}
+	for _, id := range sortedKeys(st.revisions) {
+		snap.Revisions = append(snap.Revisions, st.revisions[id])
+	}
+	return snap, tx.Commit(ctx)
+}
+func (s *Store) snapshotContents(ctx context.Context, tx pgx.Tx) (Snapshot, error) {
+	snap := Snapshot{Epoch: s.Config.Epoch, Files: []File{}, Revisions: []Revision{}}
+	var checkpoint int64
+	if e := tx.QueryRow(ctx, "SELECT seq,metadata_checkpoint FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&snap.Boundary, &checkpoint); e != nil {
+		return snap, e
+	}
+	if s.compact {
+		snap.Checkpoint = &checkpoint
+	}
+	e := s.walkSnapshot(ctx, tx, snap.Boundary, true, func(entries []snapshotEntry) error {
+		for _, entry := range entries {
+			if err := snap.appendEntry(entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return snap, e
+}
+
 func p(kind string) *Payload {
 	objects := []string{}
 	return &Payload{kind, 1, "synthetic-encrypted-manifest", objects}

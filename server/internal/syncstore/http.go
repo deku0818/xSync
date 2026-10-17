@@ -459,7 +459,9 @@ func (s *Store) Handler() http.Handler {
 			writeError(w, e)
 			return
 		}
-		if (r.URL.Path == "/handshake" || r.URL.Path == "/changes" || r.URL.Path == "/commits" || strings.HasPrefix(r.URL.Path, "/objects/") || strings.HasPrefix(r.URL.Path, "/snapshots") || strings.HasPrefix(r.URL.Path, "/content/") || strings.HasPrefix(r.URL.Path, "/metadata/")) && r.Header.Get("X-Sync-Content") != ContentCapability {
+		contentPath := r.URL.Path == "/handshake" || r.URL.Path == "/changes" || r.URL.Path == "/commits" || strings.HasPrefix(r.URL.Path, "/objects/") || strings.HasPrefix(r.URL.Path, "/snapshots") || strings.HasPrefix(r.URL.Path, "/content/") || strings.HasPrefix(r.URL.Path, "/metadata/")
+		if contentPath && (r.Header.Get("X-Sync-Content") != ContentCapability ||
+			r.Header.Get("X-Sync-Snapshots") != SnapshotCapability || r.Header.Get("X-Sync-Objects") != ObjectCapability) {
 			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
 			return
 		}
@@ -468,14 +470,6 @@ func (s *Store) Handler() http.Handler {
 			return
 		}
 		if s.compact && r.Header.Get("X-Sync-Compaction") != CompactCapability {
-			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
-			return
-		}
-		if (r.URL.Path == "/handshake" || r.URL.Path == "/changes" || r.URL.Path == "/commits" || strings.HasPrefix(r.URL.Path, "/objects/") || strings.HasPrefix(r.URL.Path, "/snapshots") || strings.HasPrefix(r.URL.Path, "/content/") || strings.HasPrefix(r.URL.Path, "/metadata/")) && r.Header.Get("X-Sync-Snapshots") != SnapshotCapability {
-			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
-			return
-		}
-		if (r.URL.Path == "/handshake" || r.URL.Path == "/changes" || r.URL.Path == "/commits" || strings.HasPrefix(r.URL.Path, "/objects/") || strings.HasPrefix(r.URL.Path, "/snapshots") || strings.HasPrefix(r.URL.Path, "/content/") || strings.HasPrefix(r.URL.Path, "/metadata/")) && r.Header.Get("X-Sync-Objects") != ObjectCapability {
 			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
 			return
 		}

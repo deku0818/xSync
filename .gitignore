@@ -40,6 +40,9 @@ device.json
 desktop-unlock.json
 connection-*.json
 pending-*.json
+connection-*.json.retiring
+pending-*.json.retiring
+desktop-unlock.json.retiring
 sync-key.txt
 
 # Generated verification output belongs in ignored local folders, not documentation.

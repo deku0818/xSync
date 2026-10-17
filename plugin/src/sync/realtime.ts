@@ -13,36 +13,38 @@ export class SerialWork {
 /** Events accelerate sync; reconciliation remains necessary for dropped filesystem/network hints. */
 export class AutomaticSync {
   private enabled = false;
-  private dirty = false;
+  private pending?: { full: boolean; since: number };
   private running = false;
-  private firstPending = 0;
   private debounce?: TimerHandle;
   private periodic?: TimerHandle;
-  constructor(private run: () => Promise<void>, private error: (error: unknown) => void,
+  constructor(private run: (full: boolean) => Promise<void>, private error: (error: unknown) => void,
     private delay = 350, private interval = 30000) {}
   start(): void {
     if (this.enabled) return; this.enabled = true;
     this.periodic = timerHost().setInterval(() => this.trigger("reconcile"), this.interval); this.trigger("startup", true);
   }
   stop(): void {
-    this.enabled = false; this.dirty = false; this.firstPending = 0;
+    this.enabled = false; this.pending = undefined;
     timerHost().clearTimeout(this.debounce); timerHost().clearInterval(this.periodic); this.debounce = undefined; this.periodic = undefined;
   }
-  trigger(_reason: string, immediate = false): void {
+  trigger(reason: string, immediate = false): void {
     if (!this.enabled) return;
-    if (!this.dirty) this.firstPending = Date.now(); this.dirty = true;
+    const full = ["startup", "foreground", "focus", "online", "configuration", "rules"].includes(reason);
+    this.pending ??= { full: false, since: Date.now() };
+    if (full) this.pending.full = true;
     if (this.running) return;
     timerHost().clearTimeout(this.debounce);
-    const remaining = Math.max(0, 2000 - (Date.now() - this.firstPending));
+    const remaining = Math.max(0, 2000 - (Date.now() - this.pending.since));
     this.debounce = timerHost().setTimeout(() => { void this.flush(); }, immediate ? 0 : Math.min(this.delay, remaining));
   }
   private async flush(): Promise<void> {
-    if (!this.enabled || this.running || !this.dirty) return;
-    this.running = true; this.dirty = false; this.firstPending = 0;
-    try { await this.run(); } catch (error) { this.error(error); }
+    if (!this.enabled || this.running || !this.pending) return;
+    const { full } = this.pending;
+    this.running = true; this.pending = undefined;
+    try { await this.run(full); } catch (error) { this.error(error); }
     finally {
       this.running = false;
-      if (this.enabled && this.dirty) this.trigger("queued");
+      if (this.enabled && this.pending) this.trigger("queued");
     }
   }
 }

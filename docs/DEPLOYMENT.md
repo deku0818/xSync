@@ -108,7 +108,7 @@ docker exec xsync-server /usr/local/bin/xsync-server --config /config/server.jso
 | `content-leases-v1` | 上传、下载和快照的内容保护 |
 | `metadata-anchors-v1` | 准确基线凭据、请求坐标与结果确认 |
 | `compact-heads-v1` | 当前头快照与修订/位置压缩 |
-| `snapshot-pages-v1` | 同一冻结快照的分页传输，插件和服务端配套升级 |
+| `snapshot-pages-v2` | 分批冻结/暂存同一快照，插件和服务端配套升级；旧队列正文保持原样重试 |
 | `addressed-objects-v1` | 密文哈希对象身份与物理存储标识 |
 | `device-continuity-v1` | 检测设备已见数据库状态的回退 |
 

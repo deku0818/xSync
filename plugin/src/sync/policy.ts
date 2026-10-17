@@ -10,7 +10,7 @@ export const rulesSchema = z.strictObject({ maxMB: z.number().int().min(1).max(1
   folders: z.array(z.string().min(1).max(1024)).max(64), regexes: z.array(z.strictObject({ source: z.string().min(1).max(256), flags: z.enum(["", "i"]) })).max(64) });
 export type SyncRules = z.infer<typeof rulesSchema>;
 export const defaultRules = (): SyncRules => ({ maxMB: 100, suffixes: [], folders: [], regexes: [] });
-export interface FileEntry { path: string; size: number; directory?: boolean; reason?: string }
+export interface FileEntry { path: string; size: number; mtime?: number; directory?: boolean; reason?: string }
 export function folderPath(input: string): string {
   const path = input.trim().normalize("NFC").replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
   if (!path || path.startsWith("/") || path.split("/").some(p => !p || p === "." || p === ".." || hasControlCharacter(p) || /[<>:"|?*]/.test(p))) throw new Error("请输入有效的仓库相对目录");

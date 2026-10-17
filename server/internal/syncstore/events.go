@@ -33,7 +33,7 @@ type eventHub struct {
 func newEventHub() *eventHub {
 	return &eventHub{tickets: map[string]eventTicket{}, listeners: map[chan eventHint]bool{}}
 }
-func (h *eventHub) ticket(device string, token ...string) (string, error) {
+func (h *eventHub) ticket(device, token string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := time.Now()
@@ -50,17 +50,9 @@ func (h *eventHub) ticket(device string, token ...string) (string, error) {
 		return "", e
 	}
 	ticket := hex.EncodeToString(b)
-	entry := eventTicket{device: device, expires: now.Add(time.Minute)}
-	if len(token) == 1 {
-		hash := sha256.Sum256([]byte(token[0]))
-		entry.tokenHash = hash[:]
-	}
-	h.tickets[ticket] = entry
+	hash := sha256.Sum256([]byte(token))
+	h.tickets[ticket] = eventTicket{device: device, expires: now.Add(time.Minute), tokenHash: hash[:]}
 	return ticket, nil
-}
-func (h *eventHub) consume(ticket string) bool {
-	_, ok := h.consumeIdentity(ticket)
-	return ok
 }
 func (h *eventHub) consumeIdentity(ticket string) (eventTicket, bool) {
 	h.mu.Lock()

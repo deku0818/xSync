@@ -144,3 +144,13 @@ CREATE TABLE IF NOT EXISTS device_continuity (
  vault_id text, device_id text, token text NOT NULL,
  PRIMARY KEY(vault_id,device_id), FOREIGN KEY(vault_id,device_id) REFERENCES devices(vault_id,id)
 );
+
+-- Frozen snapshots are assembled in bounded batches rather than one large JSON value.
+ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS paged boolean NOT NULL DEFAULT false;
+ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS entry_count bigint NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS snapshot_items (
+ vault_id text NOT NULL, snapshot_id text NOT NULL, position bigint NOT NULL, kind text NOT NULL, value jsonb NOT NULL,
+ PRIMARY KEY(vault_id,snapshot_id,position),
+ FOREIGN KEY(vault_id,snapshot_id) REFERENCES snapshots(vault_id,id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS snapshot_item_file_lookup ON snapshot_items(vault_id,snapshot_id,(value->>'id')) WHERE kind='files';

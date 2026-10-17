@@ -1,8 +1,7 @@
 import { actionEntries } from "../../../protocol/src/actions.js";
-import { baseAnchorSchema, derivedOperation, type BaseAnchor, type BaseProof, type RequestCoordinate } from "../../../protocol/src/metadata.js";
+import { derivedOperation, type BaseAnchor, type BaseProof, type RequestCoordinate } from "../../../protocol/src/metadata.js";
 import { canonical } from "../../../protocol/src/model.js";
 import { isAddressedObject } from "../../../protocol/src/objects.js";
-import type { Snapshot } from "../../../protocol/src/types.js";
 import { ContinuityClient } from "./continuity-client.js";
 import { fingerprint } from "./crypto.js";
 import type { SyncDB, Outbox } from "./store.js";
@@ -106,21 +105,6 @@ export class MetadataClient {
     return { stream: writer.stream, number: writer.next };
   }
 
-  async snapshotAnchors(snapshot: Snapshot): Promise<BaseAnchor[]> {
-    if (snapshot.checkpoint === undefined) return [];
-    if (snapshot.checkpoint > snapshot.boundary) throw new Error("INVALID_SNAPSHOT");
-    const proofs = new Map((snapshot.bases ?? []).map(proof => [proof.revisionId, proof]));
-    const heads = new Set(snapshot.files.flatMap(file => file.heads));
-    if (proofs.size !== (snapshot.bases ?? []).length || proofs.size !== heads.size || snapshot.revisions.length !== heads.size) throw new Error("INVALID_SNAPSHOT");
-    const anchors: BaseAnchor[] = [];
-    for (const revision of snapshot.revisions) {
-      const proof = proofs.get(revision.id);
-      if (!heads.delete(revision.id) || !proof || proof.epoch !== snapshot.epoch || proof.boundary !== snapshot.boundary) throw new Error("BASE_ANCHOR_MISMATCH");
-      const anchor = baseAnchorSchema.parse({ revision, proof }); await this.verify(anchor); anchors.push(anchor);
-    }
-    return anchors;
-  }
-
   async coordinate(row: Outbox): Promise<RequestCoordinate> {
     if (row.coordinate) return row.coordinate;
     return this.db.transaction("rw", [this.db.leases, this.db.writerState, this.db.outbox], async () => {
@@ -135,7 +119,7 @@ export class MetadataClient {
     });
   }
 
-  private async verify(anchor: BaseAnchor): Promise<void> {
+  async verify(anchor: BaseAnchor): Promise<void> {
     this.authenticate(anchor);
     const { revision, proof } = anchor;
     const progress = await this.db.progress.get("progress");

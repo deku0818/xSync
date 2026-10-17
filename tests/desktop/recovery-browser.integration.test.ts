@@ -36,7 +36,18 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_BROWSER_TEST !== "1")("native IndexedD
     expect(await browser.files.text("note.md")).toBe("native offline edit");
     const remote = fixture.transport(0); expect((await remote.snapshot()).files[0]!.heads).toHaveLength(2); await remote.releaseSnapshots();
   }, 30000);
-  it.each(["before-snapshot-commit", "after-snapshot-commit", "after-continuity-intent-commit", "after-continuity-response", "before-continuity-confirm-commit", "after-continuity-confirm-commit", "before-outbox-commit", "after-outbox-commit", "after-object-upload", "after-remote-commit", "after-outbox-ack", "before-local-request-ack-commit", "after-local-request-ack-commit", "before-request-ack-send", "after-request-ack-send", "after-legacy-registration-response", "before-local-migration-commit", "after-local-migration-commit", "after-object-registration-response", "before-local-object-migration-commit", "after-local-object-migration-commit", "before-local-metadata-cleanup-commit", "after-local-metadata-cleanup-commit", "before-local-cleanup-commit", "after-local-cleanup-commit", "before-stage-remove", "after-stage-remove"])("survives an actual client process kill at %s", async point => {
+  it("keeps the old active snapshot and offline edits after a real kill while staging a replacement page", async () => {
+    const a = fixture.clients[0]!; await a.files.edit("note.md", "old base"); await a.engine.sync();
+    await browser.evaluate("recovery.sync()");
+    const before = await browser.evaluate<{ received: number }>("recovery.summary('note.md').then(s => s.progress)");
+    await browser.files.edit("note.md", "new offline typing"); await a.files.edit("note.md", "new remote content"); await a.engine.sync();
+    await fixture.retireLogs(); await browser.crash("after-snapshot-page-commit"); await browser.start(120000);
+    expect(await browser.evaluate("recovery.summary('note.md').then(s => s.progress.received)")).toBe(before.received);
+    expect(await browser.files.text("note.md")).toBe("new offline typing");
+    expect((await browser.evaluate<EngineStatus>("recovery.sync()")).conflicts).toBe(1);
+    expect(await browser.files.text("note.md")).toBe("new offline typing");
+  }, 30000);
+  it.each(["before-snapshot-page-commit", "after-snapshot-page-commit", "before-snapshot-commit", "after-snapshot-commit", "after-continuity-intent-commit", "after-continuity-response", "before-continuity-confirm-commit", "after-continuity-confirm-commit", "before-outbox-commit", "after-outbox-commit", "after-object-upload", "after-remote-commit", "after-outbox-ack", "before-local-request-ack-commit", "after-local-request-ack-commit", "before-request-ack-send", "after-request-ack-send", "after-legacy-registration-response", "before-local-migration-commit", "after-local-migration-commit", "after-object-registration-response", "before-local-object-migration-commit", "after-local-object-migration-commit", "before-local-metadata-cleanup-commit", "after-local-metadata-cleanup-commit", "before-local-cleanup-commit", "after-local-cleanup-commit", "before-stage-remove", "after-stage-remove"])("survives an actual client process kill at %s", async point => {
     await browser.files.edit("note.md", "native outbound crash proof"); await browser.crash(point); await browser.start(120000);
     expect((await browser.evaluate<EngineStatus>("recovery.sync()")).errors).toEqual([]);
     const a = fixture.clients[0]!; expect((await a.engine.sync()).errors).toEqual([]); expect(await a.files.text("note.md")).toBe("native outbound crash proof");

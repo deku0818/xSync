@@ -200,11 +200,7 @@ func (s *Store) validateCompactRequest(ctx context.Context, tx pgx.Tx, c Commit,
 		}
 	}
 	for _, a := range c.Actions {
-		entries := []Action{a}
-		if a.Decision != nil && a.Decision.Companion != nil {
-			entries = append(entries, *a.Decision.Companion)
-		}
-		for _, entry := range entries {
+		for _, entry := range actionEntries(a) {
 			if entry.RevisionID != "" {
 				var used bool
 				if e := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM legacy_revisions WHERE vault_id=$1 AND id=$2)", c.VaultID, entry.RevisionID).Scan(&used); e != nil {
@@ -264,7 +260,8 @@ func (s *Store) pruneMetadata(ctx context.Context, tx pgx.Tx, report *CleanupRep
 	if _, e := tx.Exec(ctx, `CREATE TEMP TABLE metadata_keep ON COMMIT DROP AS
  SELECT revision_id AS id FROM heads WHERE vault_id=$1
  UNION SELECT revision_id FROM change_revisions WHERE vault_id=$1
- UNION SELECT jsonb_array_elements_text(f->'heads') FROM snapshots s CROSS JOIN LATERAL jsonb_array_elements(s.value->'files') f WHERE s.vault_id=$1`, s.Config.VaultID); e != nil {
+ UNION SELECT jsonb_array_elements_text(f->'heads') FROM snapshots s CROSS JOIN LATERAL jsonb_array_elements(s.value->'files') f WHERE s.vault_id=$1
+ UNION SELECT jsonb_array_elements_text(value->'heads') FROM snapshot_items WHERE vault_id=$1 AND kind='files'`, s.Config.VaultID); e != nil {
 		return e
 	}
 	if _, e := tx.Exec(ctx, "DELETE FROM revision_objects WHERE vault_id=$1 AND revision_id NOT IN (SELECT id FROM metadata_keep)", s.Config.VaultID); e != nil {

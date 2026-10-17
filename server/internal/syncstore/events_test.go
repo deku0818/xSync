@@ -191,14 +191,14 @@ func TestEventHubCoalescingAndDisconnect(t *testing.T) {
 		go func() { defer wg.Done(); _, done := h.subscribe(); h.publish(Receipt{"E", 1001, "op"}); done() }()
 	}
 	wg.Wait()
-	ticket, e := h.ticket("device")
+	ticket, e := h.ticket("device", "fixture-token")
 	if e != nil {
 		t.Fatal(e)
 	}
 	h.mu.Lock()
 	h.tickets[ticket] = eventTicket{device: "device", expires: time.Now().Add(-time.Second)}
 	h.mu.Unlock()
-	if h.consume(ticket) {
+	if _, valid := h.consumeIdentity(ticket); valid {
 		t.Fatal("expired ticket accepted")
 	}
 }

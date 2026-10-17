@@ -95,6 +95,6 @@ it("retires only the exact wrapping key and rejects a foreign identity before de
   await expect(iosProtector(true,{...identity,deviceId:"foreign"},f.runtime).forget!(old)).rejects.toThrow("IOS_KEYCHAIN_IDENTITY_MISMATCH");
   expect(f.storage.internalRemoveItem).not.toHaveBeenCalled();
   await p.forget!(old); expect(f.items.size).toBe(1); expect(await p.unprotect(current)).toBe("current");
-  await p.forget!(current,current); expect(f.items.size).toBe(1); expect(await p.unprotect(current)).toBe("current");
+  await p.forget!(current,[current]); expect(f.items.size).toBe(1); expect(await p.unprotect(current)).toBe("current");
   await expect(p.unprotect(old)).rejects.toThrow("IOS_KEYCHAIN_KEY_UNAVAILABLE");
 });

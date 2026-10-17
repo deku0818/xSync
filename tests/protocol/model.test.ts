@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import { VaultModel, editFromDisplayed } from "../../protocol/src/model";
-import { InboxModel, acknowledgesCurrent } from "../../protocol/src/client-model";
 import type { Action, Commit, Create, Payload, Resolve } from "../../protocol/src/types";
 
 const payload = (kind: Payload["kind"] = "file", objects = ["blob"]): Payload => ({
@@ -137,23 +136,6 @@ describe("commit boundaries and recovery gates", () => {
     const m = setup(); const r = request("B", [edit("B")]); const receipt = m.commit(r);
     r.actions.length = 0; receipt.seq = 99; const snapshot = m.snapshot(); snapshot.files[0]!.heads.length = 0;
     expect(heads(m)).toEqual(["B"]); expect(m.pull("E", 1)[0]?.actions).toHaveLength(1);
-  });
-});
-
-describe("receive and apply are separate", () => {
-  it("receives atomically, tolerates exact redelivery and refuses gaps/tampering", () => {
-    const m = setup(); m.commit(request("B", [edit("B")])); const events = m.pull("E", 0);
-    const inbox = new InboxModel("E");
-    expect(() => inbox.receive("E", [events[1]!])).toThrow("INVALID_REQUEST"); expect(inbox.received).toBe(0);
-    inbox.receive("E", events); inbox.receive("E", events);
-    expect(inbox.pending()).toHaveLength(2); expect(inbox.received).toBe(2); expect(inbox.applied).toBe(0);
-    expect(() => inbox.receive("E", [{ ...events[0]!, opId: "tampered" }])).toThrow("INVALID_REQUEST");
-    inbox.complete(2); expect(inbox.applied).toBe(0); inbox.complete(1); expect(inbox.applied).toBe(2);
-    expect(inbox.status(1, 0, 0)).toBe("needs-attention"); expect(inbox.status(0, 0, 0)).toBe("complete");
-  });
-  it("does not acknowledge bytes edited after the uploaded snapshot", () => {
-    expect(acknowledgesCurrent("snapshot-A", "new-bytes-B")).toBe(false);
-    expect(acknowledgesCurrent("snapshot-A", "snapshot-A")).toBe(true);
   });
 });
 

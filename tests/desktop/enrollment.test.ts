@@ -36,7 +36,7 @@ async function fixture() {
         if (loseReceipt) { loseReceipt = false; throw new Error("RECEIPT_LOST"); }
         value = { enrolled:true }; break;
       }
-      case "/handshake": value = { protocol:0,vaultId,epoch:"epoch",seq:0,features:[...SYNC_FEATURES],keyPackage:created.keyPackage,devices:[{id:"phone",name:"手机"}],maxObjectBytes:8388608 }; break;
+      case "/handshake": value = { protocol:0,vaultId,epoch:"epoch",seq:0,features:[...SYNC_FEATURES],continuity:true,keyPackage:created.keyPackage,devices:[{id:"phone",name:"手机"}],maxObjectBytes:8388608 }; break;
       default: throw new Error("UNEXPECTED_REQUEST");
     }
     return { status:200,headers:{},bytes:new TextEncoder().encode(JSON.stringify(value)) };

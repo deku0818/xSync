@@ -8,9 +8,9 @@ import { RecoveryFixture } from "./recovery-support";
 describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("recovery with real files/HTTP/Docker PG; fake IndexedDB and recreated clients", () => {
   let fixture: RecoveryFixture;
   beforeEach(async () => { fixture = new RecoveryFixture(); await fixture.open(); await fixture.client(0); await fixture.client(1); }, 20000);
-  afterEach(async () => { await fixture?.close(); vi.useRealTimers(); });
+  afterEach(async () => { vi.restoreAllMocks(); vi.useRealTimers(); await fixture?.close(); });
   const failOnce = (point: string) => { let hit = false; return { get hit() { return hit; }, fault: (current: string) => { if (!hit && current === point) { hit = true; throw new Error(`INJECTED_${point}`); } } }; };
-  it.each(["before-snapshot-commit", "after-snapshot-commit", "after-capture-stage", "before-outbox-commit", "after-outbox-commit", "after-object-upload", "after-remote-commit", "after-outbox-ack"])("recovers outgoing/bootstrap boundary %s without duplicate revisions", async point => {
+  it.each(["before-snapshot-commit", "after-snapshot-commit", "after-capture-stage", "before-outbox-commit", "after-outbox-commit", "after-object-upload", "after-remote-commit", "after-outbox-ack", "before-local-request-ack-commit", "after-local-request-ack-commit", "before-request-ack-send", "after-request-ack-send", "before-local-cleanup-commit", "after-local-cleanup-commit", "before-stage-remove", "after-stage-remove"])("recovers outgoing/bootstrap boundary %s without duplicate revisions", async point => {
     const a = fixture.clients[0]!; await a.files.edit("note.md", "immutable local bytes"); const failure = failOnce(point); a.engine.fault = failure.fault;
     await a.engine.sync(); expect(failure.hit).toBe(true);
     if (point === "before-snapshot-commit") expect(await a.db.progress.count()).toBe(0);
@@ -19,6 +19,34 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("recovery with r
     const b = fixture.clients[1]!; expect((await b.engine.sync()).errors).toEqual([]); expect(await b.files.text("note.md")).toBe("immutable local bytes");
     const snapshot = await fixture.transport(0).snapshot(); expect(snapshot.files).toHaveLength(1); expect(snapshot.revisions).toHaveLength(1);
     expect((await restarted.engine.status()).state).toBe("complete");
+    expect(await restarted.files.stageList()).toEqual([]); expect(await b.files.stageList()).toEqual([]);
+    expect(await restarted.db.inbox.count()).toBe(0); expect(await b.db.inbox.count()).toBe(0);
+  });
+  it("repeatedly frees completed snapshots and old revisions while retaining the accepted baseline for offline edits", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    for (let i = 0; i < 4; i++) {
+      await a.files.edit("note.md", `version ${i}`);
+      expect((await a.engine.sync()).errors).toEqual([]);
+      expect((await b.engine.sync()).errors).toEqual([]);
+      expect(await b.files.text("note.md")).toBe(`version ${i}`);
+      expect(await a.files.stageList()).toEqual([]); expect(await b.files.stageList()).toEqual([]);
+      expect(await a.db.inbox.count()).toBe(0); expect(await b.db.inbox.count()).toBe(0);
+    }
+    expect(await b.db.revisions.count()).toBe(1); expect(await b.db.baseProofs.count()).toBe(1);
+    await b.files.edit("note.md", "B offline"); await a.files.edit("note.md", "A concurrent");
+    await a.engine.sync(); expect((await b.engine.sync()).conflicts).toBe(1);
+    const review = await b.engine.review((await b.db.conflicts.toArray())[0]!.id);
+    expect(review.versions.map(row => row.text).sort()).toEqual(["A concurrent", "B offline"]);
+  });
+  it("retries a failed stage deletion without repeating the already accepted upload", async () => {
+    const a = fixture.clients[0]!; await a.files.edit("note.md", "accepted before cleanup failed");
+    a.files.hook = async op => { if (op === "stageRemove") throw new Error("INJECTED_CLEANUP_IO"); };
+    expect((await a.engine.sync()).errors).toContain("INJECTED_CLEANUP_IO");
+    const before = await fixture.transport(0).handshake();
+    expect(await a.db.outbox.count()).toBe(0); expect((await a.files.stageList()).length).toBeGreaterThan(0);
+    a.files.hook = undefined; const restarted = await fixture.reopen(0);
+    expect((await restarted.engine.sync()).errors).toEqual([]); expect(await restarted.files.stageList()).toEqual([]);
+    expect((await fixture.transport(0).handshake()).seq).toBe(before.seq);
   });
   it.each(["before-inbox-commit", "after-inbox-commit", "after-apply-stage", "after-apply-prepare", "after-vault-write", "before-apply-ack", "after-apply-ack", "before-applied-cursor-commit", "after-applied-cursor-commit"])("recovers incoming boundary %s and never acknowledges before filesystem application", async point => {
     const a = fixture.clients[0]!, b = fixture.clients[1]!; await b.engine.sync();
@@ -55,14 +83,27 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("recovery with r
     const review = await restored.engine.review(conflict.id); expect(review.versions.map(v => v.text).sort()).toEqual(["new A edit", "offline B edit"]);
     await a.engine.sync(); expect(await a.files.text("note.md")).toBe("new A edit");
   });
-  it("preserves newer filesystem bytes when an old client checkpoint returns", async () => {
+  it("blocks a coherent old client database checkpoint while preserving newer filesystem bytes", async () => {
     const a = fixture.clients[0]!, b = fixture.clients[1]!; await a.files.edit("note.md", "base"); await a.engine.sync(); await b.engine.sync();
     const checkpoint = await b.db.localFiles.toArray(); const progress = (await b.db.progress.get("progress"))!;
+    const remoteCheckpoint = await b.db.remoteFiles.toArray(), revisionCheckpoint = await b.db.revisions.toArray(), proofCheckpoint = await b.db.baseProofs.toArray();
+    const writerCheckpoint = (await b.db.writerState.get("writer"))!;
+    const continuityCheckpoint = (await b.db.continuity.get("continuity"))!;
     await a.files.edit("note.md", "remote new version"); await a.engine.sync(); await b.engine.sync();
-    await b.db.localFiles.bulkPut(checkpoint); await b.db.progress.put(progress); await b.files.edit("note.md", "restored disk plus fresh edit");
-    const restarted = await fixture.reopen(1); const status = await restarted.engine.sync(); expect(status.errors).toEqual([]); expect(status.conflicts).toBe(1);
+    // Restore a coherent database checkpoint, including the baseline that compaction may have evicted.
+    await b.db.transaction("rw", b.db.tables, async () => {
+      await b.db.localFiles.clear(); await b.db.localFiles.bulkPut(checkpoint); await b.db.progress.put(progress);
+      await b.db.remoteFiles.clear(); await b.db.remoteFiles.bulkPut(remoteCheckpoint);
+      await b.db.revisions.clear(); await b.db.revisions.bulkPut(revisionCheckpoint);
+      await b.db.baseProofs.clear(); await b.db.baseProofs.bulkPut(proofCheckpoint); await b.db.writerState.put(writerCheckpoint);
+      await b.db.continuity.put(continuityCheckpoint);
+    });
+    await b.files.edit("note.md", "restored disk plus fresh edit");
+    const restarted = await fixture.reopen(1); const status = await restarted.engine.sync(); expect(status.errors).toContain("RECOVERY_RECONCILIATION_REQUIRED");
     expect(await restarted.files.text("note.md")).toBe("restored disk plus fresh edit");
-    expect((await fixture.transport(0).snapshot()).files[0]!.heads).toHaveLength(2);
+    expect(await restarted.db.continuity.get("continuity")).toEqual(continuityCheckpoint);
+    expect(await restarted.db.outbox.count()).toBe(0);
+    expect((await fixture.transport(0).snapshot()).files[0]!.heads).toHaveLength(1);
   });
   it.each(["matching", "diverged"])("reconnects after local IndexedDB loss with %s filesystem content without inventing ancestry", async kind => {
     const a = fixture.clients[0]!, b = fixture.clients[1]!; await a.files.edit("note.md", "remote bytes"); await a.engine.sync(); await b.engine.sync();
@@ -87,6 +128,50 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("recovery with r
     b.files.hook = async op => { if (op === "stageRead" && !stolen) { stolen = true; const lease = (await b.db.leases.get("engine"))!; await b.db.leases.put({ ...lease, ...(kind === "expired" ? { until: 0 } : { owner: "other-live-owner" }) }); } };
     expect((await b.engine.sync()).errors).toContain("LOCAL_LEASE_LOST"); expect(await b.files.text("note.md")).toBeNull(); expect(await b.db.applyTasks.count()).toBe(1);
     b.files.hook = undefined; await b.db.leases.clear(); const restarted = await fixture.reopen(1); expect((await restarted.engine.sync()).errors).toEqual([]); expect(await restarted.files.text("note.md")).toBe("remote bytes");
+  });
+  it.each(["expired", "released"])("never reacquires a %s lease from a delayed heartbeat during apply recovery", async kind => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "remote bytes protected by the journal"); await a.engine.sync();
+    let heartbeat: (() => void) | undefined;
+    const intervals = vi.spyOn(globalThis, "setInterval").mockImplementation(callback => { heartbeat = callback as () => void; return 0 as unknown as ReturnType<typeof setInterval>; });
+    b.files.hook = async operation => {
+      if (operation !== "stageRead") return;
+      expect(heartbeat).toBeDefined();
+      const lease = (await b.db.leases.get("engine"))!;
+      if (kind === "expired") await b.db.leases.put({ ...lease, until: 0 });
+      else {
+        // A different execution acquired, finished and released while this one was suspended.
+        await b.db.leases.put({ ...lease, owner: "finished-other-run" }); await b.db.leases.delete("engine");
+      }
+      heartbeat!(); await vi.waitFor(() => expect(b.engine.unlocked).toBe(false));
+      expect(await b.db.leases.get("engine")).toEqual(kind === "expired" ? { ...lease, until: 0 } : undefined);
+    };
+    expect((await b.engine.sync()).errors).toContain("LOCKED");
+    expect(await b.files.text("note.md")).toBeNull(); expect(await b.db.applyTasks.count()).toBe(1); expect((await b.files.stageList()).length).toBeGreaterThan(0);
+    intervals.mockRestore(); b.files.hook = undefined; await b.db.leases.clear();
+    const restarted = await fixture.reopen(1); expect((await restarted.engine.sync()).errors).toEqual([]);
+    expect(await restarted.files.text("note.md")).toBe("remote bytes protected by the journal"); expect(await restarted.files.stageList()).toEqual([]);
+  });
+  it("renews an explicit conflict resolution across the original lease deadline", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "base"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "computer choice"); await a.engine.sync(); await b.files.edit("note.md", "phone choice"); await b.engine.sync();
+    const review = await b.engine.review((await b.db.conflicts.toArray())[0]!.id), choice = review.versions.find(v => v.text === "computer choice")!;
+    let heartbeat: (() => void) | undefined, clock = Date.now(), renewed = false;
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    vi.spyOn(globalThis, "setInterval").mockImplementation(callback => { heartbeat = callback as () => void; return 0 as unknown as ReturnType<typeof setInterval>; });
+    fixture.httpHook = async (request, next) => {
+      if (!renewed && new URL(request.url).pathname === "/metadata/commits") {
+        renewed = true; expect(heartbeat).toBeDefined(); const before = (await b.db.leases.get("engine"))!;
+        clock = before.until - 1; heartbeat!();
+        await vi.waitFor(async () => expect((await b.db.leases.get("engine"))!.until).toBeGreaterThan(before.until));
+        clock = before.until + 1;
+      }
+      return next();
+    };
+    await b.engine.resolve(review, choice.revision); expect(renewed).toBe(true);
+    expect(await b.files.text("note.md")).toBe("computer choice"); expect(await b.engine.status()).toMatchObject({ state: "complete", errors: [] });
+    expect(await b.db.leases.get("engine")).toBeUndefined(); expect(await b.files.stageList()).toEqual([]);
   });
   it("refuses damaged outgoing ciphertext before publishing an accepted revision", async () => {
     const a = fixture.clients[0]!;
@@ -192,6 +277,25 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("recovery with r
     expect(await reopened.files.text("torn.md")).toBe("partial"); expect(await reopened.files.text("healthy.md")).toBe("unrelated complete");
     expect(status.state).toBe("needs-attention"); const task = (await reopened.db.applyTasks.toArray()).find(t => t.targetPath === "torn.md")!;
     expect(task.backup).toBeDefined(); expect(await readFile(join(reopened.files.root, ".stage", task.backup!), "utf8")).not.toContain("old exact bytes");
+    expect(new Set(await reopened.files.stageList())).toEqual(new Set([task.stage, task.backup]));
+  });
+  it("keeps journal and backup when a host silently writes partial bytes but reports success", async () => {
+    const a = fixture.clients[0]!, b = fixture.clients[1]!;
+    await a.files.edit("note.md", "old protected bytes"); await a.engine.sync(); await b.engine.sync();
+    await a.files.edit("note.md", "new complete bytes"); await a.files.edit("healthy.md", "unrelated complete"); await a.engine.sync();
+    const write = b.files.write.bind(b.files);
+    b.files.write = async (path, ...args) => {
+      if (path === "note.md") { await writeFile(b.files.path(path), "partial"); return; }
+      await write(path, ...args);
+    };
+    expect((await b.engine.sync()).errors).toContain("APPLY_VERIFY_FAILED");
+    expect(await b.files.text("healthy.md")).toBe("unrelated complete");
+    const task = (await b.db.applyTasks.toArray())[0]!;
+    expect(task.backup).toBeDefined(); expect(new Set(await b.files.stageList())).toEqual(new Set([task.stage, task.backup]));
+    const progress = (await b.db.progress.get("progress"))!; expect(progress.applied).toBeLessThan(progress.received);
+    b.files.write = write; await b.files.edit("note.md", "old protected bytes");
+    expect((await (await fixture.reopen(1)).engine.sync()).errors).toEqual([]);
+    expect(await b.files.text("note.md")).toBe("new complete bytes"); expect(await b.files.stageList()).toEqual([]);
   });
   it("keeps durable server state after a real server SIGKILL and reconnects without duplicate acceptance", async () => {
     const a = fixture.clients[0]!; await a.files.edit("note.md", "server restart proof"); await a.engine.sync();

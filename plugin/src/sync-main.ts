@@ -8,6 +8,7 @@ import { SyncDB } from "./sync/store";
 import { ObsidianVaultPort } from "./sync/vault-port";
 import { Transport, boundedRequest, normalizeEndpoint } from "./sync/transport";
 import { SyncOverview } from "./ui/sync-panels";
+import { syncActivityLabel, syncDisplayState } from "./ui/sync-status";
 import { AutomaticSync, RemoteEvents, SerialWork } from "./sync/realtime";
 import { desktopProtector } from "./desktop/protector";
 import { iosProtector } from "./mobile/ios-protector";
@@ -50,6 +51,8 @@ export default class ObsidianSyncPlugin extends Plugin {
   lastSyncAt = "";
   hostError = "";
   localPending = false;
+  syncing = false;
+  private statusTimer?: TimerHandle;
   private db?: SyncDB;
   private statusEl?: HTMLElement;
   private work = new SerialWork();
@@ -153,6 +156,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     });
   }
   onunload(): void {
+    timerHost().clearInterval(this.statusTimer); this.statusTimer = undefined;
     this.disposed = true; timerHost().clearInterval(this.configTimer); this.configTimer = undefined; this.automatic?.stop(); this.events?.stop(); this.listeners.clear(); this.engine?.lock();
     void this.work.idle().finally(() => this.db?.close());
   }
@@ -166,9 +170,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     else { timerHost().clearInterval(this.configTimer); this.configTimer = undefined; this.automatic?.stop(); this.events?.stop(); }
   }
   private showPending(): void {
-    if (!this.autoSync) this.statusEl?.setText("xSync · 已暂停同步");
-    else if (this.lastStatus?.state === "needs-attention") this.statusEl?.setText("xSync · 需处理");
-    else this.statusEl?.setText(this.engine?.unlocked ? "xSync · 有变更待核对" : "xSync · 请配置同步");
+    this.renderStatusBar();
     this.emit();
   }
   private transport(endpoint: string): Transport {
@@ -292,20 +294,48 @@ export default class ObsidianSyncPlugin extends Plugin {
     await this.work.run(async () => {
       if (!this.engine || this.disposed || !this.autoSync || this.configuring) return;
       const generation = this.changeGeneration;
+      this.syncing = true;
+      // A new run starts by checking, never by replaying the previous run's activity.
+      if (this.lastStatus) this.lastStatus = { ...this.lastStatus, activity: undefined };
+      this.showPending();
+      let finished = false, refreshing = false;
+      this.statusTimer = timerHost().setInterval(() => {
+        if (refreshing || finished || this.disposed) return;
+        refreshing = true;
+        void this.engine!.status().then(status => {
+          if (!finished && !this.disposed) this.publishStatus(status, false);
+        }).catch(() => { /* The running sync reports persistence failures. */ }).finally(() => { refreshing = false; });
+      }, 500);
       try {
         let profileError = "";
         try { await this.flushProfile(); } catch (error) { profileError = `客户端配置快照未更新：${String(error)}`; }
         const status = await this.engine.sync();
+        finished = true; this.syncing = false;
         this.localPending = this.changeGeneration !== generation;
         this.lastSyncAt = new Date().toLocaleTimeString(); this.hostError = profileError; this.publishStatus(status, notify);
-      } catch (error) { this.hostError = String(error); if (notify) new Notice(`同步暂停：${String(error)}`); this.emit(); }
+      } catch (error) {
+        this.hostError = String(error);
+        this.lastStatus = { outbox: 0, inbox: 0, conflicts: 0, ...this.lastStatus,
+          state: this.engine.unlocked ? "needs-attention" : "locked", activity: undefined,
+          errors: [...(this.lastStatus?.errors ?? []), this.hostError] };
+        if (notify) new Notice(`同步暂停：${String(error)}`);
+      }
+      finally {
+        finished = true; timerHost().clearInterval(this.statusTimer); this.statusTimer = undefined; this.syncing = false;
+        if (!this.disposed) { this.renderStatusBar(); this.emit(); }
+      }
     });
+  }
+  private renderStatusBar(): string {
+    const state = syncDisplayState(this.lastStatus, !!this.engine?.unlocked, this.autoSync, this.syncing, this.localPending);
+    const label = state === "syncing" ? syncActivityLabel(this.lastStatus?.activity) : {
+      locked: "请配置同步", paused: "已暂停同步", conflict: "需处理", attention: "需处理", pending: "有变更待核对", complete: "所选范围同步完成",
+    }[state];
+    this.statusEl?.setText(`xSync · ${label}`); return label;
   }
   private publishStatus(status: EngineStatus, notify: boolean): void {
     this.lastStatus = status;
-    const label = !this.autoSync ? "已暂停同步" : this.localPending && status.state === "complete" ? "有变更待核对"
-      : { locked: "请配置同步", pending: "同步进行中", "needs-attention": "需处理", complete: "所选范围同步完成" }[status.state];
-    this.statusEl?.setText(`xSync · ${label}`);
+    const label = this.renderStatusBar();
     if (notify) new Notice(`${label} · 待上传 ${status.outbox} · 待应用 ${status.inbox} · 冲突 ${status.conflicts}`);
     this.emit();
   }

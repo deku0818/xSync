@@ -489,8 +489,11 @@
 .oss-app .card{display:block;flex:initial;margin:20px 0 0;padding:0;background:var(--panel);border:1px solid var(--line);border-radius:11px}
 .oss-app .client-list button.client-item{height:auto;min-height:105px;overflow:visible}
 
-/* Custom declarative setting row keeps the approved full-width form. */
-.setting-item.oss-settings-row{display:block;padding:0;border:0}
+/* Only the group wrapping our full-page form is unboxed; keep host page spacing. */
+.setting-group .setting-items:has(> .oss-settings-row){background:transparent;border:0;border-radius:0;box-shadow:none}
+.setting-item.oss-settings-row,
+.setting-group .setting-items > .setting-item.oss-settings-row{display:block;padding:0;margin:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.setting-group .setting-items > .setting-item.oss-settings-row::before{content:none}
 /* Last and more specific than panel/card layout rules: hidden panes stay hidden. */
 .oss-app.oss-app .hidden,.oss-app.oss-app [hidden]{display:none}
 

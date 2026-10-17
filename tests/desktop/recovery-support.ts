@@ -54,12 +54,22 @@ export class RecoveryFiles implements FilePort {
   }
   async stageWrite(id: string, bytes: Uint8Array): Promise<void> {
     await this.hook?.("stageWrite", id);
-    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID");
+    if (!/^(?:c_)?[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID");
     const root = join(this.root, ".stage"); await mkdir(root, { recursive: true });
     try { await writeFile(join(root, id), bytes, { flag: "wx" }); }
     catch (e) { if ((e as { code?: string }).code !== "EEXIST" || !bytesEqual(new Uint8Array(await readFile(join(root, id))), bytes)) throw e; }
   }
   async stageRead(id: string): Promise<Uint8Array> { await this.hook?.("stageRead", id); return new Uint8Array(await readFile(join(this.root, ".stage", id))); }
+  async stageList(): Promise<string[]> {
+    await this.hook?.("stageList", "");
+    try { return (await readdir(join(this.root, ".stage"))).filter(id => /^(?:c_)?[a-f0-9]{64}$/.test(id)); }
+    catch (e) { if ((e as { code?: string }).code === "ENOENT") return []; throw e; }
+  }
+  async stageRemove(id: string): Promise<void> {
+    if (!/^(?:c_)?[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID");
+    await this.hook?.("stageRemove", id);
+    await rm(join(this.root, ".stage", id), { force: true });
+  }
   async edit(path: string, text: string): Promise<void> { await mkdir(join(this.path(path), ".."), { recursive: true }); await writeFile(this.path(path), text); }
   async text(path: string): Promise<string | null> { const b = await this.read(path); return b === null ? null : new TextDecoder().decode(b); }
 }
@@ -77,7 +87,7 @@ export class RecoveryFixture {
   clients: RecoveryClient[] = [];
   httpHook?: (request: HTTPRequest, next: () => ReturnType<HTTP>) => ReturnType<HTTP>;
   private resumed = false;
-  async open(onboarding = false): Promise<void> {
+  async open(onboarding = false, metadataMode?: "full", deviceCount = 2): Promise<void> {
     await mkdir(".local", { recursive: true }); this.root = await mkdtemp(join(process.cwd(), ".local/recovery-"));
     const base = JSON.parse(await readFile(".local/desktop/server.json", "utf8"));
     if (!base.dsn.includes("127.0.0.1:55438")) throw new Error("DEDICATED_DOCKER_DATABASE_REQUIRED");
@@ -85,7 +95,7 @@ export class RecoveryFixture {
     const port = (probe.address() as { port: number }).port; await new Promise<void>(resolve => probe.close(() => resolve())); this.endpoint = `http://127.0.0.1:${port}`;
     const vaultId = randomId(); const created = await VaultCrypto.create(vaultId, RECOVERY_PASSPHRASE);
     const enrollmentPublicKey = onboarding ? created.crypto.enrollmentPublicKey() : undefined; created.crypto.close();
-    this.config = { ...base, vaultId, epoch: randomId(), devices: onboarding ? [] : [0, 1].map(i => ({ id: randomId(), name: `Recovery ${i}`, token: randomId() })), keyPackage: created.keyPackage, enrollmentPublicKey, listen: `127.0.0.1:${port}`, objectDir: join(this.root, "objects") };
+    this.config = { ...base, ...(metadataMode ? { metadataMode } : {}), vaultId, epoch: randomId(), devices: onboarding ? [] : Array.from({ length: deviceCount }, (_, i) => ({ id: randomId(), name: `Recovery ${i}`, token: randomId() })), keyPackage: created.keyPackage, enrollmentPublicKey, listen: `127.0.0.1:${port}`, cleanupMode: "off", objectDir: join(this.root, "objects") };
     await writeFile(join(this.root, "server.json"), JSON.stringify(this.config), { mode: 0o600 });
     await this.startServer(false);
   }
@@ -121,10 +131,28 @@ export class RecoveryFixture {
     if (!this.server || this.server.exitCode !== null || this.server.signalCode !== null) return;
     const exited = new Promise(resolve => this.server!.once("exit", resolve)); this.server.kill("SIGKILL"); await exited;
   }
-  private async sql(statement: string): Promise<void> {
+  async sql(statement: string): Promise<void> {
     if (!/^e2e_[a-f0-9]{16}$/.test(this.schema)) throw new Error("INVALID_TEST_SCHEMA");
     const child = spawn("docker", ["compose", "-f", "server/compose.dev.yaml", "exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1", "-U", "syncdev", "-d", "obsidiansync", "-c", statement], { stdio: "ignore" });
     await new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error("TEST_DATABASE_OPERATION_FAILED"))); });
+  }
+  async collect(fault?: string): Promise<void> {
+    const args = ["--config", join(this.root, "server.json"), "--test-schema", this.schema, "--resume-test-schema", "--cleanup-once"];
+    if (fault) args.push("--test-maintenance-fault", fault);
+    const child = spawn(".local/desktop/obsidiansync", args, { stdio: "ignore" });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => fault ? signal === "SIGKILL" ? resolve() : reject(new Error("MAINTENANCE_FAULT_NOT_REACHED")) : code === 0 ? resolve() : reject(new Error("MAINTENANCE_FAILED")));
+    });
+  }
+  async collectExpired(): Promise<void> {
+    await this.collect();
+    await this.sql(`UPDATE ${this.schema}.objects SET unreferenced_at=clock_timestamp()-interval '2 hours' WHERE state='candidate'`);
+    await this.collect();
+  }
+  async retireLogs(): Promise<void> {
+    await this.sql(`UPDATE ${this.schema}.changes SET created_at=clock_timestamp()-interval '8 days'`);
+    await this.collect();
   }
   async expireLog(boundary: number): Promise<void> {
     if (!Number.isSafeInteger(boundary) || boundary < 0) throw new Error("INVALID_TEST_BOUNDARY");

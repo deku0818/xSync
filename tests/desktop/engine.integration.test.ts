@@ -44,11 +44,19 @@ class DiskVault implements FilePort {
   }
   async remove(path: string, expected: Uint8Array): Promise<void> { const current = await this.read(path); if (!current || !bytesEqual(current, expected)) throw new Error("DELETE_GUARD"); await unlink(this.path(path)); }
   async stageWrite(id: string, ciphertext: Uint8Array): Promise<void> {
-    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID");
+    if (!/^(?:c_)?[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID");
     await mkdir(join(this.root, ".local"), { recursive: true }); const path = join(this.root, ".local", id);
     try { await writeFile(path, ciphertext, { flag: "wx" }); } catch (e) { if ((e as { code?: string }).code !== "EEXIST" || !bytesEqual(new Uint8Array(await readFile(path)), ciphertext)) throw e; }
   }
   async stageRead(id: string): Promise<Uint8Array> { return new Uint8Array(await readFile(join(this.root, ".local", id))); }
+  async stageList(): Promise<string[]> {
+    try { return (await readdir(join(this.root, ".local"))).filter(id => /^(?:c_)?[a-f0-9]{64}$/.test(id)); }
+    catch (e) { if ((e as { code?: string }).code === "ENOENT") return []; throw e; }
+  }
+  async stageRemove(id: string): Promise<void> {
+    if (!/^(?:c_)?[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID");
+    await rm(join(this.root, ".local", id), { force: true });
+  }
   async edit(path: string, text: string): Promise<void> { await writeFile(this.path(path), text); }
   async text(path: string): Promise<string | null> { const b = await this.read(path); return b === null ? null : new TextDecoder().decode(b); }
 }
@@ -67,7 +75,7 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("two clients + a
     const vaultId = randomId(); const keys = await VaultCrypto.create(vaultId, "public-e2e-test-passphrase"); keys.crypto.close();
     const probe = createServer(); await new Promise<void>(resolve => probe.listen(0, "127.0.0.1", resolve));
     const port = (probe.address() as { port: number }).port; await new Promise<void>(resolve => probe.close(() => resolve())); endpoint = `http://127.0.0.1:${port}`;
-    config = { vaultId, devices: [{ id: randomId(), name: "测试电脑 A", token: randomId() }, { id: randomId(), name: "测试电脑 B", token: randomId() }] };
+    config = { vaultId, devices: [{ id: randomId(), name: "测试电脑 A", token: randomId() }, { id: randomId(), name: "测试电脑 B", token: randomId() }, { id: randomId(), name: "配置测试 A", token: randomId() }, { id: randomId(), name: "配置测试 B", token: randomId() }] };
     const cfg = { ...base, ...config, epoch: randomId(), keyPackage: keys.keyPackage, objectDir: join(root, "objects"), listen: `127.0.0.1:${port}` };
     const path = join(root, "server.json"); await writeFile(path, JSON.stringify(cfg), { mode: 0o600 });
     server = spawn(".local/desktop/obsidiansync", ["--config", path, "--test-schema", `e2e_${randomId().slice(0, 16)}`], { stdio: ["ignore", "pipe", "pipe"] });
@@ -84,7 +92,7 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("two clients + a
     };
     const aa = await make(0, async r => {
       if (blockUploads && r.method === "PUT" && r.url.includes("/objects/")) throw new Error("INJECTED_OFFLINE_UPLOAD");
-      if (raceResolution && r.url.endsWith("/commits") && JSON.parse(new TextDecoder().decode(r.body)).actions[0].type === "resolve") {
+      if (raceResolution && r.url.endsWith("/commits") && ((v) => v.request ?? v)(JSON.parse(new TextDecoder().decode(r.body))).actions[0].type === "resolve") {
         const race = raceResolution; raceResolution = undefined; await race();
       }
       const result = await nativeHTTP(r); if (dropReceipt && r.url.endsWith("/commits") && result.status === 200) { dropReceipt = false; throw new Error("INJECTED_LOST_RESPONSE"); } return result;
@@ -232,6 +240,8 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("two clients + a
     b.fault = undefined; await b.sync(); await a.sync(); const conflict = (await a.db.conflicts.toArray()).find(c => c.path === "initial-collision.md")!; const review = await a.review(conflict.id);
     expect(review.versions.map(v => v.text).sort()).toEqual(["A independent original\n", "B independent original\n"]); for (const v of review.versions) expect((await a.db.revisions.get(v.revision))!.parents).toEqual([]);
     const chosen = review.versions.find(v => v.text!.startsWith("A"))!; await a.resolve(review, chosen.revision, "initial-collision-B.md"); await b.sync(); expect(await b.db.outbox.count()).toBe(0);
+    expect(await b.db.reconciliations.count()).toBe(0);
+    expect((await b.db.rejectedOutbox.toArray()).some(row => row.error === "INITIAL_PATH_COLLISION")).toBe(false);
   });
   it("publishes encrypted per-device configuration with atomic normalized-name uniqueness", async () => {
     const ta = new Transport(endpoint, config.devices[0]!.token, nativeHTTP), tb = new Transport(endpoint, config.devices[1]!.token, nativeHTTP);
@@ -250,6 +260,7 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("two clients + a
         exists: async (p: string) => { try { await readFile(join(root, p)); return true; } catch { try { return statSync(join(root, p)).isDirectory(); } catch { return false; } } },
         list: async (p: string) => { const entries = await readdir(join(root, p), { withFileTypes: true }); return { files: entries.filter(e => e.isFile()).map(e => p + "/" + e.name), folders: entries.filter(e => e.isDirectory()).map(e => p + "/" + e.name) }; },
         stat: async (p: string) => { try { const v = statSync(join(root, p)); return { type: v.isDirectory() ? "folder" : "file", size: v.size, mtime: v.mtimeMs }; } catch { return null; } },
+        remove: async (p: string) => { await unlink(join(root, p)); },
         readBinary: async (p: string) => { const b = await readFile(join(root, p)); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); },
         writeBinary: async (p: string, bytes: ArrayBuffer) => { await writeFile(join(root, p), new Uint8Array(bytes)); },
         process: async (p: string, fn: (text: string) => string) => { const result = fn(await readFile(join(root, p), "utf8")); await writeFile(join(root, p), result); return result; },
@@ -264,7 +275,7 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("two clients + a
       await writeFile(join(dir, ".custom-config/app.json"), JSON.stringify({ fontSize: i === 0 ? 16 : 17, deviceId: "device-private-" + i })); await writeFile(join(dir, ".custom-config/workspace.json"), "layout-private-" + i); await writeFile(join(dir, ".custom-config/obsidian-sync-local/device.json"), "identity-private-" + i); await writeFile(join(dir, ".custom-config/plugins/example/data.json"), JSON.stringify({ color: "purple", apiKey: "api-private-" + i })); }
     await writeFile(join(dirs[0]!, ".custom-config/themes/Demo/theme.css"), "body { color: purple; }"); await writeFile(join(dirs[0]!, ".custom-config/plugins/example/main.js"), "/* synthetic plugin bytes */");
     const ports = dirs.map(dir => new ObsidianVaultPort(makeApp(dir), ".custom-config/obsidian-sync-local")); const engines: SyncEngine[] = [];
-    for (let i = 0; i < 2; i++) { const db = new SyncDB(`config-e2e-${randomId()}`); dbs.push(db); const d = config.devices[i]!; const e = new SyncEngine(db, new Transport(endpoint, d.token, nativeHTTP), ports[i]!, d.id, config.vaultId); await e.unlock("public-e2e-test-passphrase"); engines.push(e); }
+    for (let i = 0; i < 2; i++) { const db = new SyncDB(`config-e2e-${randomId()}`); dbs.push(db); const d = config.devices[i + 2]!; const e = new SyncEngine(db, new Transport(endpoint, d.token, nativeHTTP), ports[i]!, d.id, config.vaultId); await e.unlock("public-e2e-test-passphrase"); engines.push(e); }
     try {
       expect((await engines[0]!.sync()).errors).toEqual([]); expect((await engines[1]!.sync()).errors).toEqual([]);
       expect(await readFile(join(dirs[1]!, ".custom-config/themes/Demo/theme.css"), "utf8")).toBe("body { color: purple; }"); expect(await readFile(join(dirs[1]!, ".custom-config/plugins/example/main.js"), "utf8")).toBe("/* synthetic plugin bytes */");
@@ -290,7 +301,12 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("two clients + a
     b.setPolicy(new SyncPolicy()); expect((await b.sync()).errors).toEqual([]);
     expect((await readFile(join(vb.root, "limit-100MB.pdf"))).equals(Buffer.from(bytes.buffer))).toBe(true);
     const file = await a.db.localFiles.where("path").equals("limit-100MB.pdf").first(); const revision = await a.db.revisions.get(file!.revision); expect(revision!.payload.objects.length).toBeGreaterThan(1);
-    for (const id of revision!.payload.objects) expect((await readFile(join(root, "objects", config.vaultId, id))).length).toBeLessThan(16 * 1024 * 1024);
+    const storedObjects = await readdir(join(root, "objects", config.vaultId));
+    for (const id of revision!.payload.objects) {
+      const physical = storedObjects.find(name => name.startsWith(`${id}.s`) && /^[a-f0-9]{64}$/.test(name.slice(id.length + 2)));
+      expect(physical).toBeDefined();
+      expect((await readFile(join(root, "objects", config.vaultId, physical!))).length).toBeLessThan(16 * 1024 * 1024);
+    }
     await writeFile(join(va.root, "over-limit.pdf"), new Uint8Array(100_000_001)); await a.sync(); expect(await a.db.skipped.get("over-limit.pdf")).toBeDefined(); expect(await a.db.localFiles.where("path").equals("over-limit.pdf").first()).toBeUndefined();
     await unlink(join(va.root, "over-limit.pdf")); await unlink(join(va.root, "limit-100MB.pdf")); await unlink(join(vb.root, "limit-100MB.pdf"));
   }, 90000);

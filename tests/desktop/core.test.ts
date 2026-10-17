@@ -79,3 +79,18 @@ it("honours the host trash preference only after verifying the exact file bytes"
   current=new TextEncoder().encode("unreviewed change"); await expect(port.remove(file.path,expected)).rejects.toThrow("LOCAL_CHANGED_DURING_DELETE"); expect(trashFile).not.toHaveBeenCalled();
   current=expected.slice(); await port.remove(file.path,expected); expect(trashFile).toHaveBeenCalledWith(file); expect(directTrash).not.toHaveBeenCalled();
 });
+it("only enumerates direct private stages and permanently removes validated files, leaving notes, secrets and host trash alone", async () => {
+  const root = ".custom-config/obsidian-sync-local/staging", id = randomId();
+  const remove = vi.fn(async () => {}), trashLocal = vi.fn(async () => {});
+  const adapter = { exists: async () => true, list: async () => ({ files: [
+    `${root}/${id}`, `${root}/nested/${randomId()}`, `${root}/../${randomId()}`,
+    `${root}-other/${randomId()}`, `${root}/device.json`, "note.md", ".trash/note.md",
+  ], folders: [`${root}/${randomId()}`] }), stat: vi.fn(async () => ({ type: "file" })), remove, trashLocal };
+  const port = new ObsidianVaultPort({ vault: { adapter } } as unknown as App, ".custom-config/obsidian-sync-local");
+  expect(await port.stageList()).toEqual([id]);
+  for (const invalid of ["../note.md", "device.json", "", `${id}/child`]) await expect(port.stageRemove(invalid)).rejects.toThrow("INVALID_STAGE_ID");
+  expect(adapter.stat).not.toHaveBeenCalled();
+  await port.stageRemove(id); expect(remove).toHaveBeenCalledExactlyOnceWith(`${root}/${id}`); expect(trashLocal).not.toHaveBeenCalled();
+  adapter.stat.mockResolvedValueOnce({ type: "folder" });
+  await expect(port.stageRemove(randomId())).rejects.toThrow("EXPECTED_STAGE_FILE"); expect(remove).toHaveBeenCalledTimes(1);
+});

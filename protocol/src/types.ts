@@ -77,6 +77,8 @@ export interface Change {
 }
 export interface Receipt { epoch: string; seq: number; opId: string }
 export interface Snapshot {
+  checkpoint?: number;
+  bases?: import("./metadata").BaseProof[];
   epoch: string;
   boundary: number;
   files: FileState[];

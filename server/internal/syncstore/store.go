@@ -15,10 +15,12 @@ import (
 var schema string
 
 type Store struct {
-	Pool   *pgxpool.Pool
-	Config Config
-	Fault  func(string) error
-	events *eventHub
+	compact  bool
+	proofKey []byte
+	Pool     *pgxpool.Pool
+	Config   Config
+	Fault    func(string) error
+	events   *eventHub
 }
 
 func (s *Store) fault(point string) error {
@@ -28,6 +30,13 @@ func (s *Store) fault(point string) error {
 	return nil
 }
 func Open(ctx context.Context, c Config) (*Store, error) {
+	if c.MetadataMode != "" && c.MetadataMode != "compact" && c.MetadataMode != "full" {
+		return nil, code("INVALID_CONFIG")
+	}
+	if c.CleanupMode != "" && c.CleanupMode != "on" && c.CleanupMode != "off" && c.CleanupMode != "dry-run" {
+		return nil, code("INVALID_CONFIG")
+	}
+
 	if !validID(c.VaultID) || !validID(c.Epoch) || (len(c.Devices) < 1 && !blobPattern.MatchString(c.EnrollmentPublicKey)) || (c.EnrollmentPublicKey != "" && (!blobPattern.MatchString(c.EnrollmentPublicKey) || len(c.Devices) != 0)) || !json.Valid(c.KeyPackage) {
 		return nil, code("INVALID_CONFIG")
 	}
@@ -72,6 +81,9 @@ func Open(ctx context.Context, c Config) (*Store, error) {
 	j2, _ := json.Marshal(v2)
 	if epoch != c.Epoch || !bytes.Equal(j1, j2) || enrollmentKey != c.EnrollmentPublicKey {
 		return nil, code("CONFIG_IDENTITY_MISMATCH")
+	}
+	if e = s.initializeProofKey(ctx, tx); e != nil {
+		return nil, e
 	}
 	// Preserve existing names and migrate canonical keys explicitly. Never choose a winner for duplicate names.
 	rows, e := tx.Query(ctx, "SELECT id,name FROM devices WHERE vault_id=$1 AND name_key IS NULL FOR UPDATE", c.VaultID)
@@ -125,6 +137,9 @@ func Open(ctx context.Context, c Config) (*Store, error) {
 	if _, e = tx.Exec(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS devices_name_unique ON devices(vault_id,name_key)"); e != nil {
 		return nil, profileError(e)
 	}
+	if e = s.initializeCompaction(ctx, tx); e != nil {
+		return nil, e
+	}
 	if e = tx.Commit(ctx); e != nil {
 		p.Close()
 		return nil, e
@@ -166,7 +181,8 @@ func (s *Store) load(ctx context.Context, tx pgx.Tx) (*state, error) {
 	if e != nil {
 		return nil, e
 	}
-	rows, e = tx.Query(ctx, "SELECT value FROM revisions WHERE vault_id=$1", v)
+	rows, e = tx.Query(ctx, `SELECT r.value FROM revisions r WHERE r.vault_id=$1 AND
+ (NOT $2::boolean OR EXISTS(SELECT 1 FROM heads h WHERE h.vault_id=r.vault_id AND h.revision_id=r.id))`, v, s.compact)
 	if e != nil {
 		return nil, e
 	}
@@ -204,7 +220,8 @@ func (s *Store) load(ctx context.Context, tx pgx.Tx) (*state, error) {
 	if e != nil {
 		return nil, e
 	}
-	rows, e = tx.Query(ctx, "SELECT id,value FROM locations WHERE vault_id=$1", v)
+	rows, e = tx.Query(ctx, `SELECT l.id,l.value FROM locations l WHERE l.vault_id=$1 AND
+ (NOT $2::boolean OR EXISTS(SELECT 1 FROM files f WHERE f.vault_id=l.vault_id AND f.location->>'revision'=l.id))`, v, s.compact)
 	if e != nil {
 		return nil, e
 	}
@@ -226,7 +243,7 @@ func (s *Store) load(ctx context.Context, tx pgx.Tx) (*state, error) {
 	if e != nil {
 		return nil, e
 	}
-	rows, e = tx.Query(ctx, "SELECT id FROM objects WHERE vault_id=$1", v)
+	rows, e = tx.Query(ctx, "SELECT id FROM objects WHERE vault_id=$1 AND state IN ('ready','candidate')", v)
 	if e != nil {
 		return nil, e
 	}
@@ -248,7 +265,7 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 		return zero, code("UNSUPPORTED_PROTOCOL")
 	}
 	for _, f := range c.Required {
-		if !contains([]string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1"}, f) {
+		if !contains([]string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", ContentCapability, MetadataCapability, CompactCapability, ObjectCapability, ContinuityCapability}, f) {
 			return zero, code("UNSUPPORTED_PROTOCOL")
 		}
 	}
@@ -270,11 +287,29 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 	defer tx.Rollback(ctx)
 	var epoch string
 	var seq int64
-	if e = tx.QueryRow(ctx, "SELECT epoch,seq FROM vaults WHERE id=$1 FOR UPDATE", c.VaultID).Scan(&epoch, &seq); e != nil {
+	var checkpoint int64
+	if e = tx.QueryRow(ctx, "SELECT epoch,seq,metadata_checkpoint FROM vaults WHERE id=$1 FOR UPDATE", c.VaultID).Scan(&epoch, &seq, &checkpoint); e != nil {
+		return zero, e
+	}
+	if e = s.checkMetadataMode(checkpoint); e != nil {
 		return zero, e
 	}
 	if c.Epoch != epoch {
 		return zero, code("EPOCH_CHANGED")
+	}
+	if e = s.advanceContinuity(ctx, tx, c.DeviceID); e != nil {
+		return zero, e
+	}
+	tracking, _ := ctx.Value(trackingContextKey{}).(*trackingRun)
+	if tracking != nil {
+		cached, err := s.inspectTracking(ctx, tx, c, tracking.Tracking, digest[:], seq)
+		if err != nil {
+			return zero, err
+		}
+		if cached != nil {
+			tracking.Result = *cached
+			return cached.Receipt, tx.Commit(ctx)
+		}
 	}
 	var priorDigest, priorReceipt []byte
 	e = tx.QueryRow(ctx, "SELECT digest,receipt FROM operations WHERE vault_id=$1 AND device_id=$2 AND op_id=$3", c.VaultID, c.DeviceID, c.OpID).Scan(&priorDigest, &priorReceipt)
@@ -284,21 +319,56 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 		}
 		var r Receipt
 		e = json.Unmarshal(priorReceipt, &r)
+		if e == nil && tracking != nil {
+			tracking.Result, e = s.recordTracking(ctx, tx, c, tracking.Tracking, digest[:], r, seq)
+		}
+		if e == nil {
+			e = tx.Commit(ctx)
+		}
 		return r, e
 	}
 	if e != pgx.ErrNoRows {
 		return zero, e
 	}
+	legacy, e := s.validateCompactRequest(ctx, tx, c, tracking, digest[:])
+	if e != nil {
+		return zero, e
+	}
+	if tracking != nil {
+		if e = s.validateTrackedBases(c, tracking.Tracking, seq); e != nil {
+			return zero, e
+		}
+	}
 	st, e := s.load(ctx, tx)
 	if e != nil {
 		return zero, e
+	}
+	st.compact = s.compact
+	if tracking != nil {
+		for _, p := range tracking.Tracking.Bases {
+			st.accepted[p.RevisionID] = p.FileID
+		}
 	}
 	old := map[string]bool{}
 	for id := range st.revisions {
 		old[id] = true
 	}
+	previousHeads := map[string][]string{}
+	for id, f := range st.files {
+		previousHeads[id] = append([]string{}, f.Heads...)
+	}
 	if e = st.apply(c); e != nil {
 		return zero, e
+	}
+	if e = shadowHeads(previousHeads, c, st); e != nil {
+		return zero, e
+	}
+	for _, a := range c.Actions {
+		for _, id := range actionObjects(a) {
+			if _, e = tx.Exec(ctx, "UPDATE objects SET state='ready',unreferenced_at=NULL WHERE vault_id=$1 AND id=$2 AND state='candidate'", c.VaultID, id); e != nil {
+				return zero, e
+			}
+		}
 	}
 	for _, id := range sortedKeys(st.files) {
 		f := st.files[id]
@@ -321,6 +391,11 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 			if _, e = tx.Exec(ctx, "INSERT INTO locations(vault_id,id,file_id,value) VALUES($1,$2,$3,$4)", c.VaultID, entry.Location.Revision, entry.FileID, l); e != nil {
 				return zero, e
 			}
+			if s.compact && legacy {
+				if _, e = tx.Exec(ctx, "INSERT INTO legacy_locations(vault_id,id) VALUES($1,$2)", c.VaultID, entry.Location.Revision); e != nil {
+					return zero, e
+				}
+			}
 		}
 	}
 	for _, id := range sortedKeys(st.revisions) {
@@ -331,6 +406,11 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 		b, _ := json.Marshal(r)
 		if _, e = tx.Exec(ctx, "INSERT INTO revisions(vault_id,id,file_id,value) VALUES($1,$2,$3,$4)", c.VaultID, id, r.FileID, b); e != nil {
 			return zero, e
+		}
+		if s.compact && legacy {
+			if e = s.indexLegacyRevision(ctx, tx, r); e != nil {
+				return zero, e
+			}
 		}
 		for _, obj := range r.Payload.Objects {
 			if _, e = tx.Exec(ctx, "INSERT INTO revision_objects(vault_id,revision_id,object_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", c.VaultID, id, obj); e != nil {
@@ -355,11 +435,24 @@ func (s *Store) Commit(ctx context.Context, c Commit) (Receipt, error) {
 	if _, e = tx.Exec(ctx, "UPDATE vaults SET seq=$2 WHERE id=$1", c.VaultID, r.Seq); e != nil {
 		return zero, e
 	}
-	if _, e = tx.Exec(ctx, "INSERT INTO operations(vault_id,device_id,op_id,digest,receipt) VALUES($1,$2,$3,$4,$5)", c.VaultID, c.DeviceID, c.OpID, digest[:], rb); e != nil {
+	if _, e = tx.Exec(ctx, "INSERT INTO operations(vault_id,device_id,op_id,digest,receipt,legacy) VALUES($1,$2,$3,$4,$5,$6)", c.VaultID, c.DeviceID, c.OpID, digest[:], rb, legacy); e != nil {
 		return zero, e
 	}
 	if _, e = tx.Exec(ctx, "INSERT INTO changes(vault_id,seq,value) VALUES($1,$2,$3)", c.VaultID, r.Seq, cb); e != nil {
 		return zero, e
+	}
+	if s.compact {
+		for _, revision := range requestRevisions(c) {
+			if _, e = tx.Exec(ctx, "INSERT INTO change_revisions(vault_id,seq,revision_id) VALUES($1,$2,$3)", c.VaultID, r.Seq, revision.ID); e != nil {
+				return zero, e
+			}
+		}
+	}
+	if tracking != nil {
+		tracking.Result, e = s.recordTracking(ctx, tx, c, tracking.Tracking, digest[:], r, r.Seq)
+		if e != nil {
+			return zero, e
+		}
 	}
 	if e = s.fault("before-sql-commit"); e != nil {
 		return zero, e
@@ -379,6 +472,13 @@ func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, e
 	}
 	defer tx.Rollback(ctx)
+	if s.compact {
+		snap, _, err := s.snapshotContents(ctx, tx)
+		if err != nil {
+			return snap, err
+		}
+		return snap, tx.Commit(ctx)
+	}
 	snap := Snapshot{Files: []File{}, Revisions: []Revision{}}
 	if e = tx.QueryRow(ctx, "SELECT epoch,seq FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&snap.Epoch, &snap.Boundary); e != nil {
 		return snap, e
@@ -396,14 +496,29 @@ func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 	return snap, tx.Commit(ctx)
 }
 func (s *Store) Pull(ctx context.Context, epoch string, after int64) ([]Change, error) {
-	tx, e := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	var tx pgx.Tx
+	var e error
+	change, _ := ctx.Value(continuityKey{}).(*continuityChange)
+	if change != nil {
+		tx, e = s.locked(ctx)
+	} else {
+		tx, e = s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	}
 	if e != nil {
 		return nil, e
 	}
 	defer tx.Rollback(ctx)
+	if change != nil {
+		if e = s.advanceContinuity(ctx, tx, change.Device); e != nil {
+			return nil, e
+		}
+	}
 	var actual string
-	var seq, min int64
-	if e = tx.QueryRow(ctx, "SELECT epoch,seq,min_seq FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&actual, &seq, &min); e != nil {
+	var seq, min, checkpoint int64
+	if e = tx.QueryRow(ctx, "SELECT epoch,seq,min_seq,metadata_checkpoint FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&actual, &seq, &min, &checkpoint); e != nil {
+		return nil, e
+	}
+	if e = s.checkMetadataMode(checkpoint); e != nil {
 		return nil, e
 	}
 	if actual != epoch {
@@ -441,10 +556,13 @@ func (s *Store) Pull(ctx context.Context, epoch string, after int64) ([]Change, 
 }
 func (s *Store) Handshake(ctx context.Context) (map[string]any, error) {
 	var epoch string
-	var seq int64
+	var seq, checkpoint int64
 	var pkg []byte
-	e := s.Pool.QueryRow(ctx, "SELECT epoch,seq,key_package FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&epoch, &seq, &pkg)
+	e := s.Pool.QueryRow(ctx, "SELECT epoch,seq,key_package,metadata_checkpoint FROM vaults WHERE id=$1", s.Config.VaultID).Scan(&epoch, &seq, &pkg, &checkpoint)
 	if e != nil {
+		return nil, e
+	}
+	if e = s.checkMetadataMode(checkpoint); e != nil {
 		return nil, e
 	}
 	rows, e := s.Pool.Query(ctx, "SELECT id,name FROM devices WHERE vault_id=$1 ORDER BY id", s.Config.VaultID)
@@ -460,7 +578,11 @@ func (s *Store) Handshake(ctx context.Context) (map[string]any, error) {
 		}
 		ds = append(ds, d)
 	}
-	return map[string]any{"protocol": 0, "vaultId": s.Config.VaultID, "epoch": epoch, "seq": seq, "features": []string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1"}, "keyPackage": json.RawMessage(pkg), "devices": ds, "maxObjectBytes": 16 << 20}, rows.Err()
+	result := map[string]any{"protocol": 0, "vaultId": s.Config.VaultID, "epoch": epoch, "seq": seq, "features": []string{"causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", ContentCapability, MetadataCapability, CompactCapability, ObjectCapability, ContinuityCapability}, "keyPackage": json.RawMessage(pkg), "devices": ds, "maxObjectBytes": 16 << 20, "continuity": true}
+	if s.compact {
+		result["metadataCheckpoint"] = checkpoint
+	}
+	return result, rows.Err()
 }
 func (s *Store) String() string {
 	return fmt.Sprintf("ObsidianSync development store (%s)", s.Config.VaultID)

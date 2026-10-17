@@ -3,6 +3,7 @@ import { z } from "zod";
 import { canonical } from "../../../protocol/src/model";
 import { hasControlCharacter } from "../../../protocol/src/text";
 import type { Location, Payload, Revision } from "../../../protocol/src/types";
+import { isAddressedObject, objectIDSchema } from "../../../protocol/src/objects";
 import { SHARED_CONFIG_ROOT } from "./config-path";
 
 export const MAX_FILE_BYTES = 100_000_000;
@@ -15,15 +16,16 @@ export async function fingerprint(bytes: Uint8Array): Promise<string> {
 const b64 = (bytes: Uint8Array) => sodium.to_base64(bytes, sodium.base64_variants.ORIGINAL);
 const unb64 = (s: string) => sodium.from_base64(s, sodium.base64_variants.ORIGINAL);
 const envelopeSchema = z.strictObject({ v: z.literal(0), n: z.string().max(64), c: z.string().max(Math.ceil((MAX_FILE_BYTES + 16) / 3) * 4) });
+const objectEnvelopeSchema = envelopeSchema.extend({ v: z.literal(1) });
 const keyPackageSchema = z.strictObject({ format: z.literal(0), vaultId: z.string(), kdf: z.literal("Argon2id13"), memory: z.literal(67108864), ops: z.literal(2), salt: z.string().max(64), wrapped: envelopeSchema });
 export type KeyPackage = z.infer<typeof keyPackageSchema>;
 const text = new TextEncoder();
-function seal(key: Uint8Array, bytes: Uint8Array, context: unknown): string {
+function seal(key: Uint8Array, bytes: Uint8Array, context: unknown, version: 0 | 1 = 0): string {
   const nonce = sodium.randombytes_buf(24);
-  return JSON.stringify({ v: 0, n: b64(nonce), c: b64(sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(bytes, canonical(context), null, nonce, key)) });
+  return JSON.stringify({ v: version, n: b64(nonce), c: b64(sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(bytes, canonical(context), null, nonce, key)) });
 }
-function open(key: Uint8Array, encrypted: string, context: unknown): Uint8Array {
-  const e = envelopeSchema.parse(JSON.parse(encrypted));
+function open(key: Uint8Array, encrypted: string, context: unknown, version: 0 | 1 = 0): Uint8Array {
+  const e = (version === 1 ? objectEnvelopeSchema : envelopeSchema).parse(JSON.parse(encrypted));
   const nonce = unb64(e.n); if (nonce.length !== 24) throw new Error("INVALID_NONCE");
   return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(null, unb64(e.c), canonical(context), nonce, key);
 }
@@ -111,8 +113,8 @@ export class VaultCrypto {
     try { return sodium.to_hex(sodium.crypto_sign_detached(message, pair.privateKey)); } finally { sodium.memzero(pair.privateKey); }
   }
   pathKey(path: string): string { return sodium.to_hex(sodium.crypto_generichash(32, text.encode(canonicalPath(path)), this.paths)); }
-  location(fileId: string, path: string): Location {
-    const revision = randomId(); const pathKey = this.pathKey(path);
+  location(fileId: string, path: string, revision = randomId()): Location {
+    const pathKey = this.pathKey(path);
     const encryptedPath = seal(this.metadata, text.encode(path), { purpose: "path-v0", vaultId: this.vaultId, keyEpoch: 1, fileId, revision, pathKey });
     return { revision, pathKey, encryptedPath };
   }
@@ -122,9 +124,15 @@ export class VaultCrypto {
     if (this.pathKey(path) !== l.pathKey) throw new Error("PATH_KEY_MISMATCH"); return path;
   }
   object(bytes: Uint8Array): { id: string; bytes: Uint8Array } {
-    const id = randomId(); return { id, bytes: text.encode(seal(this.content, bytes, { purpose: "object-v0", vaultId: this.vaultId, keyEpoch: 1, blobId: id })) };
+    const ciphertext = text.encode(seal(this.content, bytes, { purpose: "object-v1", vaultId: this.vaultId, keyEpoch: 1 }, 1));
+    return { id: `c_${sodium.to_hex(sodium.crypto_hash_sha256(ciphertext))}`, bytes: ciphertext };
   }
   decryptObject(id: string, bytes: Uint8Array): Uint8Array {
+    objectIDSchema.parse(id);
+    if (isAddressedObject(id)) {
+      if (id.slice(2) !== sodium.to_hex(sodium.crypto_hash_sha256(bytes))) throw new Error("OBJECT_DIGEST_MISMATCH");
+      return open(this.content, new TextDecoder().decode(bytes), { purpose: "object-v1", vaultId: this.vaultId, keyEpoch: 1 }, 1);
+    }
     return open(this.content, new TextDecoder().decode(bytes), { purpose: "object-v0", vaultId: this.vaultId, keyEpoch: 1, blobId: id });
   }
   async payload(r: Omit<Revision, "payload">, bytes: Uint8Array, kind: Payload["kind"], objects: string[]): Promise<Payload> {

@@ -21,7 +21,7 @@ func reopenRecoveryStore(t *testing.T, s *Store) *Store {
 }
 
 func TestObjectRecoveryAcrossStoreReopen(t *testing.T) {
-	for _, point := range []string{"after-object-fsync", "after-object-publish", "after-object-finalize"} {
+	for _, point := range []string{"after-object-reserve", "after-object-fsync", "after-object-publish", "after-object-finalize"} {
 		t.Run(point, func(t *testing.T) {
 			s := contractStore(t)
 			ctx := context.Background()

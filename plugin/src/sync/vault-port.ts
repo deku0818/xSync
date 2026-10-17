@@ -123,7 +123,7 @@ export class ObsidianVaultPort implements FilePort {
       const file = this.app.vault.getFileByPath(path); if (!file) throw new Error("SOURCE_MISSING"); await this.app.fileManager.trashFile(file);
     });
   }
-  private stage(id: string): string { if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID"); return `${this.localRoot}/staging/${id}`; }
+  private stage(id: string): string { if (!/^(?:c_)?[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID"); return `${this.localRoot}/staging/${id}`; }
   async stageWrite(id: string, ciphertext: Uint8Array): Promise<void> {
     const adapter = this.app.vault.adapter;
     if (!await adapter.exists(`${this.localRoot}/staging`)) await adapter.mkdir(`${this.localRoot}/staging`);
@@ -131,5 +131,21 @@ export class ObsidianVaultPort implements FilePort {
     await adapter.writeBinary(path, ciphertext.slice().buffer); if (!bytesEqual(new Uint8Array(await adapter.readBinary(path)), ciphertext)) throw new Error("STAGE_WRITE_INCOMPLETE");
   }
   async stageRead(id: string): Promise<Uint8Array> { return new Uint8Array(await this.app.vault.adapter.readBinary(this.stage(id))); }
+  async stageList(): Promise<string[]> {
+    const root = `${this.localRoot}/staging`; const adapter = this.app.vault.adapter;
+    if (!await adapter.exists(root)) return [];
+    const listing = await adapter.list(root);
+    return listing.files.flatMap(path => {
+      const id = path.slice(root.length + 1);
+      return /^(?:c_)?[a-f0-9]{64}$/.test(id) && path === this.stage(id) ? [id] : [];
+    });
+  }
+  async stageRemove(id: string): Promise<void> {
+    const path = this.stage(id); const adapter = this.app.vault.adapter;
+    const stat = await adapter.stat(path);
+    if (!stat) return;
+    if (stat.type !== "file") throw new Error("EXPECTED_STAGE_FILE");
+    await adapter.remove(path);
+  }
   isFile(value: unknown): value is TFile { return value instanceof TFile; }
 }

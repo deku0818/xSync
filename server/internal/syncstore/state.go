@@ -3,6 +3,8 @@ package syncstore
 import "sort"
 
 type state struct {
+	compact   bool
+	accepted  map[string]string
 	files     map[string]*File
 	revisions map[string]Revision
 	locations map[string]Location
@@ -10,7 +12,7 @@ type state struct {
 }
 
 func newState() *state {
-	return &state{map[string]*File{}, map[string]Revision{}, map[string]Location{}, map[string]bool{}}
+	return &state{files: map[string]*File{}, revisions: map[string]Revision{}, locations: map[string]Location{}, objects: map[string]bool{}, accepted: map[string]string{}}
 }
 func (s *state) payload(p *Payload, kind string) error {
 	if p == nil || p.KeyEpoch != 1 || p.Manifest == "" || len(p.Manifest) > 2<<20 || p.Objects == nil || len(p.Objects) > 128 || (p.Kind != kind && p.Kind != "deleted") {
@@ -20,7 +22,7 @@ func (s *state) payload(p *Payload, kind string) error {
 		return code("INVALID_REQUEST")
 	}
 	for _, id := range p.Objects {
-		if !blobPattern.MatchString(id) {
+		if !objectPattern.MatchString(id) {
 			return code("INVALID_REQUEST")
 		}
 		if !s.objects[id] {
@@ -58,11 +60,13 @@ func (s *state) revision(f *File, a Action, parents []string, device, source str
 			continue
 		}
 		r, ok := s.revisions[p]
-		if !ok || r.FileID != f.ID {
+		if (!ok && (!s.compact || s.accepted[p] != f.ID)) || (ok && r.FileID != f.ID) {
 			return code("PARENT_MISSING")
 		}
 		ancestors[p] = true
-		todo = append(todo, r.Parents...)
+		if !s.compact {
+			todo = append(todo, r.Parents...)
+		}
 	}
 	s.revisions[a.RevisionID] = Revision{a.RevisionID, f.ID, parents, device, *a.Payload, source}
 	heads := []string{}

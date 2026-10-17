@@ -2,7 +2,7 @@ import type { Action, Change, FileState, Revision } from "../../../protocol/src/
 import { canonical } from "../../../protocol/src/model";
 
 /** Build a causal local view from complete groups, preserving every revision. */
-export function project(files: Map<string, FileState>, revisions: Map<string, Revision>, change: Change): string[] {
+export function project(files: Map<string, FileState>, revisions: Map<string, Revision>, change: Change, compact = false): string[] {
   const affected = new Set<string>();
   const add = (a: Exclude<Action, { type: "move" }>, parents: string[], selectedFrom?: string) => {
     const f = files.get(a.fileId); if (!f) throw new Error("LOG_FILE_MISSING");
@@ -11,7 +11,7 @@ export function project(files: Map<string, FileState>, revisions: Map<string, Re
     const prior = revisions.get(r.id); if (prior && canonical(prior) !== canonical(r)) throw new Error("REVISION_CHANGED");
     const ancestors = new Set<string>(); const todo = [...parents];
     while (todo.length) { const next = todo.pop()!; if (ancestors.has(next)) continue; const parent = revisions.get(next);
-      if (!parent || parent.fileId !== a.fileId) throw new Error("LOG_PARENT_MISSING"); ancestors.add(next); todo.push(...parent.parents); }
+      if ((!parent && !compact) || (parent && parent.fileId !== a.fileId)) throw new Error("LOG_PARENT_MISSING"); ancestors.add(next); if (!compact) todo.push(...parent!.parents); }
     revisions.set(r.id, r); f.heads = [...f.heads.filter(x => !ancestors.has(x)), r.id].sort(); affected.add(f.id);
   };
   const create = (a: Extract<Action, { type: "create" }>, source?: string) => {

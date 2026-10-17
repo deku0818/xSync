@@ -1,11 +1,13 @@
 import { z } from "zod";
+import { OBJECT_CAPABILITY, objectIDSchema } from "./objects";
+import { CONTINUITY_CAPABILITY } from "./continuity";
 
 // Experimental v0 HTTP boundary, intentionally capped for desktop test vaults.
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/);
 const opaque = z.string().regex(/^[a-f0-9]{64}$/);
 export const payloadSchema = z.strictObject({
   kind: z.enum(["file", "directory", "deleted"]), keyEpoch: z.literal(1),
-  encryptedManifest: z.string().min(1).max(2 * 1024 * 1024), objects: z.array(opaque).max(128),
+  encryptedManifest: z.string().min(1).max(2 * 1024 * 1024), objects: z.array(objectIDSchema).max(128),
 });
 export const locationSchema = z.strictObject({ revision: id, pathKey: opaque, encryptedPath: z.string().min(1).max(16384) });
 export const revisionSchema = z.strictObject({ id, fileId: id, parents: z.array(id).max(1000), deviceId: id, payload: payloadSchema, selectedFrom: id.optional() });
@@ -24,10 +26,16 @@ const resolveSchema = z.strictObject({ type: z.literal("resolve"), fileId: id, e
 export const actionSchema = z.discriminatedUnion("type", [createSchema, editSchema, moveSchema, resolveSchema, branchSchema]);
 export const commitSchema = z.strictObject({ protocol: z.literal(0), vaultId: id, epoch: id, requiredFeatures: z.array(z.string().max(128)).max(32), deviceId: id, opId: id, actions: z.array(actionSchema).min(1).max(1000) });
 export const changeSchema = z.strictObject({ seq: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), deviceId: id, opId: id, actions: z.array(actionSchema).min(1).max(1000) });
-export const snapshotSchema = z.strictObject({ epoch: id, boundary: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), files: z.array(fileSchema).max(10000), revisions: z.array(revisionSchema).max(100000) });
+export const baseProofSchema = z.strictObject({ vaultId: id, epoch: id, fileId: id, revisionId: id, digest: opaque, boundary: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), token: opaque });
+export const snapshotSchema = z.strictObject({ epoch: id, boundary: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), files: z.array(fileSchema).max(10000), revisions: z.array(revisionSchema).max(100000), checkpoint: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), bases: z.array(baseProofSchema).max(100000).optional() });
 export const handshakeSchema = z.strictObject({ protocol: z.literal(0), vaultId: id, epoch: id, seq: z.number().int().nonnegative(), features: z.array(z.string()),
   keyPackage: z.unknown(), devices: z.array(z.strictObject({ id, name: z.string().min(1).max(128) })), maxObjectBytes: z.number().int().positive(),
+  metadataCheckpoint: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  continuity: z.literal(true),
 });
 export const receiptSchema = z.strictObject({ epoch: id, seq: z.number().int().positive(), opId: id });
 
-export const SYNC_FEATURES = ["causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1"] as const;
+export const CONTENT_CAPABILITY = "content-leases-v1";
+export const METADATA_CAPABILITY = "metadata-anchors-v1";
+export const COMPACT_CAPABILITY = "compact-heads-v1";
+export const SYNC_FEATURES = ["causal-heads", "atomic-groups", "review-cas", "shared-config-v1", "chunked-files-v1", "client-profiles-v1", "independent-branches-v1", CONTENT_CAPABILITY, METADATA_CAPABILITY, COMPACT_CAPABILITY, OBJECT_CAPABILITY, CONTINUITY_CAPABILITY] as const;

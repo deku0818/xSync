@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +51,7 @@ func contractStore(t *testing.T, configure ...func(*Config)) *Store {
 	c.DSN += "&search_path=" + schemaName
 	c.ObjectDir = t.TempDir()
 	c.VaultID = "contract-vault"
+	c.MetadataMode = "full" // Original complete-graph contracts remain a distinct migration oracle.
 	c.Epoch = "epoch-1"
 	c.KeyPackage = json.RawMessage(`{"fixture":true}`)
 	c.Devices = []Device{{"computer-a", "电脑 A", strings.Repeat("a", 64)}, {"computer-b", "电脑 B", strings.Repeat("b", 64)}}
@@ -278,7 +278,11 @@ func TestDurableImmutableObjectBoundaries(t *testing.T) {
 	a := createAction("F", "A", "a")
 	a.Payload.Objects = []string{id}
 	submit(t, s, req("create", a))
-	path := filepath.Join(s.Config.ObjectDir, s.Config.VaultID, id)
+	var generation int64
+	if e = s.Pool.QueryRow(ctx, "SELECT generation FROM objects WHERE vault_id=$1 AND id=$2", s.Config.VaultID, id).Scan(&generation); e != nil {
+		t.Fatal(e)
+	}
+	path, _ := s.generationPath(id, generation)
 	if e = os.WriteFile(path, []byte("corrupt"), 0600); e != nil {
 		t.Fatal(e)
 	}
@@ -293,6 +297,15 @@ func TestHTTPAuthenticationAndStrictJSON(t *testing.T) {
 		r, _ := http.NewRequest("POST", server.URL+"/commits", strings.NewReader(body))
 		if token != "" {
 			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set("X-Sync-Content", ContentCapability)
+			r.Header.Set("X-Sync-Objects", ObjectCapability)
+			r.Header.Set("X-Sync-Continuity", ContinuityCapability)
+			continuityToken, err := s.Continuity(context.Background(), "computer-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Header.Set("X-Sync-Continuity-From", continuityToken)
+			r.Header.Set("X-Sync-Continuity-Next", opaqueID())
 		}
 		resp, e := http.DefaultClient.Do(r)
 		if e != nil {

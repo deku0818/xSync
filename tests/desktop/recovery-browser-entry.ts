@@ -16,6 +16,8 @@ const port: FilePort = {
   remove: async (path, expected) => { await file("remove", [path, [...expected]]); },
   stageWrite: async (id, bytes) => { await file("stageWrite", [id, [...bytes]]); },
   stageRead: async id => new Uint8Array(await file("stageRead", [id]) as number[]),
+  stageList: async () => await file("stageList", []) as string[],
+  stageRemove: async id => { await file("stageRemove", [id]); },
 };
 let engine: SyncEngine, db: SyncDB;
 const actualNow = Date.now.bind(Date);
@@ -32,10 +34,14 @@ const api = {
     engine = new SyncEngine(db, remote, port, cfg.deviceId, cfg.vaultId); await engine.unlock(cfg.passphrase);
   },
   async sync() { return engine.sync(); },
+  async legacyCheckpoint() {
+    await db.continuity.clear(); await db.baseProofs.clear(); await db.writerState.clear(); await db.metadataMigration.clear();
+    const progress = (await db.progress.get("progress"))!; delete progress.checkpoint; await db.progress.put(progress);
+  },
   arm(point: string) { engine.fault = current => { if (current === point) { debugger; throw new Error("TEST_PROCESS_SHOULD_HAVE_BEEN_KILLED"); } }; },
   async summary(path: string) {
     const bytes = await port.read(path);
-    return { status: await engine.status(), progress: await db.progress.get("progress"), outbox: await db.outbox.count(), tasks: await db.applyTasks.count(), local: await db.localFiles.toArray(), hash: bytes === null ? null : await fingerprint(bytes) };
+    return { status: await engine.status(), progress: await db.progress.get("progress"), inbox: await db.inbox.count(), requestAcks: await db.requestAcks.count(), outbox: await db.outbox.count(), tasks: await db.applyTasks.count(), local: await db.localFiles.toArray(), hash: bytes === null ? null : await fingerprint(bytes) };
   },
 };
 (globalThis as typeof globalThis & { recovery: typeof api }).recovery = api;

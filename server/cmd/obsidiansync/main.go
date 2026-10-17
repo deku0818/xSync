@@ -19,6 +19,9 @@ import (
 )
 
 func main() {
+	cleanupOnce := flag.Bool("cleanup-once", false, "run one local maintenance pass; no HTTP listener")
+	cleanupDryRun := flag.Bool("cleanup-dry-run", false, "only report ciphertext candidates with --cleanup-once")
+	testFault := flag.String("test-maintenance-fault", "", "SIGKILL at an isolated test maintenance boundary")
 	file := flag.String("config", "", "server config JSON path")
 	enrollFor := flag.Duration("enroll-for", 0, "open device enrollment for up to 1h; 0 closes it; local admin command")
 	revoke := flag.String("revoke-device", "", "revoke a device ID; local admin command")
@@ -35,6 +38,12 @@ func main() {
 			enrollmentCommand = true
 		}
 	})
+	if *cleanupDryRun && !*cleanupOnce {
+		log.Fatal("--cleanup-dry-run requires --cleanup-once")
+	}
+	if *testFault != "" && (!*cleanupOnce || *testSchema == "" || !*resumeTestSchema) {
+		log.Fatal("maintenance faults require a resumed isolated test namespace")
+	}
 	if enrollmentCommand && (*enrollFor < 0 || *enrollFor > time.Hour) {
 		log.Fatal("--enroll-for must be between 0 and 1h")
 	}
@@ -62,6 +71,9 @@ func main() {
 		log.Fatal("--tls-cert and --tls-key must be supplied together")
 	}
 	commands := 0
+	if *cleanupOnce {
+		commands++
+	}
 	if enrollmentCommand {
 		commands++
 	}
@@ -154,6 +166,70 @@ func main() {
 		log.Print("device revoked")
 		return
 	}
+	if *cleanupOnce {
+		if e = s.AuditHeads(ctx); e != nil {
+			log.Fatal("content maintenance refused: current object audit failed")
+		}
+		if *testFault != "" {
+			s.Fault = func(point string) error {
+				if point == *testFault {
+					_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+				}
+				return nil
+			}
+		}
+		policy := syncstore.DefaultCleanupPolicy()
+		policy.DryRun = *cleanupDryRun || c.CleanupMode == "dry-run"
+		report, err := s.Collect(ctx, policy)
+		if err != nil {
+			if err.Error() == "SNAPSHOT_TOO_LARGE" {
+				log.Fatal("content maintenance refused: SNAPSHOT_TOO_LARGE; original log retained")
+			}
+			log.Fatal("content maintenance incomplete")
+		}
+		if e = json.NewEncoder(os.Stdout).Encode(report); e != nil {
+			log.Fatal("maintenance output failed")
+		}
+		return
+	}
+	// Administrative invocations above never start maintenance. Shutdown waits for the worker before closing PG.
+	maintenanceDone := make(chan struct{})
+	go func() {
+		defer close(maintenanceDone)
+		if c.CleanupMode == "off" {
+			return
+		}
+		if err := s.AuditHeads(ctx); err != nil {
+			log.Print("content maintenance disabled: current object audit failed")
+			return
+		}
+		policy := syncstore.DefaultCleanupPolicy()
+		policy.DryRun = c.CleanupMode == "dry-run"
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			if report, err := s.Collect(ctx, policy); err != nil {
+				if ctx.Err() == nil {
+					if err.Error() == "SNAPSHOT_TOO_LARGE" {
+						log.Print("content maintenance refused: SNAPSHOT_TOO_LARGE; original log retained")
+					} else {
+						log.Print("content maintenance incomplete; will retry")
+					}
+				}
+			} else if report.Deleted+report.Orphans > 0 || report.Changes+report.Snapshots+report.Revisions+report.Locations > 0 || policy.DryRun {
+				log.Printf("sync maintenance: candidates=%d deleted=%d logs=%d snapshots=%d revisions=%d locations=%d orphans=%d dryRun=%t", report.Candidates, report.Deleted, report.Changes, report.Snapshots, report.Revisions, report.Locations, report.Orphans, policy.DryRun)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	defer func() { stop(); <-maintenanceDone }()
 	srv := &http.Server{Addr: c.Listen, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {
 		<-ctx.Done()

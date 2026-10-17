@@ -2,8 +2,7 @@ package syncstore
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -54,7 +53,17 @@ func checkJSON(d *json.Decoder, depth int) error {
 	return e
 }
 func decodeBody(w http.ResponseWriter, r *http.Request, out any) error {
-	body, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+	limit := int64(4 << 20)
+	if _, tracked := out.(*TrackedCommit); tracked {
+		limit = 8 << 20
+	}
+	if _, migration := out.(*LegacyMigration); migration {
+		limit = 32 << 20
+	}
+	if _, migration := out.(*LegacyObjectMigration); migration {
+		limit = 32 << 20
+	}
+	body, e := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if e != nil {
 		return code("INVALID_REQUEST")
 	}
@@ -74,6 +83,19 @@ func decodeBody(w http.ResponseWriter, r *http.Request, out any) error {
 		}
 		for _, key := range []string{"protocol", "vaultId", "epoch", "requiredFeatures", "deviceId", "opId", "actions"} {
 			if _, ok := fields[key]; !ok {
+				return code("INVALID_REQUEST")
+			}
+		}
+	}
+	if _, tracked := out.(*TrackedCommit); tracked {
+		var outer struct {
+			Request map[string]json.RawMessage `json:"request"`
+		}
+		if json.Unmarshal(body, &outer) != nil {
+			return code("INVALID_REQUEST")
+		}
+		for _, key := range []string{"protocol", "vaultId", "epoch", "requiredFeatures", "deviceId", "opId", "actions"} {
+			if _, exists := outer.Request[key]; !exists {
 				return code("INVALID_REQUEST")
 			}
 		}
@@ -104,6 +126,14 @@ func writeError(w http.ResponseWriter, e error) {
 		status = 409
 	case "INVALID_REQUEST", "UNSUPPORTED_PROTOCOL", "WRONG_VAULT", "DIGEST_MISMATCH", "DEVICE_NAME_INVALID":
 		status = 400
+	case "CLIENT_UPGRADE_REQUIRED":
+		status = 426
+	case "CONTINUITY_MISMATCH", "RECOVERY_RECONCILIATION_REQUIRED":
+		status = 409
+	case "CONTENT_BUSY":
+		status = 429
+	case "VIEW_EXPIRED", "OBJECT_BUSY", "SNAPSHOT_TOO_LARGE", "BASE_NOT_ACCEPTED", "BASE_PROOF_INVALID", "BASE_PROOF_REQUIRED", "REQUEST_STREAM_INVALID", "OPERATION_RETIRED", "REQUEST_ACK_REQUIRED", "REQUEST_ACK_INVALID", "CAUSAL_SHADOW_MISMATCH", "RESULT_TOO_LARGE", "LEGACY_INTENT_UNREGISTERED", "LEGACY_MIGRATION_CHANGED", "METADATA_DOWNGRADE_REFUSED", "METADATA_MODE_CHANGED", "LEGACY_OBJECT_UNREGISTERED", "LEGACY_OBJECT_MIGRATION_CHANGED":
+		status = 409
 	case "OBJECT_MISSING", "FILE_MISSING":
 		status = 404
 	case "DEVICE_NAME_TAKEN", "PROFILE_STALE", "OP_ID_REUSED", "FILE_EXISTS", "REVISION_EXISTS", "PARENT_MISSING", "LOCATION_STALE", "PATH_OCCUPIED", "REVIEW_STALE", "EPOCH_CHANGED", "NEED_SNAPSHOT", "OBJECT_IMMUTABLE", "OBJECT_CORRUPT":
@@ -159,6 +189,113 @@ func (s *Store) Handler() http.Handler {
 		}
 		writeJSON(w, 200, v)
 	})
+	mux.HandleFunc("GET /metadata/continuity", func(w http.ResponseWriter, r *http.Request) {
+		device, e := s.Authorize(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		token, e := s.Continuity(r.Context(), device)
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, map[string]string{"token": token})
+	})
+	mux.HandleFunc("GET /metadata/migrations", func(w http.ResponseWriter, r *http.Request) {
+		device, e := s.Authorize(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		state, e := s.MigrationState(r.Context(), device)
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, state)
+	})
+	mux.HandleFunc("POST /metadata/continuity/fence", func(w http.ResponseWriter, r *http.Request) {
+		device, e := s.Authorize(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		token, e := s.FenceContinuity(r.Context(), device)
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, map[string]string{"token": token})
+	})
+	mux.HandleFunc("POST /metadata/stream", func(w http.ResponseWriter, r *http.Request) {
+		device, _ := s.Authorize(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		stream, e := s.OpenRequestStream(r.Context(), device)
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, stream)
+	})
+	mux.HandleFunc("POST /metadata/base", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Revision Revision `json:"revision"`
+		}
+		if e := decodeBody(w, r, &input); e != nil {
+			writeError(w, e)
+			return
+		}
+		anchor, e := s.CertifyBase(r.Context(), input.Revision)
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, anchor)
+	})
+	mux.HandleFunc("POST /metadata/migrate", func(w http.ResponseWriter, r *http.Request) {
+		var input LegacyMigration
+		if e := decodeBody(w, r, &input); e != nil {
+			writeError(w, e)
+			return
+		}
+		device, _ := s.Authorize(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if e := s.RegisterLegacy(r.Context(), device, input); e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"registered": true})
+	})
+	mux.HandleFunc("POST /metadata/commits", func(w http.ResponseWriter, r *http.Request) {
+		var input TrackedCommit
+		if e := decodeBody(w, r, &input); e != nil {
+			writeError(w, e)
+			return
+		}
+		device, _ := s.Authorize(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if input.Request.DeviceID != device {
+			writeError(w, code("UNAUTHORIZED"))
+			return
+		}
+		result, e := s.CommitTracked(r.Context(), input.Request, input.Tracking)
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, result)
+	})
+	mux.HandleFunc("POST /metadata/ack", func(w http.ResponseWriter, r *http.Request) {
+		var ack RequestAck
+		if e := decodeBody(w, r, &ack); e != nil {
+			writeError(w, e)
+			return
+		}
+		device, _ := s.Authorize(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if e := s.AcknowledgeRequest(r.Context(), device, ack); e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"acknowledged": true})
+	})
 	mux.HandleFunc("POST /commits", func(w http.ResponseWriter, r *http.Request) {
 		var c Commit
 		if e := decodeBody(w, r, &c); e != nil {
@@ -190,46 +327,89 @@ func (s *Store) Handler() http.Handler {
 		}
 		writeJSON(w, 200, cs)
 	})
-	mux.HandleFunc("POST /snapshots", func(w http.ResponseWriter, r *http.Request) {
-		snap, e := s.Snapshot(r.Context())
-		if e != nil {
+	deviceOf := func(r *http.Request) string {
+		device, _ := s.Authorize(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		return device
+	}
+	mux.HandleFunc("POST /content/migrate", func(w http.ResponseWriter, r *http.Request) {
+		var input LegacyObjectMigration
+		if e := decodeBody(w, r, &input); e != nil {
 			writeError(w, e)
 			return
 		}
-		random := make([]byte, 16)
-		if _, e = rand.Read(random); e != nil {
+		if e := s.RegisterLegacyObjects(r.Context(), deviceOf(r), input); e != nil {
 			writeError(w, e)
 			return
 		}
-		id := hex.EncodeToString(random)
-		b, e := json.Marshal(snap)
-		if e == nil {
-			_, e = s.Pool.Exec(r.Context(), "INSERT INTO snapshots(vault_id,id,value) VALUES($1,$2,$3)", s.Config.VaultID, id, b)
+		writeJSON(w, 200, map[string]bool{"registered": true})
+	})
+	mux.HandleFunc("POST /content/upload", func(w http.ResponseWriter, r *http.Request) {
+		var c Commit
+		if e := decodeBody(w, r, &c); e != nil {
+			writeError(w, e)
+			return
 		}
+		id, e := s.UploadLease(r.Context(), deviceOf(r), c)
 		if e != nil {
 			writeError(w, e)
 			return
 		}
 		writeJSON(w, 200, map[string]string{"id": id})
 	})
-	mux.HandleFunc("GET /snapshots/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		if !validID(id) {
-			writeError(w, code("INVALID_REQUEST"))
+	mux.HandleFunc("POST /content/read", func(w http.ResponseWriter, r *http.Request) {
+		var v ReadView
+		if e := decodeBody(w, r, &v); e != nil {
+			writeError(w, e)
 			return
 		}
-		var b []byte
-		e := s.Pool.QueryRow(r.Context(), "SELECT value FROM snapshots WHERE vault_id=$1 AND id=$2", s.Config.VaultID, id).Scan(&b)
+		id, e := s.ReadLease(r.Context(), deviceOf(r), v)
 		if e != nil {
-			writeError(w, code("OBJECT_MISSING"))
+			writeError(w, e)
 			return
 		}
-		writeJSON(w, 200, json.RawMessage(b))
+		writeJSON(w, 200, map[string]string{"id": id})
+	})
+	mux.HandleFunc("POST /content/leases/{id}/renew", func(w http.ResponseWriter, r *http.Request) {
+		if e := s.RenewLease(r.Context(), deviceOf(r), r.PathValue("id")); e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"renewed": true})
+	})
+	mux.HandleFunc("DELETE /content/leases/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if e := s.ReleaseLease(r.Context(), deviceOf(r), r.PathValue("id")); e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"released": true})
+	})
+	mux.HandleFunc("POST /snapshots", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			RequestID string `json:"requestId"`
+		}
+		if e := decodeBody(w, r, &input); e != nil {
+			writeError(w, e)
+			return
+		}
+		ticket, e := s.CreateSnapshot(r.Context(), deviceOf(r), input.RequestID)
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, ticket)
+	})
+	mux.HandleFunc("GET /snapshots/{id}", func(w http.ResponseWriter, r *http.Request) {
+		b, e := s.ReadSnapshot(r.Context(), deviceOf(r), r.PathValue("id"))
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, b)
 	})
 	mux.HandleFunc("PUT /objects/{id}", func(w http.ResponseWriter, r *http.Request) {
 		b, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<20))
 		if e == nil {
-			e = s.PutObject(r.Context(), r.PathValue("id"), r.Header.Get("X-Ciphertext-SHA256"), b)
+			e = s.putObject(r.Context(), deviceOf(r), r.Header.Get("X-Content-Lease"), r.PathValue("id"), r.Header.Get("X-Ciphertext-SHA256"), b)
 		}
 		if e != nil {
 			writeError(w, e)
@@ -238,7 +418,7 @@ func (s *Store) Handler() http.Handler {
 		writeJSON(w, 200, map[string]bool{"finalized": true})
 	})
 	mux.HandleFunc("GET /objects/{id}", func(w http.ResponseWriter, r *http.Request) {
-		b, hash, e := s.GetObject(r.Context(), r.PathValue("id"))
+		b, hash, e := s.getObject(r.Context(), deviceOf(r), r.Header.Get("X-Content-Lease"), r.PathValue("id"))
 		if e != nil {
 			writeError(w, e)
 			return
@@ -261,9 +441,43 @@ func (s *Store) Handler() http.Handler {
 			writeError(w, code("UNAUTHORIZED"))
 			return
 		}
-		if _, e := s.Authorize(r.Context(), token); e != nil {
+		device, e := s.Authorize(r.Context(), token)
+		if e != nil {
 			writeError(w, e)
 			return
+		}
+		if (r.URL.Path == "/handshake" || r.URL.Path == "/changes" || r.URL.Path == "/commits" || strings.HasPrefix(r.URL.Path, "/objects/") || strings.HasPrefix(r.URL.Path, "/snapshots") || strings.HasPrefix(r.URL.Path, "/content/") || strings.HasPrefix(r.URL.Path, "/metadata/")) && r.Header.Get("X-Sync-Content") != ContentCapability {
+			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/metadata/") && r.Header.Get("X-Sync-Metadata") != MetadataCapability {
+			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
+			return
+		}
+		if s.compact && r.Header.Get("X-Sync-Compaction") != CompactCapability {
+			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
+			return
+		}
+		if (r.URL.Path == "/handshake" || r.URL.Path == "/changes" || r.URL.Path == "/commits" || strings.HasPrefix(r.URL.Path, "/objects/") || strings.HasPrefix(r.URL.Path, "/snapshots") || strings.HasPrefix(r.URL.Path, "/content/") || strings.HasPrefix(r.URL.Path, "/metadata/")) && r.Header.Get("X-Sync-Objects") != ObjectCapability {
+			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
+			return
+		}
+		if (r.URL.Path == "/handshake" || strings.HasPrefix(r.URL.Path, "/metadata/") || r.URL.Path == "/changes" || r.URL.Path == "/snapshots" || r.URL.Path == "/commits") && r.Header.Get("X-Sync-Continuity") != ContinuityCapability {
+			writeError(w, code("CLIENT_UPGRADE_REQUIRED"))
+			return
+		}
+		protected := r.URL.Path == "/changes" || r.URL.Path == "/metadata/base" || r.URL.Path == "/metadata/commits" || r.URL.Path == "/commits" || r.URL.Path == "/metadata/continuity/fence" || (r.URL.Path == "/snapshots" && r.Method == "POST")
+		if protected {
+			readOnly := r.Header.Get("X-Sync-Read-Only") == "1" && (r.URL.Path == "/changes" || r.URL.Path == "/metadata/base" || r.URL.Path == "/snapshots")
+			if !readOnly {
+				change := &continuityChange{Device: device, From: r.Header.Get("X-Sync-Continuity-From"), Next: r.Header.Get("X-Sync-Continuity-Next")}
+				if !blobPattern.MatchString(change.From) || !blobPattern.MatchString(change.Next) || change.From == change.Next {
+					writeError(w, code("INVALID_REQUEST"))
+					return
+				}
+				r = r.WithContext(context.WithValue(r.Context(), continuityKey{}, change))
+				w.Header().Set("X-Sync-Continuity-Token", change.Next)
+			}
 		}
 		mux.ServeHTTP(w, r)
 	})

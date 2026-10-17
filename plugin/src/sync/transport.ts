@@ -1,14 +1,19 @@
 import { timerHost, type TimerHandle } from "../runtime/timers";
 import { z } from "zod";
-import { commitSchema, changeSchema, handshakeSchema, receiptSchema, snapshotSchema } from "../../../protocol/src/wire";
+import { CONTINUITY_CAPABILITY, continuitySchema, migrationStateSchema } from "../../../protocol/src/continuity";
+import { OBJECT_CAPABILITY, objectIDSchema, isAddressedObject } from "../../../protocol/src/objects";
+import { commitSchema, changeSchema, handshakeSchema, receiptSchema, snapshotSchema, CONTENT_CAPABILITY, METADATA_CAPABILITY, COMPACT_CAPABILITY } from "../../../protocol/src/wire";
+import { baseAnchorSchema, requestStreamSchema, trackedResultSchema, type BaseProof, type RequestCoordinate, type RequestAck } from "../../../protocol/src/metadata";
+import type { Revision } from "../../../protocol/src/types";
 import type { Commit } from "../../../protocol/src/types";
 import { devicesSchema, deviceProfileSchema } from "../../../protocol/src/client-profile";
-import { fingerprint } from "./crypto";
+import { fingerprint, randomId } from "./crypto";
 import { onboardingSchema, challengeSchema, enrollmentSchema, type Enrollment } from "../../../protocol/src/enrollment";
 
 export interface HTTPRequest { url: string; method: string; headers: Record<string, string>; body?: Uint8Array }
 export interface HTTPResponse { status: number; headers: Record<string, string>; bytes: Uint8Array }
 export type HTTP = (request: HTTPRequest) => Promise<HTTPResponse>;
+export type ContinuityGuard = (send: (headers: Record<string, string>) => Promise<HTTPResponse>) => Promise<HTTPResponse>;
 export async function boundedRequest<T>(request: PromiseLike<T>, milliseconds = 15000): Promise<T> {
   let timer: TimerHandle | undefined;
   try {
@@ -29,12 +34,19 @@ export function normalizeEndpoint(endpoint: string, developmentEndpoint?: string
   return url.origin;
 }
 export class Transport {
+  private continuityGuard?: ContinuityGuard;
+  setContinuityGuard(guard: ContinuityGuard): void { this.continuityGuard = guard; }
+  private activeSnapshot?: { id: string; leaseId: string };
+  private snapshotRequest?: string;
+  private leaseRenewed = new Map<string, number>();
   constructor(private endpoint: string, private token: string, private http: HTTP, developmentEndpoint?: string) {
     this.endpoint = normalizeEndpoint(endpoint, developmentEndpoint);
   }
   setToken(token: string): void { this.token = token; }
   private async request(path: string, method = "GET", body?: Uint8Array, extra: Record<string, string> = {}, publicRequest = false): Promise<HTTPResponse> {
-    const r = await this.http({ url: `${this.endpoint}${path}`, method, body, headers: { ...(!publicRequest && this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...extra } });
+    const guarded = path.startsWith("/changes?") || path === "/metadata/base" || path === "/metadata/commits" || path === "/commits" || (path === "/snapshots" && method === "POST");
+    const send = (protection: Record<string, string>) => this.http({ url: `${this.endpoint}${path}`, method, body, headers: { "X-Sync-Content": CONTENT_CAPABILITY, "X-Sync-Metadata": METADATA_CAPABILITY, "X-Sync-Compaction": COMPACT_CAPABILITY, "X-Sync-Objects": OBJECT_CAPABILITY, "X-Sync-Continuity": CONTINUITY_CAPABILITY, ...(!publicRequest && this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...extra, ...protection } });
+    const r = guarded && this.continuityGuard ? await this.continuityGuard(send) : await send(guarded ? { "X-Sync-Read-Only": "1" } : {});
     if (r.status < 200 || r.status >= 300) { let code = `HTTP_${r.status}`; try { code = z.strictObject({ code: z.string().max(128) }).parse(JSON.parse(new TextDecoder().decode(r.bytes))).code; } catch { /* preserve HTTP status */ } throw new RemoteError(code, r.status); }
     return r;
   }
@@ -49,24 +61,72 @@ export class Transport {
   async enroll(input: Enrollment): Promise<void> { z.strictObject({ enrolled: z.literal(true) }).parse(await this.json("/enroll", "POST", enrollmentSchema.parse(input), true)); }
   async putProfile(input: { name: string; expectedRevision: number; ciphertext: string }) { return deviceProfileSchema.parse(await this.json("/device/profile", "PUT", input)); }
   async handshake() { return handshakeSchema.parse(await this.json("/handshake")); }
+  async requestStream() { return requestStreamSchema.parse(await this.json("/metadata/stream", "POST", {})); }
+  async continuityToken() { return continuitySchema.parse(await this.json("/metadata/continuity")).token; }
+  async fenceContinuity(from: string, next: string) {
+    const response = await this.request("/metadata/continuity/fence", "POST", undefined, { "X-Sync-Continuity-From": from, "X-Sync-Continuity-Next": next });
+    return continuitySchema.parse(JSON.parse(new TextDecoder().decode(response.bytes))).token;
+  }
+  async migrationState() { return migrationStateSchema.parse(await this.json("/metadata/migrations")); }
+  async registerLegacy(requests: Commit[]): Promise<void> { z.strictObject({ registered: z.literal(true) }).parse(await this.json("/metadata/migrate", "POST", { requests })); }
+  async registerLegacyObjects(requests: Commit[]): Promise<void> { z.strictObject({ registered: z.literal(true) }).parse(await this.json("/content/migrate", "POST", { requests })); }
+  async certifyBase(revision: Revision) { return baseAnchorSchema.parse(await this.json("/metadata/base", "POST", { revision })); }
+  async commitTracked(request: Commit, coordinate: RequestCoordinate, bases: BaseProof[]) {
+    return trackedResultSchema.parse(await this.json("/metadata/commits", "POST", { request: commitSchema.parse(request), tracking: { ...coordinate, bases } }));
+  }
+  async acknowledgeRequest(ack: RequestAck): Promise<void> {
+    z.strictObject({ acknowledged: z.literal(true) }).parse(await this.json("/metadata/ack", "POST", ack));
+  }
   eventURL(): string { const url = new URL(`${this.endpoint}/events`); url.protocol = url.protocol === "https:" ? "wss:" : "ws:"; return url.toString(); }
   async eventTicket(): Promise<string> {
     return z.strictObject({ ticket: z.string().regex(/^[a-f0-9]{48}$/) }).parse(await this.json("/events/tickets", "POST", {})).ticket;
   }
   async snapshot() {
-    const { id } = z.strictObject({ id: z.string().regex(/^[a-f0-9]{32}$/) }).parse(await this.json("/snapshots", "POST", {}));
-    return snapshotSchema.parse(await this.json(`/snapshots/${id}`));
+    await this.releaseSnapshots();
+    this.snapshotRequest ??= randomId();
+    const ticket = z.strictObject({ id: z.string().regex(/^[a-f0-9]{32}$/), leaseId: z.string().regex(/^[a-f0-9]{64}$/) })
+      .parse(await this.json("/snapshots", "POST", { requestId: this.snapshotRequest }));
+    this.activeSnapshot = ticket; this.snapshotRequest = undefined;
+    this.leaseRenewed.set(ticket.leaseId, Date.now());
+    return snapshotSchema.parse(await this.json(`/snapshots/${ticket.id}`));
+  }
+  async releaseSnapshots(): Promise<void> {
+    const ticket = this.activeSnapshot; this.activeSnapshot = undefined;
+    if (ticket) await this.releaseContent(ticket.leaseId);
+  }
+  private contentID(value: unknown): string { return z.strictObject({ id: z.string().regex(/^[a-f0-9]{64}$/) }).parse(value).id; }
+  async uploadLease(request: Commit): Promise<string> {
+    const id = this.contentID(await this.json("/content/upload", "POST", commitSchema.parse(request)));
+    this.leaseRenewed.set(id, Date.now()); return id;
+  }
+  async readLease(revisionId: string): Promise<string> {
+    if (this.activeSnapshot) await this.renewContent(this.activeSnapshot.leaseId);
+    const id = this.contentID(await this.json("/content/read", "POST", { revisionId, requestId: randomId(), ...(this.activeSnapshot ? { snapshotId: this.activeSnapshot.id } : {}) }));
+    this.leaseRenewed.set(id, Date.now()); return id;
+  }
+  async renewContent(id: string): Promise<void> {
+    if (Date.now() - (this.leaseRenewed.get(id) ?? 0) < 60000) return;
+    z.strictObject({ renewed: z.literal(true) }).parse(await this.json(`/content/leases/${id}/renew`, "POST", {}));
+    this.leaseRenewed.set(id, Date.now());
+  }
+  async releaseContent(id: string): Promise<void> {
+    this.leaseRenewed.delete(id);
+    try { await boundedRequest(this.json(`/content/leases/${id}`, "DELETE"), 3000); } catch { /* Expiry is the durable fallback after disconnect or revocation. */ }
   }
   async changes(epoch: string, after: number) { return z.array(changeSchema).max(100).parse(await this.json(`/changes?epoch=${encodeURIComponent(epoch)}&after=${after}`)); }
   async commit(request: Commit) { return receiptSchema.parse(await this.json("/commits", "POST", commitSchema.parse(request))); }
-  async upload(id: string, bytes: Uint8Array): Promise<void> {
-    z.string().regex(/^[a-f0-9]{64}$/).parse(id);
-    const r = await this.request(`/objects/${id}`, "PUT", bytes, { "Content-Type": "application/octet-stream", "X-Ciphertext-SHA256": await fingerprint(bytes) });
+  async upload(id: string, bytes: Uint8Array, lease: string): Promise<void> {
+    objectIDSchema.parse(id);
+    await this.renewContent(lease);
+    const r = await this.request(`/objects/${id}`, "PUT", bytes, { "X-Content-Lease": lease, "Content-Type": "application/octet-stream", "X-Ciphertext-SHA256": await fingerprint(bytes) });
     if (!z.strictObject({ finalized: z.literal(true) }).parse(JSON.parse(new TextDecoder().decode(r.bytes))).finalized) throw new Error("OBJECT_NOT_FINALIZED");
   }
-  async object(id: string): Promise<Uint8Array> {
-    z.string().regex(/^[a-f0-9]{64}$/).parse(id); const r = await this.request(`/objects/${id}`);
-    if (r.bytes.length > 16 * 1024 * 1024 || await fingerprint(r.bytes) !== r.headers["x-ciphertext-sha256"]) throw new Error("OBJECT_DIGEST_MISMATCH");
+  async object(id: string, lease: string): Promise<Uint8Array> {
+    objectIDSchema.parse(id); await this.renewContent(lease);
+    const r = await this.request(`/objects/${id}`, "GET", undefined, { "X-Content-Lease": lease });
+    if (r.bytes.length > 16 * 1024 * 1024) throw new Error("OBJECT_DIGEST_MISMATCH");
+    const digest = await fingerprint(r.bytes);
+    if (digest !== r.headers["x-ciphertext-sha256"] || (isAddressedObject(id) && id.slice(2) !== digest)) throw new Error("OBJECT_DIGEST_MISMATCH");
     return r.bytes;
   }
 }

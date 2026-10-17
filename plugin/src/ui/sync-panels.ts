@@ -5,6 +5,7 @@ import { canonicalPath } from "../sync/crypto";
 import { mountTemplate, icon, updateIcon } from "./dom";
 import { overviewTemplate, reviewTemplate } from "./templates";
 import { compareLines } from "./diff-lines";
+import { syncActivityLabel, syncDisplayState } from "./sync-status";
 
 export class SyncOverview extends Modal {
   private unsubscribe?: () => void;
@@ -27,11 +28,15 @@ export class SyncOverview extends Modal {
         q("pause").setText(this.plugin.autoSync ? "暂停同步" : "恢复同步");
         const ready = !!this.plugin.engine?.unlocked;
         const disconnected = this.plugin.eventState === "retrying" || this.plugin.eventState === "connecting";
-        const needs = (status?.conflicts ?? 0) > 0 || status?.state === "needs-attention";
-        q("status-title").setText(!ready ? "请先配置同步" : !this.plugin.autoSync ? "同步已暂停" : needs ? `${status?.conflicts ? `${status.conflicts} 个文件` : "有文件"}需要处理` : status?.state === "pending" || this.plugin.localPending ? "正在同步文件" : this.plugin.hostError ? "客户端配置快照待更新" : "所选范围已同步");
-        q("status-description").setText(!ready ? "保存服务器地址、客户端名称与同步密钥后自动开始。" : !this.plugin.autoSync ? "配置与密钥已保留，恢复后会自动补齐。" : needs ? "冲突版本与恢复任务保留，其他文件继续自动同步。" : this.plugin.configurationReloadNeeded ? "主题或插件配置已同步，重载 Obsidian 后生效。" : status?.skipped ? `按本机规则跳过 ${status.skipped} 项，未删除原文件。` : "文件更改后自动同步，无需手动操作。");
+        const state = syncDisplayState(status, ready, this.plugin.autoSync, this.plugin.syncing, this.plugin.localPending);
+        const needs = state === "conflict" || state === "attention";
+        const active = state === "syncing";
+        const pending = state === "pending";
+        const activity = syncActivityLabel(status?.activity);
+        q("status-title").setText(state === "locked" ? "请先配置同步" : state === "paused" ? "同步已暂停" : state === "conflict" ? `${status!.conflicts} 个文件需要处理` : active ? activity : needs ? "有同步任务尚未完成" : pending ? "有更改等待同步" : this.plugin.hostError ? "客户端配置快照待更新" : "所选范围已同步");
+        q("status-description").setText(!ready ? "保存服务器地址、客户端名称与同步密钥后自动开始。" : !this.plugin.autoSync ? "配置与密钥已保留，恢复后会自动补齐。" : state === "conflict" ? `冲突版本均保留，${this.plugin.syncing ? `${activity}。` : "其他文件继续自动同步。"}` : active ? "更改正在同步，队列数量会随处理进度更新。" : needs ? "未完成任务与原记录保留，可展开同步诊断查看原因。" : this.plugin.configurationReloadNeeded ? "主题或插件配置已同步，重载 Obsidian 后生效。" : status?.skipped ? `按本机规则跳过 ${status.skipped} 项，未删除原文件。` : "文件更改后自动同步，无需手动操作。");
         q("status-icon").dataset.tone = needs ? "attention" : this.plugin.autoSync ? "success" : "neutral";
-        updateIcon(q("status-symbol"), needs ? "alert" : "check");
+        updateIcon(q("status-symbol"), needs ? "alert" : active || pending ? "cloud" : "check");
         q("connection-state").setText(!this.plugin.autoSync ? "已暂停连接" : disconnected ? "等待连接恢复" : this.plugin.eventState === "connected" ? "连接正常" : "未连接");
         q("connection-dot").className = `dot${this.plugin.eventState === "connected" ? "" : " offline"}`;
         q("metric-upload").setText(String(status?.outbox ?? 0)); q("metric-apply").setText(String(status?.inbox ?? 0)); q("metric-conflict").setText(String(status?.conflicts ?? 0));
@@ -44,9 +49,9 @@ export class SyncOverview extends Modal {
           row.createEl("button", { cls: "primary", text: "查看差异", attr: { type: "button" } }).onclick = async () => { try { const review = await this.plugin.engine!.review(conflict.id); this.close(); new ConflictReview(this.app, this.plugin, review, () => new SyncOverview(this.app, this.plugin, this.configure).open()).open(); } catch { new Notice("这项需要人工核对，原数据和恢复记录保留。"); } };
         }
         q("attention-section").hidden = !conflicts.length; q("resolved-section").hidden = !!conflicts.length;
-        updateIcon(q("result-symbol"), needs ? "alert" : "check");
-        q("result-title").setText(needs ? "部分文件需要人工核对" : !this.plugin.autoSync ? "同步已暂停" : "当前同步状态");
-        q("result-description").setText(needs ? "恢复日志保留，尚未完成同步。请在配置页检查排除项及当前状态。" : status?.state === "pending" || this.plugin.localPending ? "更改正在上传或应用。" : "没有当前范围内的未处理冲突。");
+        updateIcon(q("result-symbol"), needs ? "alert" : active || pending ? "cloud" : "check");
+        q("result-title").setText(state === "paused" ? "同步已暂停" : active ? activity : needs ? "同步任务尚未完成" : pending ? "等待自动同步" : "当前同步状态");
+        q("result-description").setText(state === "paused" ? "配置与密钥已保留，恢复后继续同步。" : active ? "正在处理队列中的更改，尚未完成本轮同步。" : needs ? "原文件与未完成任务保留，请查看同步诊断。" : pending ? "队列中的更改将在自动同步时处理。" : "没有当前范围内的未处理冲突。");
         diagnostics.hidden = !status?.errors.length;
         diagnosticText.setText((status?.errors ?? []).map(error => error === "PATH_OCCUPIED" ? "同一路径存在两个初始化来源，队列和原文件保留。" : error.includes("APPLY_RECOVERY_FAILED") ? "一项文件恢复任务未完成，其他文件继续同步。" : error.includes("ConstraintError") ? "本机索引存在路径身份冲突，恢复记录保留。" : error.includes("CONFIG_DELETE_HAS_DEVICE_FIELDS") ? "配置包含本机凭据，远端删除已暂停以保留这些字段。" : error === "SERVER_UPGRADE_REQUIRED" ? "服务端需要升级到兼容的版本。" : "一项持久化、校验或网络操作未完成；原记录保留。").join("\n"));
         q("activity-state").setText(this.plugin.lastSyncAt ? `最后核对：${this.plugin.lastSyncAt}` : "尚未完成首次核对");

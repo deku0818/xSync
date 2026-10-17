@@ -70,10 +70,12 @@ type Change struct {
 	Actions  []Action `json:"actions"`
 }
 type Snapshot struct {
-	Epoch     string     `json:"epoch"`
-	Boundary  int64      `json:"boundary"`
-	Files     []File     `json:"files"`
-	Revisions []Revision `json:"revisions"`
+	Epoch      string      `json:"epoch"`
+	Boundary   int64       `json:"boundary"`
+	Files      []File      `json:"files"`
+	Revisions  []Revision  `json:"revisions"`
+	Checkpoint *int64      `json:"checkpoint,omitempty"`
+	Bases      []BaseProof `json:"bases,omitempty"`
 }
 type Device struct {
 	ID    string `json:"id"`
@@ -81,6 +83,8 @@ type Device struct {
 	Token string `json:"token,omitempty"`
 }
 type Config struct {
+	MetadataMode        string          `json:"metadataMode,omitempty"`
+	CleanupMode         string          `json:"cleanupMode,omitempty"`
 	DSN                 string          `json:"dsn"`
 	Listen              string          `json:"listen"`
 	ObjectDir           string          `json:"objectDir"`
@@ -93,6 +97,7 @@ type Config struct {
 
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 var blobPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var objectPattern = regexp.MustCompile(`^(c_)?[a-f0-9]{64}$`)
 
 func validID(id string) bool { return idPattern.MatchString(id) }
 func code(s string) error    { return errors.New(s) }

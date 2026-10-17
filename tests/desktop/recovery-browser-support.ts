@@ -59,8 +59,8 @@ export class NativeRecoveryBrowser {
         const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk)); const body = Buffer.concat(chunks);
         if (url.pathname.startsWith("/remote/")) {
           // Fixed fixture origin/token, never an arbitrary HTTP proxy.
-          const remote = await fetch(`${this.fixture.endpoint}${url.pathname.slice(7)}${url.search}`, { method: request.method, body: ["GET", "HEAD"].includes(request.method!) ? undefined : body, headers: { "Content-Type": String(request.headers["content-type"] ?? "application/json"), Authorization: `Bearer ${this.fixture.config.devices[1]!.token}`, ...(request.headers["x-ciphertext-sha256"] ? { "X-Ciphertext-SHA256": String(request.headers["x-ciphertext-sha256"]) } : {}) } });
-          response.statusCode = remote.status; const hash = remote.headers.get("x-ciphertext-sha256"); if (hash) response.setHeader("X-Ciphertext-SHA256", hash); response.end(Buffer.from(await remote.arrayBuffer())); return;
+          const remote = await fetch(`${this.fixture.endpoint}${url.pathname.slice(7)}${url.search}`, { method: request.method, body: ["GET", "HEAD"].includes(request.method!) ? undefined : body, headers: { "Content-Type": String(request.headers["content-type"] ?? "application/json"), Authorization: `Bearer ${this.fixture.config.devices[1]!.token}`, "X-Sync-Content": String(request.headers["x-sync-content"] ?? ""), "X-Sync-Metadata": String(request.headers["x-sync-metadata"] ?? ""), "X-Sync-Objects": String(request.headers["x-sync-objects"] ?? ""), "X-Sync-Continuity": String(request.headers["x-sync-continuity"] ?? ""), "X-Sync-Continuity-From": String(request.headers["x-sync-continuity-from"] ?? ""), "X-Sync-Continuity-Next": String(request.headers["x-sync-continuity-next"] ?? ""), "X-Sync-Read-Only": String(request.headers["x-sync-read-only"] ?? ""), "X-Sync-Compaction": String(request.headers["x-sync-compaction"] ?? ""), "X-Content-Lease": String(request.headers["x-content-lease"] ?? ""), ...(request.headers["x-ciphertext-sha256"] ? { "X-Ciphertext-SHA256": String(request.headers["x-ciphertext-sha256"]) } : {}) } });
+          response.statusCode = remote.status; const continuity = remote.headers.get("x-sync-continuity-token"); if (continuity) response.setHeader("X-Sync-Continuity-Token", continuity); const hash = remote.headers.get("x-ciphertext-sha256"); if (hash) response.setHeader("X-Ciphertext-SHA256", hash); response.end(Buffer.from(await remote.arrayBuffer())); return;
         }
         if (url.pathname !== "/file" || request.method !== "POST") { response.statusCode = 404; response.end(); return; }
         const { operation, args } = JSON.parse(body.toString()) as { operation: string; args: unknown[] };
@@ -74,7 +74,9 @@ export class NativeRecoveryBrowser {
           case "rename": await this.files.rename(string(0), string(1), bytes(2)); break;
           case "remove": await this.files.remove(string(0), bytes(1)); break;
           case "stageWrite": await this.files.stageWrite(string(0), bytes(1)); break;
-          case "stageRead": { const id = string(0); if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID"); value = [...await this.files.stageRead(id)]; break; }
+          case "stageRead": { const id = string(0); if (!/^(?:c_)?[a-f0-9]{64}$/.test(id)) throw new Error("INVALID_STAGE_ID"); value = [...await this.files.stageRead(id)]; break; }
+          case "stageList": value = await this.files.stageList(); break;
+          case "stageRemove": await this.files.stageRemove(string(0)); break;
           default: throw new Error("INVALID_TEST_OPERATION");
         }
         response.end(JSON.stringify(value));

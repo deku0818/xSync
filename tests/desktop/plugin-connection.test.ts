@@ -45,7 +45,7 @@ beforeEach(async () => {
   vi.stubGlobal("window", {}); vi.stubGlobal("document", {});
   const created = await VaultCrypto.create("host-test-vault", "test-sync-key"); keyPackage = created.keyPackage;
   host.onboarding = { format: 1, vaultId: "host-test-vault", epoch: "epoch", keyPackage, publicKey: created.crypto.enrollmentPublicKey() }; created.crypto.close();
-  host.handshake = { protocol: 0, vaultId: "host-test-vault", epoch: "epoch", seq: 0, features: [...SYNC_FEATURES], keyPackage, devices: [{ id: "device", name: "Fixture" }], maxObjectBytes: 8388608 };
+  host.handshake = { protocol: 0, vaultId: "host-test-vault", epoch: "epoch", seq: 0, features: [...SYNC_FEATURES], continuity: true, keyPackage, devices: [{ id: "device", name: "Fixture" }], maxObjectBytes: 8388608 };
   host.files.set(".obsidian/obsidian-sync-development.json", JSON.stringify({ generatedBy: "ObsidianSync desktop test setup" }));
   host.files.set(".obsidian/obsidian-sync-local/device.json", JSON.stringify({ endpoint, token: "x".repeat(64), vaultId: "host-test-vault", deviceId: "device", deviceName: "Fixture", databaseId }));
 });

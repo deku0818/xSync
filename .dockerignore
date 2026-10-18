@@ -15,6 +15,8 @@
 
 !package.json
 !package-lock.json
+!shared/
+!shared/i18n.ts
 !server/admin/
 !server/admin/**
 !server/scripts/

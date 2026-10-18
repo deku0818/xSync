@@ -4,6 +4,7 @@ WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY server/admin/ server/admin/
+COPY shared/i18n.ts shared/i18n.ts
 COPY server/scripts/build-admin.mjs server/scripts/build-admin.mjs
 RUN npm run build:admin
 

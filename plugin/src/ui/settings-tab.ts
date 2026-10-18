@@ -9,10 +9,11 @@ export class SyncSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: ObsidianSyncPlugin) { super(app, plugin); }
 
   getSettingDefinitions(): SettingDefinitionItem[] {
+    const t = this.plugin.i18n.t;
     return [{
-      name: "同步连接与本机规则",
-      desc: "配置客户端名称、服务器地址与访问 key，设置或输入库加密密码；暂停或恢复同步，设置大小、目录、后缀和正则排除规则，查看客户端快照。",
-      aliases: ["sync", "server", "endpoint", "key", "password", "pause", "resume", "exclude", "folder", "extension", "regex", "clients", "服务器", "密钥", "暂停", "恢复", "排除", "客户端"],
+      name: t("同步连接与本机规则"),
+      desc: t("配置客户端名称、服务器地址与访问 key，设置或输入库加密密码；暂停或恢复同步，设置大小、目录、后缀和正则排除规则，查看客户端快照。"),
+      aliases: ["language", "English", "中文", "语言", "sync", "server", "endpoint", "key", "password", "pause", "resume", "exclude", "folder", "extension", "regex", "clients", "服务器", "密钥", "暂停", "恢复", "排除", "客户端"],
       render: setting => {
         this.hide();
         setting.settingEl.addClass("oss-settings-row");

@@ -3,11 +3,11 @@ import type { App, PluginManifest } from "obsidian";
 import type { EngineStatus, Review, SyncEngine } from "../../plugin/src/sync/engine";
 
 const host = vi.hoisted(() => ({ labels: [] as string[], ribbon: { dataset: {} as Record<string, string>, addClass() {}, setAttribute: vi.fn() } }));
-vi.mock("obsidian", () => ({
+vi.mock("obsidian", () => ({ getLanguage: () => "zh",
   Plugin: class {
     constructor(public app: unknown) {}
     addStatusBarItem() { return { addClass() {}, setAttribute() {}, dataset: {}, setText: (text: string) => { host.labels.push(text); } }; }
-    addRibbonIcon() { return host.ribbon; } addCommand() {} addSettingTab() {} registerDomEvent() {}
+    addRibbonIcon() { return host.ribbon; } addCommand(command: unknown) { return command; } addSettingTab() {} registerDomEvent() {}
   },
   Modal: class {}, PluginSettingTab: class {}, Setting: class {}, Notice: class {}, TFile: class {}, requestUrl: vi.fn(),
 }));

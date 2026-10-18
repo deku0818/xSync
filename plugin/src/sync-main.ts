@@ -1,6 +1,8 @@
 // Based on obsidianmd/obsidian-sample-plugin, commit 07ceb81d1fb3384af611ebf665a1ec42a7e5926d (0BSD).
-import { Modal, Notice, Platform, Plugin, TFile, type App } from "obsidian";
+import { Modal, Notice, Platform, Plugin, TFile, getLanguage, type Command, type App } from "obsidian";
 import { z } from "zod";
+
+import { I18n, type LanguagePreference } from "./i18n";
 
 import buildManifest from "../../manifest.json";
 import { accessKeySchema, type ManagedUser, type ManagedVault } from "../../protocol/src/access";
@@ -30,6 +32,8 @@ import { syncPresentation } from "./ui/sync-status.js";
 
 const configSchema = z.strictObject({ endpoint: z.string().default(""), developmentEndpoint: z.string().optional(), token: z.union([z.string().min(32).max(128), z.literal("")]).default(""), deviceId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/), deviceName: z.string().default(""), vaultId: z.string().default(""), databaseId: z.string().regex(/^[a-f0-9]{64}$/) });
 export default class ObsidianSyncPlugin extends Plugin {
+  readonly i18n = new I18n("auto", getLanguage);
+  private localizedCommands: { source: string; prefix: string; command: Command }[] = [];
   engine?: SyncEngine;
   autoSync = true;
   endpoint = "";
@@ -80,15 +84,16 @@ export default class ObsidianSyncPlugin extends Plugin {
   private listeners = new Set<() => void>();
   deviceName = "";
   async onload(): Promise<void> {
-    this.statusEl = this.addStatusBarItem(); this.statusEl.setText("xSync · 正在连接");
+    const t = this.i18n.t;
+    this.statusEl = this.addStatusBarItem(); this.statusEl.setText(t("xSync · 正在连接"));
     this.statusEl.addClass("oss-status-bar"); this.statusEl.setAttribute("role", "button"); this.statusEl.tabIndex = 0;
     this.registerDomEvent(this.statusEl, "click", () => this.openStatus(this.statusEl));
     this.registerDomEvent(this.statusEl, "keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); this.openStatus(this.statusEl); } });
-    this.ribbonEl = this.addRibbonIcon("cloud", "xSync 同步状态", () => this.openStatus());
+    this.ribbonEl = this.addRibbonIcon("cloud", t("xSync 同步状态"), () => this.openStatus());
     this.ribbonEl.addClass("oss-sync-ribbon");
-    this.addCommand({ id: "open-sync-panel", name: "查看同步状态", callback: () => this.openStatus() });
-    this.addCommand({ id: "configure-sync", name: "配置服务器、访问 key 与同步库", callback: () => new ConnectionModal(this.app, this).open() });
-    this.addCommand({ id: "toggle-sync", name: "暂停 / 恢复同步", callback: () => { void this.setAutoSync(!this.autoSync).catch(error => new Notice(String(error))); } });
+    this.addUiCommand({ id: "open-sync-panel", name: "查看同步状态", callback: () => this.openStatus() });
+    this.addUiCommand({ id: "configure-sync", name: "配置服务器、访问 key 与同步库", callback: () => new ConnectionModal(this.app, this).open() });
+    this.addUiCommand({ id: "toggle-sync", name: "暂停 / 恢复同步", callback: () => { void this.setAutoSync(!this.autoSync).catch(error => new Notice(t(String(error)))); } });
     this.addSettingTab(new SyncSettingTab(this.app, this));
     try {
       const root = `${this.app.vault.configDir}/obsidian-sync-local`;
@@ -112,6 +117,8 @@ export default class ObsidianSyncPlugin extends Plugin {
       if (!development && (config.developmentEndpoint || config.token)) throw new Error("DEVELOPMENT_FIXTURE_REQUIRES_MARKER");
       this.config = config; this.root = root; this.deviceName = config.deviceName;
       const saved = connectionSettings(savedData, config.endpoint, config.developmentEndpoint);
+      this.i18n.preference = saved.language;
+      this.updateCommandLanguage();
       config.vaultId = saved.vaultId ?? config.vaultId;
       this.endpoint = saved.endpoint; this.autoSync = saved.autoSync;
       this.rules = saved.rules; this.policy = new SyncPolicy(this.rules); this.deviceName = saved.clientName ?? config.deviceName;
@@ -152,9 +159,9 @@ export default class ObsidianSyncPlugin extends Plugin {
       this.registerDomEvent(window, "online", () => { this.events?.reconnect(); this.wake("online"); });
       this.registerDomEvent(window, "focus", () => this.wake("focus"));
       this.registerDomEvent(document, "visibilitychange", () => { if (!document.hidden) this.wake("foreground"); });
-      if (!this.engine) this.statusEl.setText("xSync · 请配置同步");
+      if (!this.engine) this.statusEl.setText(t("xSync · 请配置同步"));
       this.app.workspace.onLayoutReady(() => { this.layoutReady = true; this.wake("startup"); });
-    } catch (error) { this.statusEl.setText("xSync · 配置未就绪"); new Notice(`xSync 未启动：${String(error)}`); }
+    } catch (error) { this.statusEl.setText(t("xSync · 配置未就绪")); new Notice(t("xSync 未启动：{0}", String(error))); }
   }
   private wake(reason: string): void {
     if (this.disposed || !this.layoutReady) return;
@@ -308,13 +315,13 @@ export default class ObsidianSyncPlugin extends Plugin {
           observe?.({ step: "storage", state: "passed" });
         } finally { this.configuring = false; this.updateAutomation(); this.emit(); }
       });
-    } catch (error) { const failed = connectionFailure(error, step); observe?.({ step: failed.step, state: "failed", message: failed.message }); throw error; }
+    } catch (error) { const failed = connectionFailure(error, step, this.i18n.t); observe?.({ step: failed.step, state: "failed", message: failed.message }); throw error; }
   }
   private async saveAccessPointer(endpoint: string, record: string, userId: string, name: string, protectedAccess: RememberedUnlock): Promise<void> {
     const previous = this.accessRecord ? this.accessStore() : undefined;
     await previous?.prepareRetirement();
     if (this.disposed) throw new Error("PLUGIN_UNLOADED");
-    await this.saveData({ format: 4, vaultId: this.boundVaultId, vaultName: this.vaultName, autoSync: this.autoSync, endpoint, record: this.connectionRecord, accessRecord: record, userId, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty });
+    await this.saveData({ format: 4, language: this.i18n.preference, vaultId: this.boundVaultId, vaultName: this.vaultName, autoSync: this.autoSync, endpoint, record: this.connectionRecord, accessRecord: record, userId, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty });
     this.endpoint = endpoint; this.accessRecord = record; this.accessUserId = userId; this.deviceName = name;
     try { await previous?.retire(protectedAccess); } catch { /* Startup resumes journaled retirement. */ }
   }
@@ -409,7 +416,7 @@ export default class ObsidianSyncPlugin extends Plugin {
       const oldAccess = this.accessRecord && this.accessRecord !== accessRecord ? this.accessStore() : undefined;
       await oldAccess?.prepareRetirement();
       if (this.disposed) throw new Error("PLUGIN_UNLOADED");
-      await this.saveData({ format: 4, vaultId: vault.id, vaultName: vault.name, accessRecord, userId, autoSync: this.autoSync, endpoint, record, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: profile.revision, profileDirty: false });
+      await this.saveData({ format: 4, language: this.i18n.preference, vaultId: vault.id, vaultName: vault.name, accessRecord, userId, autoSync: this.autoSync, endpoint, record, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: profile.revision, profileDirty: false });
       if (this.disposed) throw new Error("PLUGIN_UNLOADED");
       this.engine?.lock(); this.engine = candidate; installed = true; this.config.vaultId = vault.id; this.config.token = token;
       this.remote = remote; this.endpoint = endpoint; this.deviceName = name; this.connectionRecord = record; this.remembered = remembered;
@@ -496,7 +503,7 @@ export default class ObsidianSyncPlugin extends Plugin {
           await previousRecord?.prepareRetirement();
           if (this.disposed) throw new Error("PLUGIN_UNLOADED");
           // Immutable protected records keep the previous configuration usable if saving the pointer fails.
-          await this.saveData({ format: 4, vaultId, autoSync: this.autoSync, endpoint, record, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: receipt.revision, profileDirty: false });
+          await this.saveData({ format: 4, language: this.i18n.preference, vaultId, autoSync: this.autoSync, endpoint, record, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: receipt.revision, profileDirty: false });
           if (this.disposed) throw new Error("PLUGIN_UNLOADED");
           this.engine?.lock(); this.engine = candidate; installed = true; this.config.vaultId = vaultId; this.config.token = token;
           this.endpoint = endpoint; this.remote = remote; this.deviceName = name; this.profileRevision = receipt.revision; this.profileDirty = false; this.profilePending = undefined; this.connectionRecord = record; this.restoreAllowed = true; this.remembered = remembered;
@@ -512,13 +519,14 @@ export default class ObsidianSyncPlugin extends Plugin {
         }
       });
     } catch (error) {
-      const failed = connectionFailure(error, step);
+      const failed = connectionFailure(error, step, this.i18n.t);
       if (failed.step === "authorization") observe?.({ step: "server", state: "passed" });
       observe?.({ step: failed.step, state: "failed", message: failed.message });
       throw error;
     }
   }
   async sync(notify = true, full = true): Promise<void> {
+    const t = this.i18n.t;
     await this.work.run(async () => {
       if (!this.engine || this.disposed || !this.autoSync || this.configuring) return;
       const generation = this.changeGeneration;
@@ -536,7 +544,7 @@ export default class ObsidianSyncPlugin extends Plugin {
       }, 500);
       try {
         let profileError = "";
-        try { await this.flushProfile(); } catch (error) { profileError = `客户端配置快照未更新：${String(error)}`; }
+        try { await this.flushProfile(); } catch (error) { profileError = t("客户端配置快照未更新：{0}", String(error)); }
         const status = full ? await this.engine.sync() : await this.engine.sync({ full: false });
         if (full && !status.errors.length) this.lastFullCheck = Date.now();
         finished = true; this.syncing = false;
@@ -547,7 +555,7 @@ export default class ObsidianSyncPlugin extends Plugin {
         this.lastStatus = { outbox: 0, inbox: 0, conflicts: 0, ...this.lastStatus,
           state: this.engine.unlocked ? "needs-attention" : "locked", activity: undefined,
           errors: [...(this.lastStatus?.errors ?? []), this.hostError] };
-        if (notify) new Notice(`同步暂停：${String(error)}`);
+        if (notify) new Notice(t("同步暂停：{0}", String(error)));
       }
       finally {
         finished = true; timerHost().clearInterval(this.statusTimer); this.statusTimer = undefined; this.syncing = false;
@@ -556,7 +564,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     });
   }
   get syncStatus(): ReturnType<typeof syncPresentation> {
-    return syncPresentation(this.lastStatus, !!this.engine?.unlocked, this.autoSync, this.syncing, this.localPending);
+    return syncPresentation(this.lastStatus, !!this.engine?.unlocked, this.autoSync, this.syncing, this.localPending, this.i18n.t);
   }
   private renderStatusBar(): string {
     const display = this.syncStatus;
@@ -571,15 +579,17 @@ export default class ObsidianSyncPlugin extends Plugin {
     return display.label;
   }
   private publishStatus(status: EngineStatus, notify: boolean): void {
+    const t = this.i18n.t;
     this.lastStatus = status;
     const label = this.renderStatusBar();
-    if (notify && status.state === "needs-attention" && !status.conflicts) new Notice(`${label}，本机内容仍保留。`);
+    if (notify && status.state === "needs-attention" && !status.conflicts) new Notice(t("{0}，本机内容仍保留。", label));
     this.emit();
   }
   async resolveConflict(review: Review, selectedRevision: string, companionPath?: string, mergedBytes?: Uint8Array): Promise<void> {
+    const t = this.i18n.t;
     await this.work.run(async () => {
       if (!this.engine || this.disposed) throw new Error("LOCAL_IDENTITY_NOT_READY");
-      if (!this.autoSync || this.configuring) throw new Error("请先恢复同步");
+      if (!this.autoSync || this.configuring) throw new Error(t("请先恢复同步"));
       try { if (mergedBytes) await this.engine.resolve(review, selectedRevision, companionPath, mergedBytes); else await this.engine.resolve(review, selectedRevision, companionPath); }
       finally { this.publishStatus(await this.engine.status(), false); }
     });
@@ -598,16 +608,18 @@ export default class ObsidianSyncPlugin extends Plugin {
     return { format: 1, name, platform, pluginVersion: buildManifest.version, autoSync: this.autoSync, rules: this.rules };
   }
   async refreshClients(): Promise<ClientView[]> {
-    if (!this.remote || !this.engine?.unlocked) throw new Error("请先保存连接配置");
+    const t = this.i18n.t;
+    if (!this.remote || !this.engine?.unlocked) throw new Error(t("请先保存连接配置"));
     const rows = await this.remote.devices();
     const own = rows.find(row => row.id === this.config?.deviceId); if (own && !this.configuring) this.deviceName = own.name;
     this.clients = rows.map(row => {
       try { return { ...row, configuration: row.ciphertext ? decodeProfile(this.engine!.openProfile(row.id, row.revision, row.ciphertext), row.name) : undefined }; }
-      catch { return { id: row.id, name: row.name, revision: row.revision, reportedAt: row.reportedAt, revoked: row.revoked, error: "此配置快照无法验证，原数据保留" }; }
+      catch { return { id: row.id, name: row.name, revision: row.revision, reportedAt: row.reportedAt, revoked: row.revoked, error: t("此配置快照无法验证，原数据保留") }; }
     });
     return this.clients;
   }
   private async flushProfile(): Promise<void> {
+    const t = this.i18n.t;
     if (!this.remote || !this.engine?.unlocked || !this.config) return;
     const rows = await this.refreshClients(); const own = rows.find(r => r.id === this.config!.deviceId);
     if (!own) throw new Error("DEVICE_PROFILE_MISSING");
@@ -615,7 +627,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     if (own.configuration && (own.configuration.pluginVersion !== buildManifest.version || own.configuration.platform !== this.configuration().platform)) this.profileDirty = true;
     if (!this.profileDirty && !this.profilePending) return;
     if (!this.profilePending) {
-      if (own.revision !== this.profileRevision) throw new Error("PROFILE_STALE: 请重新保存本机规则");
+      if (own.revision !== this.profileRevision) throw new Error(t("PROFILE_STALE: 请重新保存本机规则"));
       this.profilePending = { name: this.deviceName, expectedRevision: this.profileRevision, ciphertext: this.engine.sealProfile(this.profileRevision + 1, this.configuration()) };
     }
     await this.saveSettings();
@@ -626,6 +638,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     await this.saveSettings();
   }
   async setRules(input: SyncRules): Promise<void> {
+    const t = this.i18n.t;
     const rules = validateRules(input); const policy = new SyncPolicy(rules);
     await this.work.run(async () => {
       const prior = this.rules; this.rules = rules; this.profileDirty = true;
@@ -633,12 +646,13 @@ export default class ObsidianSyncPlugin extends Plugin {
       this.policy = policy; this.engine?.setPolicy(policy); this.configStamp = new Map(); this.emit();
     });
     this.automatic?.trigger("rules", true);
-    void this.work.run(async () => { try { await this.flushProfile(); } catch (error) { this.hostError = `配置已在本机保存，快照待上报：${String(error)}`; this.emit(); } });
+    void this.work.run(async () => { try { await this.flushProfile(); } catch (error) { this.hostError = t("配置已在本机保存，快照待上报：{0}", String(error)); this.emit(); } });
   }
   async inventory(): Promise<FileEntry[]> { if (!this.port) return []; return this.port.inventory(); }
   async excludedChildren(path: string): Promise<FileEntry[]> { return this.port?.excludedChildren(path) ?? []; }
   get configurationReloadNeeded(): boolean { return this.port?.configurationChanged ?? false; }
   private async pollConfiguration(): Promise<void> {
+    const t = this.i18n.t;
     if (this.configScanning || this.disposed || !this.autoSync || !this.port) return;
     this.configScanning = true;
     try {
@@ -648,11 +662,27 @@ export default class ObsidianSyncPlugin extends Plugin {
       this.configStamp = stats;
       if (changed.length) this.automatic?.trigger("file");
     }
-    catch (error) { this.hostError = `配置扫描失败：${String(error)}`; this.emit(); }
+    catch (error) { this.hostError = t("配置扫描失败：{0}", String(error)); this.emit(); }
     finally { this.configScanning = false; }
   }
+  private addUiCommand(command: Command): void {
+    const name = this.i18n.t(command.name), registered = this.addCommand({ ...command, name });
+    this.localizedCommands.push({ source: command.name, prefix: registered.name.slice(0, -name.length), command: registered });
+  }
+  private updateCommandLanguage(): void {
+    for (const entry of this.localizedCommands) entry.command.name = entry.prefix + this.i18n.t(entry.source);
+  }
+  async setLanguage(language: LanguagePreference): Promise<void> {
+    await this.work.run(async () => {
+      const saved: unknown = await this.loadData();
+      if (saved !== null && saved !== undefined && (typeof saved !== "object" || Array.isArray(saved))) throw new Error("INVALID_CONNECTION_SETTINGS");
+      await this.saveData({ ...(saved ?? {}), language });
+      this.i18n.preference = language;
+      this.updateCommandLanguage(); this.renderStatusBar(); this.emit();
+    });
+  }
   async saveSettings(): Promise<void> {
-    await this.saveData({ format: 4, vaultId: this.config?.vaultId ?? "", autoSync: this.autoSync, endpoint: this.endpoint, record: this.connectionRecord, restoreAllowed: this.restoreAllowed, clientName: this.deviceName, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty, ...(this.accessRecord ? { accessRecord: this.accessRecord, userId: this.accessUserId, vaultName: this.vaultName } : {}), ...(this.profilePending ? { profilePending: this.profilePending } : {}) });
+    await this.saveData({ format: 4, language: this.i18n.preference, vaultId: this.config?.vaultId ?? "", autoSync: this.autoSync, endpoint: this.endpoint, record: this.connectionRecord, restoreAllowed: this.restoreAllowed, clientName: this.deviceName, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty, ...(this.accessRecord ? { accessRecord: this.accessRecord, userId: this.accessUserId, vaultName: this.vaultName } : {}), ...(this.profilePending ? { profilePending: this.profilePending } : {}) });
   }
 
 }

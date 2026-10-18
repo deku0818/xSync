@@ -1,4 +1,5 @@
 import { sanitizeHTMLToDom } from "obsidian";
+import { templateLocalizer, type I18n } from "../i18n";
 let instance = 0;
 const iconMarkup = new Map([
   ["cloud", "<path d=\"M7 18H6a4 4 0 0 1-.6-7.95A6.5 6.5 0 0 1 18 8.5a4.75 4.75 0 0 1 0 9.5h-1M12 20V11m-3 3 3-3 3 3\"/>"],
@@ -10,7 +11,11 @@ const iconMarkup = new Map([
   ["file", "<path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6\"/>"],
 ]);
 /** Templates are static repository markup. All server/user values are assigned via textContent/value. */
-export function mountTemplate(root: HTMLElement, template: string): <T extends HTMLElement = HTMLElement>(id: string) => T {
+export interface TemplateQuery {
+  <T extends HTMLElement = HTMLElement>(id: string): T;
+  localize(): boolean;
+}
+export function mountTemplate(root: HTMLElement, template: string, i18n?: I18n): TemplateQuery {
   // Inline known repository icon paths: sanitizers intentionally remove SVG <use> references.
   const markup = template.replace(/<use\b([^>]*)\/>/g, (_match, attributes: string) => {
     const name = /\bhref="#([a-z]+)"/.exec(attributes)?.[1];
@@ -25,7 +30,10 @@ export function mountTemplate(root: HTMLElement, template: string): <T extends H
   for (const element of root.querySelectorAll<HTMLElement>("[for],[aria-labelledby],[aria-describedby],[aria-controls]")) for (const attr of ["for", "aria-labelledby", "aria-describedby", "aria-controls"]) {
     const value = element.getAttribute(attr); if (value) element.setAttribute(attr, value.split(/\s+/).map(id => ids.get(id) ?? id).join(" "));
   }
-  return <T extends HTMLElement = HTMLElement>(id: string): T => { const node = root.querySelector<T>(`[data-ui="${id}"]`); if (!node) throw new Error(`MISSING_UI_ELEMENT: ${id}`); return node; };
+  const query = <T extends HTMLElement = HTMLElement>(id: string): T => { const node = root.querySelector<T>(`[data-ui="${id}"]`); if (!node) throw new Error(`MISSING_UI_ELEMENT: ${id}`); return node; };
+  const localize = i18n ? templateLocalizer(root, i18n) : () => false;
+  localize();
+  return Object.assign(query, { localize });
 }
 export function updateIcon(target: Element, name: string): void {
   const markup = iconMarkup.get(name); if (!markup) throw new Error("UNKNOWN_UI_ICON");

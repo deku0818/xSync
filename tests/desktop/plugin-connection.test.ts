@@ -11,10 +11,10 @@ import { RecoveryFixture, recoveryHTTP, RECOVERY_PASSPHRASE } from "./recovery-s
 import { Transport } from "../../plugin/src/sync/transport";
 
 const host = vi.hoisted(() => ({ saved: null as unknown, failSave: false, failProtect: false, failUnprotect: false, loseEnrollment: false, enrollments: [] as unknown[], modern: false, onboarding: {} as unknown, reads: 0, status: 200, files: new Map<string, string>(), handshake: {} as unknown, profile: { id: "device", name: "Fixture", revision: 0, ciphertext: "" }, handlers: new Map<string, (...args: unknown[]) => void>() }));
-vi.mock("obsidian", () => ({
+vi.mock("obsidian", () => ({ getLanguage: () => "zh",
   Plugin: class {
     constructor(public app: unknown, public manifest: unknown) {}
-    addStatusBarItem() { return { setText() {}, addClass() {}, setAttribute() {}, dataset: {} }; } addRibbonIcon() { return { addClass() {}, setAttribute() {}, dataset: {} }; } addCommand() {} addSettingTab() {} registerEvent() {}
+    addStatusBarItem() { return { setText() {}, addClass() {}, setAttribute() {}, dataset: {} }; } addRibbonIcon() { return { addClass() {}, setAttribute() {}, dataset: {} }; } addCommand(command: unknown) { return command; } addSettingTab() {} registerEvent() {}
     registerDomEvent(_target: unknown, name: string, callback: () => void) { host.handlers.set(name, callback); }
     async loadData() { return host.saved; }
     async saveData(value: unknown) { if (host.failSave) throw new Error("SETTINGS_WRITE_FAILED"); host.saved = structuredClone(value); }

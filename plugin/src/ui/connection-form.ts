@@ -1,3 +1,4 @@
+import type { LanguagePreference } from "../i18n";
 import { vaultConnection } from "./vault-connection";
 import { timerHost, type TimerHandle } from "../runtime/timers";
 import { Notice } from "obsidian";
@@ -10,58 +11,70 @@ import type { ConnectionCheck, ConnectionStep } from "../sync/connection-check";
 
 const labels: Record<ConnectionStep, string> = { server: "服务器连接", name: "名称唯一", authorization: "用户授权", key: "库解锁", storage: "安全保存" };
 export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugin): () => void {
+  const t = plugin.i18n.t;
   container.addClass("oss-app", "oss-settings-host");
-  const shell = container.createDiv("shell"); const q = mountTemplate(shell, settingsTemplate);
+  const shell = container.createDiv("shell"); const q = mountTemplate(shell, settingsTemplate, plugin.i18n);
   let refreshTimer: TimerHandle | undefined;
   let closed = false, busy = false, connectionDirty = false, draftRules = structuredClone(plugin.rules), inventory: FileEntry[] = [], selectedClient = "", dirty = false;
+  const language = q<HTMLSelectElement>("language");
+  language.value = plugin.i18n.preference;
+  language.onchange = async () => {
+    language.disabled = true;
+    try { await plugin.setLanguage(language.value as LanguagePreference); }
+    catch { new Notice(t("无法保存语言设置，请重试。")); }
+    finally { if (!closed) { language.value = plugin.i18n.preference; language.disabled = false; } }
+  };
   const input = (id: string) => q<HTMLInputElement>(id);
   input("client-name").value = plugin.deviceName; input("endpoint").value = plugin.endpoint; input("max-size").value = String(draftRules.maxMB);
   const renderKeyState = () => {
     const field = input("key"), saved = plugin.accessSaved;
     field.dataset.savedKey = String(saved);
-    field.placeholder = saved ? "••••••••••••" : "请输入访问 key";
-    let hint = saved ? "访问 key 已保存，留空复用；新值验证成功才替换。" : "填写管理员提供的访问 key，仅用于服务授权。";
-    if (field.value) hint = saved ? "新访问 key 验证并安全保存成功后才替换。" : "访问 key 仅用于服务授权，库加密密码在下一步设置。";
+    field.placeholder = saved ? "••••••••••••" : t("请输入访问 key");
+    let hint = saved ? t("访问 key 已保存，留空复用；新值验证成功才替换。") : t("填写管理员提供的访问 key，仅用于服务授权。");
+    if (field.value) hint = saved ? t("新访问 key 验证并安全保存成功后才替换。") : t("访问 key 仅用于服务授权，库加密密码在下一步设置。");
     q("key-hint").setText(hint);
   };
-  q("connection-badge").setText(plugin.accessSaved ? "已保存" : "未配置");
-  q("current-name").setText(plugin.deviceName || "当前客户端");
-  const meta = q("sync-state").nextElementSibling; if (meta) meta.textContent = "· 当前设备";
-  const error = (id: string, message: string) => { q(id).setText(message); q(id).hidden = !message; };
+  q("connection-badge").setText(plugin.accessSaved ? t("已保存") : t("未配置"));
+  q("current-name").setText(plugin.deviceName || t("当前客户端"));
+  const meta = q("sync-state").nextElementSibling; if (meta) meta.textContent = t("· 当前设备");
+  const error = (id: string, message: string) => { q(id).setText(t(message)); q(id).hidden = !message; };
   const resetChecks = () => { for (const step of Object.keys(labels)) { const row = shell.querySelector<HTMLElement>(`[data-step="${step}"]`)!; row.dataset.state = "pending"; row.firstElementChild!.textContent = "○"; } };
   const update = (check: ConnectionCheck) => {
     if (closed) return;
     const row = shell.querySelector<HTMLElement>(`[data-step="${check.step}"]`)!; row.dataset.state = check.state;
     row.firstElementChild!.textContent = check.state === "passed" ? "✓" : check.state === "failed" ? "×" : "";
-    row.setAttribute("aria-label", `${labels[check.step]}：${check.state === "passed" ? "通过" : check.state === "failed" ? "失败" : "进行中"}`);
-    if (check.state === "running") q("connection-feedback").setText(`正在检查${labels[check.step]}…`);
-    if (check.state === "failed") { q("connection-badge").setText("测试失败"); q("connection-badge").dataset.state = "failed"; q("connection-feedback").dataset.state = "failed"; q("connection-feedback").setText(check.message ?? "无法完成测试，请重试。"); }
+    row.setAttribute("aria-label", `${t(labels[check.step])}: ${check.state === "passed" ? t("通过") : check.state === "failed" ? t("失败") : t("进行中")}`);
+    if (check.state === "running") q("connection-feedback").setText(t("正在检查{0}…", t(labels[check.step])));
+    if (check.state === "failed") { q("connection-badge").setText(t("测试失败")); q("connection-badge").dataset.state = "failed"; q("connection-feedback").dataset.state = "failed"; q("connection-feedback").setText(check.message ?? t("无法完成测试，请重试。")); }
   };
   const renderStatus = () => {
     renderKeyState();
+    input("regex-ignore-case").setAttribute("aria-label", t("忽略大小写"));
+    q("regex-hint").setText(t("RE2 正则；不支持回溯引用和前后查找，路径用 /。"));
+    if (meta) meta.textContent = t("· 当前设备");
     if (!connectionDirty && plugin.engine?.unlocked && plugin.boundVaultId) {
       update({ step: "key", state: "passed" }); update({ step: "name", state: "passed" });
     }
-    q("current-name").setText(plugin.deviceName || "当前客户端");
+    q("current-name").setText(plugin.deviceName || t("当前客户端"));
     const count = q("tab-clients").querySelector(".count"); if (count) count.textContent = plugin.clients.length ? String(plugin.clients.length) : "—";
-    q("pause").setText(plugin.autoSync ? "暂停同步" : "恢复同步");
+    q("pause").setText(plugin.autoSync ? t("暂停同步") : t("恢复同步"));
     q("sync-state").setText(plugin.syncStatus.label);
     q("sync-dot").className = `dot${!plugin.autoSync ? " paused" : plugin.eventState !== "connected" ? " offline" : ""}`;
-    if (plugin.configurationReloadNeeded) q("rules-feedback").setText("配置文件已同步；重载 Obsidian 后应用主题或插件更新。");
+    if (plugin.configurationReloadNeeded) q("rules-feedback").setText(t("配置文件已同步；重载 Obsidian 后应用主题或插件更新。"));
   };
   const canonicalName = (name: string) => name.normalize("NFKC").trim().toLowerCase();
   const validateName = () => {
     let message = "";
-    try { const name = clientName(input("client-name").value); if (plugin.clients.some(c => c.id !== plugin.engine?.deviceId && canonicalName(c.name) === canonicalName(name))) message = "这个客户端名称已被占用，请换一个名称。"; }
+    try { const name = clientName(input("client-name").value); if (plugin.clients.some(c => c.id !== plugin.engine?.deviceId && canonicalName(c.name) === canonicalName(name))) message = t("这个客户端名称已被占用，请换一个名称。"); }
     catch (e) { message = String((e as Error).message); }
-    q("name-hint").setText(message || "同一同步库内唯一，接入库时由服务器最终确认。"); q("name-hint").className = `hint${message ? " error" : ""}`; input("client-name").setAttribute("aria-invalid", String(!!message));
+    q("name-hint").setText(t(message) || t("同一同步库内唯一，接入库时由服务器最终确认。")); q("name-hint").className = `hint${message ? " error" : ""}`; input("client-name").setAttribute("aria-invalid", String(!!message));
     return !message;
   };
   const renderTree = () => {
     const host = q("excluded-tree"); const opened = new Set([...host.querySelectorAll<HTMLElement>("details[open]")].map(e => e.dataset.path)); host.empty();
     let policy: SyncPolicy;
-    try { const maxMB = Number(input("max-size").value); if (!Number.isInteger(maxMB) || maxMB < 1 || maxMB > 100) { error("size-error", "请输入 1–100 之间的整数，不能超过 100 MB。"); throw new Error("INVALID_SIZE"); } policy = new SyncPolicy({ ...draftRules, maxMB }); error("size-error", ""); }
-    catch { host.createEl("p", { cls: "tree-empty", text: "请先修正大小上限或排除规则。" }); q("excluded-count").setText("待统计"); return; }
+    try { const maxMB = Number(input("max-size").value); if (!Number.isInteger(maxMB) || maxMB < 1 || maxMB > 100) { error("size-error", t("请输入 1–100 之间的整数，不能超过 100 MB。")); throw new Error("INVALID_SIZE"); } policy = new SyncPolicy({ ...draftRules, maxMB }); error("size-error", ""); }
+    catch { host.createEl("p", { cls: "tree-empty", text: t("请先修正大小上限或排除规则。") }); q("excluded-count").setText(t("待统计")); return; }
     type Tree = { name: string; path: string; children: Map<string, Tree>; entry?: FileEntry; count: number; excluded: number; reason?: string; unknown?: boolean; hasExcluded?: boolean; unknownCount?: number };
     const root: Tree = { name: "", path: "", children: new Map(), count: 0, excluded: 0 }; let fileCount = 0, unknown = 0;
     for (const entry of inventory) {
@@ -74,13 +87,13 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
       }
       node.entry = entry; node.reason = reason; node.unknown = entry.directory && !!reason;
     }
-    q("excluded-count").setText(`${fileCount} 个文件${unknown ? ` + ${unknown} 个目录` : ""}`);
-    q("tree-description").setText(dirty ? "按当前填写规则统计 · 尚未保存" : "按本机已保存规则统计");
-    q("tree-summary").setText("只读取文件索引，不读取正文");
-    if (!fileCount && !unknown) { host.createEl("p", { cls: "tree-empty", text: "当前仓库没有被排除的文件。" }); return; }
+    q("excluded-count").setText(t("{0} 个文件{1}", fileCount, unknown ? t(" + {0} 个目录", unknown) : ""));
+    q("tree-description").setText(dirty ? t("按当前填写规则统计 · 尚未保存") : t("按本机已保存规则统计"));
+    q("tree-summary").setText(t("只读取文件索引，不读取正文"));
+    if (!fileCount && !unknown) { host.createEl("p", { cls: "tree-empty", text: t("当前仓库没有被排除的文件。") }); return; }
     const renderChildren = (parent: Tree, target: HTMLElement) => {
       const nodes = [...parent.children.values()].filter(n => n.hasExcluded || n.excluded || n.unknown).sort((a, b) => Number(!!a.entry && !a.entry.directory) - Number(!!b.entry && !b.entry.directory) || a.name.localeCompare(b.name)); let shown = 0;
-      const batch = () => { for (const end = Math.min(shown + 50, nodes.length); shown < end; shown++) renderNode(nodes[shown]!, target); if (shown < nodes.length) { const li = target.createEl("li"); li.createEl("button", { cls: "tree-more", text: `显示更多（剩余 ${nodes.length - shown} 项）`, attr: { type: "button" } }).onclick = () => { li.remove(); batch(); }; } }; batch();
+      const batch = () => { for (const end = Math.min(shown + 50, nodes.length); shown < end; shown++) renderNode(nodes[shown]!, target); if (shown < nodes.length) { const li = target.createEl("li"); li.createEl("button", { cls: "tree-more", text: t("显示更多（剩余 {0} 项）", nodes.length - shown), attr: { type: "button" } }).onclick = () => { li.remove(); batch(); }; } }; batch();
     };
     const renderNode = (node: Tree, target: HTMLElement) => {
       const li = target.createEl("li"); const file = node.entry && !node.entry.directory;
@@ -89,17 +102,19 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
       const arrow = row.createSpan({ cls: "tree-chevron" }); if (!file) icon(arrow, "chevron");
       icon(row, file ? "file" : "folder"); row.createSpan({ cls: "tree-name", text: node.name + (file ? "" : "/") });
       const meta = row.createSpan({ cls: "tree-meta" }); const whole = !file ? policy.reason(node.path, undefined, true) : undefined;
-      if (file) meta.setText(node.reason ?? "随目录排除");
-      else if (whole) { meta.createSpan({ cls: "tree-tag whole", text: "整个目录已排除" }); if (!node.unknown) meta.createSpan({ text: `${node.count} 个文件` }); }
-      else meta.setText(`${node.excluded} / ${node.count} 个文件排除${node.unknownCount ? ` · 另有 ${node.unknownCount} 个目录` : ""}`);
-      row.title = node.reason ?? whole ?? node.path;
+      if (file) meta.setText(node.reason ? t(node.reason) : t("随目录排除"));
+      else if (whole) { meta.createSpan({ cls: "tree-tag whole", text: t("整个目录已排除") }); if (!node.unknown) meta.createSpan({ text: t("{0} 个文件", node.count) }); }
+      else meta.setText(t("{0} / {1} 个文件排除{2}", node.excluded, node.count, node.unknownCount ? t(" · 另有 {0} 个目录", node.unknownCount) : ""));
+      if (node.reason) row.title = t(node.reason);
+      else if (whole) row.title = t(whole);
+      else row.title = node.path;
       if (details) {
         let loaded = false;
         const load = async () => {
           if (loaded) return; loaded = true; const list = details.createEl("ul");
           if (node.unknown) {
             try { const children = await plugin.excludedChildren(node.path); if (closed || !details.isConnected) return; for (const e of children) { const child: Tree = { name: e.path.split("/").at(-1)!, path: e.path, children: new Map(), entry: e, count: e.directory ? 0 : 1, excluded: 1, unknown: !!e.directory, reason: policy.reason(e.path, e.size, e.directory) }; node.children.set(child.name, child); } }
-            catch { list.createEl("li", { cls: "tree-empty", text: "目录读取失败，仍保持整目录排除。" }); return; }
+            catch { list.createEl("li", { cls: "tree-empty", text: t("目录读取失败，仍保持整目录排除。") }); return; }
           }
           renderChildren(node, list);
         };
@@ -108,65 +123,74 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
     };
     renderChildren(root, host.createEl("ul"));
   };
-  const markDirty = () => { dirty = true; q("rules-badge").setText("有未保存的修改"); q("rules-feedback").setText("仅本机生效，不会修改其他客户端。"); renderTree(); };
+  const markDirty = () => { dirty = true; q("rules-badge").setText(t("有未保存的修改")); q("rules-feedback").setText(t("仅本机生效，不会修改其他客户端。")); renderTree(); };
   const renderRules = () => {
     for (const [id, values] of [["folders", draftRules.folders], ["suffixes", draftRules.suffixes]] as const) {
-      const root = q(id); root.empty(); if (!values.length) root.createEl("p", { cls: "empty-suffix", text: id === "folders" ? "未排除文件夹" : "未排除后缀" });
-      values.forEach(value => { const chip = root.createSpan({ cls: "chip", text: value + (id === "folders" ? "/" : "") }); chip.createEl("button", { text: "×", attr: { type: "button", "aria-label": `移除 ${value}` } }).onclick = () => { const key = id === "folders" ? "folders" : "suffixes"; draftRules[key] = draftRules[key].filter(item => item !== value); renderRules(); markDirty(); }; });
+      const root = q(id); root.empty(); if (!values.length) root.createEl("p", { cls: "empty-suffix", text: id === "folders" ? t("未排除文件夹") : t("未排除后缀") });
+      values.forEach(value => { const chip = root.createSpan({ cls: "chip", text: value + (id === "folders" ? "/" : "") }); chip.createEl("button", { text: "×", attr: { type: "button", "aria-label": t("移除 {0}", value) } }).onclick = () => { const key = id === "folders" ? "folders" : "suffixes"; draftRules[key] = draftRules[key].filter(item => item !== value); renderRules(); markDirty(); }; });
     }
-    const root = q("regexes"); root.empty(); if (!draftRules.regexes.length) root.createEl("p", { cls: "empty-suffix", text: "未设置正则排除规则" });
-    draftRules.regexes.forEach((r, index) => { const line = root.createDiv("regex-entry"); line.createEl("code", { text: `/${r.source}/${r.flags}` }); line.createEl("button", { text: "×", attr: { type: "button", "aria-label": `移除 ${r.source}` } }).onclick = () => { draftRules.regexes.splice(index, 1); renderRules(); markDirty(); }; });
+    const root = q("regexes"); root.empty(); if (!draftRules.regexes.length) root.createEl("p", { cls: "empty-suffix", text: t("未设置正则排除规则") });
+    draftRules.regexes.forEach((r, index) => { const line = root.createDiv("regex-entry"); line.createEl("code", { text: `/${r.source}/${r.flags}` }); line.createEl("button", { text: "×", attr: { type: "button", "aria-label": t("移除 {0}", r.source) } }).onclick = () => { draftRules.regexes.splice(index, 1); renderRules(); markDirty(); }; });
   };
   const add = (kind: "folder" | "suffix" | "regex"): boolean => {
     const field = input(`${kind}-input`);
     try {
       if (kind === "folder") { const value = folderPath(field.value); if (!draftRules.folders.includes(value)) draftRules.folders.push(value); }
-      else if (kind === "suffix") { const values = parseSuffixes(field.value); if (!values.length) throw new Error("请填写后缀"); draftRules.suffixes = [...new Set([...draftRules.suffixes, ...values])]; }
+      else if (kind === "suffix") { const values = parseSuffixes(field.value); if (!values.length) throw new Error(t("请填写后缀")); draftRules.suffixes = [...new Set([...draftRules.suffixes, ...values])]; }
       else { const rule = { source: field.value.trim(), flags: input("regex-ignore-case").checked ? "i" as const : "" as const }; draftRules = validateRules({ ...draftRules, regexes: [...draftRules.regexes, rule] }); }
       error(`${kind}-error`, ""); field.value = ""; renderRules(); markDirty(); return true;
     } catch (e) { error(`${kind}-error`, (e as Error).message); return false; }
   };
   for (const kind of ["folder", "suffix", "regex"] as const) { q(`add-${kind}`).onclick = () => add(kind); input(`${kind}-input`).onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); add(kind); } }; }
-  q("regex-hint").setText("RE2 正则；不支持回溯引用和前后查找，路径用 /。");
   input("max-size").oninput = markDirty;
   q("rules-form").onsubmit = async event => {
     event.preventDefault(); if (busy) return;
     for (const kind of ["folder", "suffix", "regex"] as const) if (input(`${kind}-input`).value.trim() && !add(kind)) return;
-    try { const rules = validateRules({ ...draftRules, maxMB: Number(input("max-size").value) }); await plugin.setRules(rules); if (closed) return; draftRules = structuredClone(rules); renderRules(); dirty = false; q("rules-badge").setText("仅本机生效"); q("rules-feedback").setText("已在本机保存；加密配置快照会在联网后上报。"); inventory = await plugin.inventory(); renderTree(); }
-    catch (e) { q("rules-feedback").setText(`保存失败：${(e as Error).name === "ZodError" ? "大小需为 1–100 MB，每类规则最多 64 条。" : (e as Error).message}`); }
+    try { const rules = validateRules({ ...draftRules, maxMB: Number(input("max-size").value) }); await plugin.setRules(rules); if (closed) return; draftRules = structuredClone(rules); renderRules(); dirty = false; q("rules-badge").setText(t("仅本机生效")); q("rules-feedback").setText(t("已在本机保存；加密配置快照会在联网后上报。")); inventory = await plugin.inventory(); renderTree(); }
+    catch (e) { q("rules-feedback").setText(t("保存失败：{0}", (e as Error).name === "ZodError" ? t("大小需为 1–100 MB，每类规则最多 64 条。") : t((e as Error).message))); }
   };
   const renderClients = () => {
     const clients = plugin.clients; const root = q("client-list"); root.empty(); if (!selectedClient || !clients.some(c => c.id === selectedClient)) selectedClient = clients.find(c => c.id !== plugin.engine?.deviceId)?.id ?? clients[0]?.id ?? "";
     const count = q("tab-clients").querySelector(".count"); if (count) count.textContent = String(clients.length);
-    for (const c of clients) { const button = root.createEl("button", { cls: "client-item", attr: { type: "button", "aria-pressed": String(c.id === selectedClient) } }); const mark = button.createSpan({ cls: "client-icon" }); icon(mark, "file"); const body = button.createSpan({ cls: "client-body" }); body.createSpan({ cls: "client-name", text: c.name }); body.createEl("p", { cls: "client-platform", text: c.configuration?.platform ?? "尚未上报配置" }); body.createEl("p", { cls: "client-state", text: c.revoked ? "已撤销设备授权" : c.reportedAt ? new Date(c.reportedAt).toLocaleString() : "无配置快照" }); button.onclick = () => { selectedClient = c.id; renderClients(); }; }
-    const detail = q("client-detail"); detail.empty(); const client = clients.find(c => c.id === selectedClient); if (!client) { detail.createEl("p", { cls: "tree-empty", text: "暂无客户端配置，请连接服务器后刷新。" }); return; }
-    const head = detail.createDiv("detail-head"); head.createEl("h3", { text: client.name }); if (client.revoked) head.createEl("p", { text: "此设备的服务访问已撤销，以下仅为历史配置快照。" }); head.createEl("p", { text: client.reportedAt ? `最近上报：${new Date(client.reportedAt).toLocaleString()}` : "该客户端尚未上报配置" });
-    const profile = client.configuration; if (!profile) { detail.createEl("p", { cls: "tree-empty", text: client.error ?? "没有可查看的配置快照。" }); return; }
+    for (const c of clients) { const button = root.createEl("button", { cls: "client-item", attr: { type: "button", "aria-pressed": String(c.id === selectedClient) } }); const mark = button.createSpan({ cls: "client-icon" }); icon(mark, "file"); const body = button.createSpan({ cls: "client-body" }); body.createSpan({ cls: "client-name", text: c.name }); body.createEl("p", { cls: "client-platform", text: c.configuration?.platform ?? t("尚未上报配置") }); body.createEl("p", { cls: "client-state", text: c.revoked ? t("已撤销设备授权") : c.reportedAt ? new Date(c.reportedAt).toLocaleString(plugin.i18n.locale) : t("无配置快照") }); button.onclick = () => { selectedClient = c.id; renderClients(); }; }
+    const detail = q("client-detail"); detail.empty(); const client = clients.find(c => c.id === selectedClient); if (!client) { detail.createEl("p", { cls: "tree-empty", text: t("暂无客户端配置，请连接服务器后刷新。") }); return; }
+    const head = detail.createDiv("detail-head"); head.createEl("h3", { text: client.name }); if (client.revoked) head.createEl("p", { text: t("此设备的服务访问已撤销，以下仅为历史配置快照。") }); head.createEl("p", { text: client.reportedAt ? t("最近上报：{0}", new Date(client.reportedAt).toLocaleString(plugin.i18n.locale)) : t("该客户端尚未上报配置") });
+    const profile = client.configuration; if (!profile) { detail.createEl("p", { cls: "tree-empty", text: client.error ? t(client.error) : t("没有可查看的配置快照。") }); return; }
     const list = detail.createEl("dl", { cls: "detail-body" });
     const row = (label: string, value: string) => { const r = list.createDiv("detail-row"); r.createEl("dt", { text: label }); r.createEl("dd", { text: value }); };
-    row("插件版本", profile.pluginVersion); row("同步状态", profile.autoSync ? "最近上报为开启" : "最近上报为暂停"); row("单文件上限", `${profile.rules.maxMB} MB`); row("排除后缀", profile.rules.suffixes.join("、") || "无"); row("排除文件夹", profile.rules.folders.join("、") || "无"); row("正则规则", profile.rules.regexes.map(r => `/${r.source}/${r.flags}`).join("；") || "无"); row("规则作用范围", "仅此客户端");
-    detail.createEl("p", { cls: "detail-footer", text: "本机解密的只读快照。查看不会修改任何客户端配置。" });
+    row(t("插件版本"), profile.pluginVersion); row(t("同步状态"), profile.autoSync ? t("最近上报为开启") : t("最近上报为暂停")); row(t("单文件上限"), `${profile.rules.maxMB} MB`); row(t("排除后缀"), profile.rules.suffixes.join(", ") || t("无")); row(t("排除文件夹"), profile.rules.folders.join(", ") || t("无")); row(t("正则规则"), profile.rules.regexes.map(r => `/${r.source}/${r.flags}`).join("; ") || t("无")); row(t("规则作用范围"), t("仅此客户端"));
+    detail.createEl("p", { cls: "detail-footer", text: t("本机解密的只读快照。查看不会修改任何客户端配置。") });
   };
   const chooseTab = async (tab: "local" | "clients") => {
     for (const name of ["local", "clients"]) { q(`tab-${name}`).setAttribute("aria-selected", String(tab === name)); q(`tab-${name}`).tabIndex = tab === name ? 0 : -1; q(`panel-${name}`).hidden = tab !== name; }
-    if (tab === "clients") { q("client-detail").setText("正在读取配置快照…"); try { await plugin.refreshClients(); if (!closed) renderClients(); } catch (e) { if (!closed) q("client-detail").setText(`无法获取配置快照：${(e as Error).message}`); } }
+    if (tab === "clients") { q("client-detail").setText(t("正在读取配置快照…")); try { await plugin.refreshClients(); if (!closed) renderClients(); } catch (e) { if (!closed) q("client-detail").setText(t("无法获取配置快照：{0}", (e as Error).message)); } }
   };
   for (const tab of ["local", "clients"] as const) { q(`tab-${tab}`).onclick = () => { void chooseTab(tab); }; q(`tab-${tab}`).onkeydown = e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); const next = tab === "local" ? "clients" : "local"; void chooseTab(next); q(`tab-${next}`).focus(); } }; }
-  for (const id of ["client-name", "endpoint", "key"]) input(id).oninput = () => { connectionDirty = true; if (id === "key") renderKeyState(); resetChecks(); validateName(); q("connection-badge").setText("未保存"); q("connection-feedback").setText("连接配置有修改，请保存并测试。"); };
+  for (const id of ["client-name", "endpoint", "key"]) input(id).oninput = () => { connectionDirty = true; if (id === "key") renderKeyState(); resetChecks(); validateName(); q("connection-badge").setText(t("未保存")); q("connection-feedback").setText(t("连接配置有修改，请保存并测试。")); };
   q("connection-form").onsubmit = async event => {
     event.preventDefault(); if (busy || !validateName()) return; busy = true; resetChecks();
     for (const id of ["client-name", "endpoint", "key", "save-connection", "pause"]) q<HTMLInputElement | HTMLButtonElement>(id).disabled = true;
-    q("save-connection").setText("测试中…");
-    try { await plugin.authorizeServer(input("endpoint").value, input("key").value, input("client-name").value, update); if (closed) return; connectionDirty = false; input("key").value = ""; renderKeyState(); input("endpoint").value = plugin.endpoint; input("client-name").value = plugin.deviceName; q("connection-badge").setText("验证通过"); q("connection-badge").dataset.state = "passed"; q("connection-feedback").setText(plugin.autoSync ? "服务授权已安全保存。请选择或创建同步库；已有绑定保留。" : "配置已安全保存，同步保持暂停。"); }
+    q("save-connection").setText(t("测试中…"));
+    try { await plugin.authorizeServer(input("endpoint").value, input("key").value, input("client-name").value, update); if (closed) return; connectionDirty = false; input("key").value = ""; renderKeyState(); input("endpoint").value = plugin.endpoint; input("client-name").value = plugin.deviceName; q("connection-badge").setText(t("验证通过")); q("connection-badge").dataset.state = "passed"; q("connection-feedback").setText(plugin.autoSync ? t("服务授权已安全保存。请选择或创建同步库；已有绑定保留。") : t("配置已安全保存，同步保持暂停。")); }
     catch { /* The host reports the exact failed boundary through update(). */ }
-    finally { busy = false; if (!closed) { for (const id of ["client-name", "endpoint", "key", "save-connection", "pause"]) q<HTMLInputElement | HTMLButtonElement>(id).disabled = false; q("save-connection").setText("保存并测试"); renderStatus(); } }
+    finally { busy = false; if (!closed) { for (const id of ["client-name", "endpoint", "key", "save-connection", "pause"]) q<HTMLInputElement | HTMLButtonElement>(id).disabled = false; q("save-connection").setText(t("保存并测试")); renderStatus(); } }
   };
-  q("pause").onclick = async () => { if (busy) return; try { await plugin.setAutoSync(!plugin.autoSync); renderStatus(); } catch { new Notice("无法保存暂停状态，请检查本机存储。"); } };
+  q("pause").onclick = async () => { if (busy) return; try { await plugin.setAutoSync(!plugin.autoSync); renderStatus(); } catch { new Notice(t("无法保存暂停状态，请检查本机存储。")); } };
   const disposeVault = vaultConnection(q("vault-connection"), plugin);
   resetChecks(); renderStatus(); renderRules(); renderTree(); const unsubscribe = plugin.subscribe(() => {
+    if (q.localize()) {
+      language.value = plugin.i18n.preference;
+      for (const id of ["connection-badge", "connection-feedback", "rules-badge", "rules-feedback", "size-error", "folder-error", "suffix-error", "regex-error"]) q(id).setText(t(q(id).textContent ?? ""));
+      for (const step of Object.keys(labels) as ConnectionStep[]) {
+        const row = shell.querySelector<HTMLElement>(`[data-step="${step}"]`)!;
+        if (row.hasAttribute("aria-label")) row.setAttribute("aria-label", `${t(labels[step])}: ${t(row.dataset.state === "passed" ? "通过" : row.dataset.state === "failed" ? "失败" : "进行中")}`);
+      }
+      validateName(); renderRules(); renderTree();
+      if (!q("panel-clients").hidden) renderClients();
+    }
     renderStatus(); timerHost().clearTimeout(refreshTimer);
     refreshTimer = timerHost().setTimeout(() => { void plugin.inventory().then(entries => { if (!closed && JSON.stringify(inventory) !== JSON.stringify(entries)) { inventory = entries; renderTree(); } }, () => {}); }, 200);
   });
-  void plugin.inventory().then(entries => { if (!closed) { inventory = entries; renderTree(); } }, () => { if (!closed) q("excluded-tree").setText("仓库索引读取失败，未把缺失内容当成删除。"); });
+  void plugin.inventory().then(entries => { if (!closed) { inventory = entries; renderTree(); } }, () => { if (!closed) q("excluded-tree").setText(t("仓库索引读取失败，未把缺失内容当成删除。")); });
   return () => { closed = true; disposeVault(); timerHost().clearTimeout(refreshTimer); input("key").value = ""; unsubscribe(); };
 }

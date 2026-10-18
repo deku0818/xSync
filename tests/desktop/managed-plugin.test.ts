@@ -10,13 +10,13 @@ import { AccessClient } from '../../plugin/src/sync/access-client';
 import { SyncEngine } from '../../plugin/src/sync/engine';
 import { Transport } from '../../plugin/src/sync/transport';
 import { SyncDB } from '../../plugin/src/sync/store';
-const host = vi.hoisted(() => ({ saved: null as unknown, failSave: false, failProtect: false, loseCreation: false, loseEnrollment: false, titleCaseHeaders: false, root: '', files: new Map<string, string>() }));
-vi.mock('obsidian', () => ({
+const host = vi.hoisted(() => ({ saved: null as unknown, failSave: false, failProtect: false, loseCreation: false, loseEnrollment: false, titleCaseHeaders: false, commands: [] as { name: string }[], root: '', files: new Map<string, string>() }));
+vi.mock('obsidian', () => ({ getLanguage: () => "zh",
  Plugin: class {
   constructor(public app: unknown, public manifest: unknown) {}
   addStatusBarItem() { return { setText() {}, addClass() {}, setAttribute() {}, dataset: {} }; }
   addRibbonIcon() { return { addClass() {}, setAttribute() {}, dataset: {} }; }
-  addCommand() {} addSettingTab() {} registerEvent() {} registerDomEvent() {}
+  addCommand(command: { name: string }) { command.name = "xSync: " + command.name; host.commands.push(command); return command; } addSettingTab() {} registerEvent() {} registerDomEvent() {}
   async loadData() { return host.saved; }
   async saveData(value: unknown) { if (host.failSave) throw new Error('SETTINGS_WRITE_FAILED'); host.saved = structuredClone(value); }
  }, Modal: class {}, PluginSettingTab: class {}, Setting: class {}, Notice: class {}, TFile: class {}, Platform: { isDesktop: true },
@@ -47,13 +47,33 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== '1')('managed plugin 
  beforeEach(async () => {
   fixture = new ManagedFixture(); await fixture.open(); dbId = randomId();
   host.root = join(fixture.root, 'plugin-files'); await mkdir(host.root, { recursive: true });
-  host.saved = null; host.failSave = false; host.failProtect = false; host.loseCreation = false; host.loseEnrollment = false; host.titleCaseHeaders = false; host.files.clear();
+  host.saved = null; host.failSave = false; host.failProtect = false; host.loseCreation = false; host.loseEnrollment = false; host.titleCaseHeaders = false; host.commands = []; host.files.clear();
   host.files.set('.obsidian/obsidian-sync-local/device.json', JSON.stringify({ deviceId: randomId(), databaseId: dbId }));
   vi.stubGlobal('window', {}); vi.stubGlobal('document', {});
   const issued = await fixture.admin<{ user: { id: string }; key: string }>('users', 'POST', { name: '测试用户' }); userId = issued.user.id; accessKey = issued.key; await load();
  });
  afterEach(async () => { plugin?.onunload(); plugin = undefined; await new SyncDB('obsidian-sync-dev-' + dbId).delete(); await fixture.close(); vi.unstubAllGlobals(); });
  async function create(): Promise<void> { await plugin!.authorizeServer(fixture.endpoint, accessKey, 'MacBook'); await plugin!.connectManagedVault('', 'my-vault-password', '工作笔记'); }
+ it('persists language before setup and across authorization, pause and restart without syncing it', async () => {
+  await plugin!.setLanguage('en'); expect(host.saved).toEqual({ language: 'en' });
+  expect(plugin!.syncStatus.label).toBe('Connection required');
+  expect(host.commands.map(command => command.name)).toContain('xSync: View sync status');
+  plugin!.onunload(); await load(); expect(plugin!.i18n.language).toBe('en');
+  await create(); await plugin!.setAutoSync(false);
+  const before = structuredClone(host.saved);
+  await plugin!.setLanguage('zh'); expect(host.saved).toEqual({ ...before as object, language: 'zh' });
+  expect(plugin!.engine?.unlocked).toBe(true); expect(plugin!.autoSync).toBe(false);
+  const snapshot = (await plugin!.refreshClients())[0]!.configuration;
+  expect(snapshot).toBeDefined(); expect(snapshot).not.toHaveProperty('language');
+  plugin!.onunload(); await load(); expect(plugin!.i18n.language).toBe('zh');
+  expect(plugin!.autoSync).toBe(false); expect(plugin!.vaultName).toBe('工作笔记');
+ }, 30000);
+ it('leaves the active language and all connection pointers intact when saving language fails', async () => {
+  await create(); const before = structuredClone(host.saved), bound = plugin!.boundVaultId;
+  host.failSave = true; await expect(plugin!.setLanguage('en')).rejects.toThrow('SETTINGS_WRITE_FAILED');
+  expect(plugin!.i18n.language).toBe('zh'); expect(host.saved).toEqual(before);
+  expect(plugin!.engine?.unlocked).toBe(true); expect(plugin!.boundVaultId).toBe(bound);
+ }, 30000);
  it.each(['fresh', 'rotated', 'restored'])('syncs uploads and downloads with mixed-case native headers after a %s connection', async phase => {
   host.titleCaseHeaders = true; await create();
   if (phase === 'rotated') {

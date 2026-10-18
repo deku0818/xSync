@@ -14,6 +14,7 @@ export class SyncOverview extends Modal {
   private closed = false;
   constructor(app: App, private plugin: ObsidianSyncPlugin, private configure: () => void, private anchor?: HTMLElement) { super(app); }
   onOpen(): void {
+    const t = this.plugin.i18n.t;
     this.modalEl.addClass("oss-overview-host");
     if (this.anchor) {
       this.containerEl.addClass("oss-status-container");
@@ -21,25 +22,26 @@ export class SyncOverview extends Modal {
       this.modalEl.style.setProperty("--oss-status-right", `${Math.max(8, view.innerWidth - rect.right)}px`);
       this.modalEl.style.setProperty("--oss-status-bottom", `${Math.max(8, view.innerHeight - rect.top + 6)}px`);
     }
-    const root = this.contentEl.createDiv("oss-app"), q = mountTemplate(root, overviewTemplate);
+    const root = this.contentEl.createDiv("oss-app"), q = mountTemplate(root, overviewTemplate, this.plugin.i18n);
     q("device-name").setText(this.plugin.deviceName);
     q("close-status").onclick = () => this.close();
     q("configure").onclick = () => { this.close(); this.configure(); };
-    q("pause").onclick = async () => { try { await this.plugin.setAutoSync(!this.plugin.autoSync); } catch { new Notice("同步设置未保存，请重试。"); } };
+    q("pause").onclick = async () => { try { await this.plugin.setAutoSync(!this.plugin.autoSync); } catch { new Notice(t("同步设置未保存，请重试。")); } };
     q("retry").onclick = () => { void this.plugin.sync(false).catch(() => {}); };
     let rendering = false, again = false;
     const render = async (): Promise<void> => {
       if (rendering) { again = true; return; } rendering = true;
       try {
+        q.localize();
         const status = await this.plugin.engine?.status(); if (this.closed) return;
-        const display = syncPresentation(status, !!this.plugin.engine?.unlocked, this.plugin.autoSync, this.plugin.syncing, this.plugin.localPending);
+        const display = syncPresentation(status, !!this.plugin.engine?.unlocked, this.plugin.autoSync, this.plugin.syncing, this.plugin.localPending, t);
         q("status-title").setText(display.label); q("status-description").setText(display.message);
         root.dataset.state = display.state;
         let statusIcon = "cloud";
         if (display.state === "complete") statusIcon = "check";
         else if (["conflict", "attention"].includes(display.state)) statusIcon = "alert";
         updateIcon(q("status-symbol"), statusIcon);
-        q("pause").setText(this.plugin.autoSync ? "暂停同步" : "恢复同步");
+        q("pause").setText(this.plugin.autoSync ? t("暂停同步") : t("恢复同步"));
         q<HTMLButtonElement>("pause").disabled = !this.plugin.engine;
         q("retry").hidden = display.state !== "attention";
         q<HTMLButtonElement>("retry").disabled = this.plugin.syncing || !this.plugin.autoSync;
@@ -53,10 +55,10 @@ export class SyncOverview extends Modal {
         const list = q("conflict-list"); list.empty();
         for (const conflict of conflicts) {
           const row = list.createDiv("quiet-conflict-row"); row.createSpan({ text: conflict.path });
-          if (conflict.reason === "CONCURRENT_REVISIONS") row.createEl("button", { text: "查看差异", cls: "primary", attr: { type: "button" } }).onclick = () => {
+          if (conflict.reason === "CONCURRENT_REVISIONS") row.createEl("button", { text: t("查看差异"), cls: "primary", attr: { type: "button" } }).onclick = () => {
             this.close(); new ConflictReview(this.app, this.plugin, conflict.id, conflict.path).open();
           };
-          else row.createSpan({ cls: "muted", text: "内容已保留，将自动重试" });
+          else row.createSpan({ cls: "muted", text: t("内容已保留，将自动重试") });
         }
       } finally { rendering = false; if (again && !this.closed) { again = false; void render(); } }
     };
@@ -70,11 +72,14 @@ export class ConflictReview extends Modal {
   private cleanup?: () => void;
   constructor(app: App, private plugin: ObsidianSyncPlugin, private fileId: string, private path: string) { super(app); }
   onOpen(): void {
+    const t = this.plugin.i18n.t;
     this.modalEl.addClass("oss-review-host");
-    const root = this.contentEl.createDiv("oss-app"), shell = root.createDiv("review-modal"), q = mountTemplate(shell, reviewTemplate);
+    const root = this.contentEl.createDiv("oss-app"), shell = root.createDiv("review-modal"), q = mountTemplate(shell, reviewTemplate, this.plugin.i18n);
     q("review-title").setText(this.path);
     let review: Review | undefined, closed = false, submitting = false, refreshing = false, again = false, ready = false, syncRequested = false;
     let mode = "", original = "", companion = "", draft = "", draftInitialized = false;
+    let updateMessage = (): string => '';
+    const showUpdate = (message: () => string): void => { updateMessage = message; q("update-message").setText(message()); };
     let draftWrites: Promise<unknown> = Promise.resolve();
     function versions(): Review["versions"] { return review?.versions ?? []; }
     function chosenVersion(): Review["versions"][number] | undefined {
@@ -87,10 +92,10 @@ export class ConflictReview extends Modal {
       return !!review && versions().length === 2 && versions().every(version => version.text !== null && version.bytes.length <= 65536);
     }
     const companionError = (): string => {
-      try { canonicalPath(companion); } catch { return "请填写有效的文件名。"; }
-      if (companion.normalize("NFC").toLowerCase() === this.path.normalize("NFC").toLowerCase()) return "另一份文件名不能与原文件相同。";
+      try { canonicalPath(companion); } catch { return t("请填写有效的文件名。"); }
+      if (companion.normalize("NFC").toLowerCase() === this.path.normalize("NFC").toLowerCase()) return t("另一份文件名不能与原文件相同。");
       const other = versions().find(version => version.revision !== original);
-      return this.plugin.policy.reason(companion, other?.length ?? other?.bytes.length) ? "这个文件名不在同步范围内。" : "";
+      return this.plugin.policy.reason(companion, other?.length ?? other?.bytes.length) ? t("这个文件名不在同步范围内。") : "";
     };
     const updateFooter = (): void => {
       const choice = chosenVersion();
@@ -98,15 +103,15 @@ export class ConflictReview extends Modal {
         (!!choice || mode === "both" && versions().length === 2 || mode === "merge" && comparable()) &&
         (mode !== "both" || !companionError()) && (mode !== "merge" || draftInitialized && new TextEncoder().encode(draft).length <= 65536);
       q<HTMLButtonElement>("confirm").disabled = !allowed;
-      let label = "确认";
-      if (submitting) label = "正在处理…";
-      else if (mode === "both") label = "确认保留双方";
-      else if (mode === "merge") label = "确认合并结果";
-      else if (choice) label = choice.kind === "deleted" ? "确认删除文件" : `确认用「${choice.device}」这份`;
+      let label = t("确认");
+      if (submitting) label = t("正在处理…");
+      else if (mode === "both") label = t("确认保留双方");
+      else if (mode === "merge") label = t("确认合并结果");
+      else if (choice) label = choice.kind === "deleted" ? t("确认删除文件") : t("确认用「{0}」这份", choice.device);
       q("confirm").setText(label);
-      let footerSummary = "其他文件继续同步";
-      if (!this.plugin.autoSync) footerSummary = "同步已暂停，恢复后才能确认。";
-      else if (!ready) footerSummary = "正在等待最新内容，原文件与草稿均保留。";
+      let footerSummary = t("其他文件继续同步");
+      if (!this.plugin.autoSync) footerSummary = t("同步已暂停，恢复后才能确认。");
+      else if (!ready) footerSummary = t("正在等待最新内容，原文件与草稿均保留。");
       q("footer-summary").setText(footerSummary);
     };
     const refreshChoices = (): void => {
@@ -120,42 +125,42 @@ export class ConflictReview extends Modal {
       q("companion-error").setText(mode === "both" ? companionError() : "");
       q<HTMLTextAreaElement>("merge-editor").value = draft; q<HTMLTextAreaElement>("merge-editor").disabled = submitting;
       q<HTMLButtonElement>("manual-merge").disabled = submitting || !ready || !comparable();
-      let summary = "没有默认选择，也可以稍后再处理。";
-      if (mode === "both") summary = `双方都保留，另一份保存为「${companion}」。`;
-      else if (mode === "merge") summary = "原文件将使用下方的合并结果。";
+      let summary = t("没有默认选择，也可以稍后再处理。");
+      if (mode === "both") summary = t("双方都保留，另一份保存为「{0}」。", companion);
+      else if (mode === "merge") summary = t("原文件将使用下方的合并结果。");
       else {
         const chosen = chosenVersion();
-        if (chosen) summary = chosen.kind === "deleted" ? "确认后会删除当前文件。" : `原文件将使用「${chosen.device}」的内容。`;
+        if (chosen) summary = chosen.kind === "deleted" ? t("确认后会删除当前文件。") : t("原文件将使用「{0}」的内容。", chosen.device);
       }
       q("choice-summary").setText(summary); updateFooter();
     };
     const renderCompare = (): void => {
       for (const [side, version] of [["a", versions()[0]], ["b", versions()[1]]] as const) {
-        q(`version-${side}-name`).setText(version?.device ?? "设备");
-        q(`version-${side}-tag`).setText(version?.deviceId === this.plugin.engine?.deviceId ? "此设备" : "另一台设备");
-        q(`choice-${side}`).setText(`用「${version?.device ?? "设备"}」这份${version?.kind === "deleted" ? "（删除）" : ""}`);
+        q(`version-${side}-name`).setText(version?.device ?? t("设备"));
+        q(`version-${side}-tag`).setText(version?.deviceId === this.plugin.engine?.deviceId ? t("此设备") : t("另一台设备"));
+        q(`choice-${side}`).setText(t("用「{0}」这份{1}", version?.device ?? t("设备"), version?.kind === "deleted" ? t("（删除）") : ""));
         q(`pane-${side}`).empty();
       }
       for (const node of extraElements) node.remove();
       extraElements.length = 0;
       for (const version of versions().slice(2)) {
-        const choice = q("choice-b").parentElement!.createEl("button", { text: `用「${version.device}」这份${version.kind === "deleted" ? "（删除）" : ""}`, attr: { type: "button", "data-mode": `version:${version.revision}`, "aria-pressed": "false" } });
+        const choice = q("choice-b").parentElement!.createEl("button", { text: t("用「{0}」这份{1}", version.device, version.kind === "deleted" ? t("（删除）") : ""), attr: { type: "button", "data-mode": `version:${version.revision}`, "aria-pressed": "false" } });
         choice.onclick = () => choose(`version:${version.revision}`); extraElements.push(choice);
         const section = q("comparison").createDiv("version"), header = section.createDiv("version-head");
-        header.createSpan({ text: version.device }); header.createEl("small", { text: version.deviceId === this.plugin.engine?.deviceId ? "此设备" : "另一台设备" });
-        section.createDiv("code-pane").setText(version.text ?? `${version.kind === "deleted" ? "删除文件" : "文件内容"} · ${version.length ?? version.bytes.length} 字节`);
+        header.createSpan({ text: version.device }); header.createEl("small", { text: version.deviceId === this.plugin.engine?.deviceId ? t("此设备") : t("另一台设备") });
+        section.createDiv("code-pane").setText(version.text ?? t("{0} · {1} 字节", version.kind === "deleted" ? t("删除文件") : t("文件内容"), version.length ?? version.bytes.length));
         extraElements.push(section);
       }
       if (!comparable()) {
         for (const [index, side] of ["a", "b"].entries()) {
           const version = versions()[index];
-          q(`pane-${side}`).setText(version?.text ?? `${version?.kind === "deleted" ? "删除文件" : "文件内容"} · ${version?.length ?? version?.bytes.length ?? 0} 字节`);
+          q(`pane-${side}`).setText(version?.text ?? t("{0} · {1} 字节", version?.kind === "deleted" ? t("删除文件") : t("文件内容"), version?.length ?? version?.bytes.length ?? 0));
         }
         return;
       }
       for (const row of compareLines(versions()[0]!.text!, versions()[1]!.text!)) for (const side of ["a", "b"] as const) {
         const version = versions()[side === "a" ? 0 : 1]!;
-        if (version.kind === "deleted") { q(`pane-${side}`).setText("这份修改删除了文件。"); continue; }
+        if (version.kind === "deleted") { q(`pane-${side}`).setText(t("这份修改删除了文件。")); continue; }
         let lineClass = "code-row";
         if (row[`${side}Line`] === undefined) lineClass += " blank";
         else if (row.type !== "same") {
@@ -183,13 +188,17 @@ export class ConflictReview extends Modal {
     q<HTMLTextAreaElement>("merge-editor").oninput = () => {
       draft = q<HTMLTextAreaElement>("merge-editor").value; draftInitialized = true;
       const text = draft; draftWrites = draftWrites.catch(() => {}).then(() => this.plugin.engine!.saveMergeDraft(this.fileId, text));
-      void draftWrites.catch(() => { if (!closed) q("footer-summary").setText("草稿暂未保存，请先保留此窗口。"); }); updateFooter();
+      void draftWrites.catch(() => { if (!closed) q("footer-summary").setText(t("草稿暂未保存，请先保留此窗口。")); }); updateFooter();
     };
     q("defer").onclick = () => this.close();
     q("close-review").onclick = () => this.close();
     const refresh = async (): Promise<void> => {
       if (closed || submitting || !this.plugin.engine) return;
       if (refreshing) { again = true; return; }
+      if (q.localize()) {
+        if (review) renderCompare();
+        q("update-message").setText(updateMessage());
+      }
       refreshing = true; updateFooter();
       try {
         const latest = await this.plugin.engine.review(this.fileId, review);
@@ -198,21 +207,21 @@ export class ConflictReview extends Modal {
           const changed = !!review; review = latest; mode = ""; original = ""; companion = "";
           this.path = latest.path; q("review-title").setText(this.path);
           q("update-banner").hidden = !changed;
-          q("update-message").setText(`内容已更新，请重新选择。${draftInitialized ? "合并草稿仍保留。" : ""}`);
+          showUpdate(() => t("内容已更新，请重新选择。{0}", draftInitialized ? t("合并草稿仍保留。") : ""));
           renderCompare();
-        } else if (!ready) { q("update-banner").hidden = false; q("update-message").setText("最新内容已就绪，请重新选择。"); }
+        } else if (!ready) { q("update-banner").hidden = false; showUpdate(() => t("最新内容已就绪，请重新选择。")); }
         ready = versions().length >= 2; syncRequested = false;
         q("comparison").hidden = !ready; q("decisions").hidden = !ready;
-        q("review-description").setText(comparable() ? "双方内容均保留，请对比后选择。" : "所有版本均保留，可选择一份；两个文件版本也可都保留。");
+        q("review-description").setText(comparable() ? t("双方内容均保留，请对比后选择。") : t("所有版本均保留，可选择一份；两个文件版本也可都保留。"));
       } catch (error) {
         if (closed) return;
         ready = false; mode = "";
         q("comparison").hidden = true; q("decisions").hidden = true;
         const code = error instanceof Error ? error.message : "";
         const localPending = code === "REVIEW_LOCAL_CHANGES_PENDING" || code === "LOCAL_EDITOR_CHANGES_PENDING";
-        let message = "暂时无法读取最新内容，正在等待重试。原文件与草稿均保留。";
-        if (localPending) message = "正在同步这篇笔记的最新修改，完成后将自动更新对比。";
-        else if (code === "NO_REMOTE_CONFLICT") message = "这篇笔记的冲突已处理，可以关闭此窗口。";
+        let message = t("暂时无法读取最新内容，正在等待重试。原文件与草稿均保留。");
+        if (localPending) message = t("正在同步这篇笔记的最新修改，完成后将自动更新对比。");
+        else if (code === "NO_REMOTE_CONFLICT") message = t("这篇笔记的冲突已处理，可以关闭此窗口。");
         q("review-description").setText(message);
         if (localPending && !syncRequested && this.plugin.autoSync) {
           syncRequested = true; void this.plugin.sync(false, false).catch(() => {});
@@ -233,7 +242,7 @@ export class ConflictReview extends Modal {
         if (closed) return;
         const code = error instanceof Error ? error.message : "";
         q("update-banner").hidden = false;
-        q("update-message").setText(["REVIEW_STALE", "REVIEW_LOCAL_CHANGES_PENDING", "LOCAL_EDITOR_CHANGES_PENDING"].includes(code) ? "笔记有新修改，正在更新对比。合并草稿仍保留。" : "暂时没有处理成功，原文件与草稿均保留。");
+        showUpdate(() => ["REVIEW_STALE", "REVIEW_LOCAL_CHANGES_PENDING", "LOCAL_EDITOR_CHANGES_PENDING"].includes(code) ? t("笔记有新修改，正在更新对比。合并草稿仍保留。") : t("暂时没有处理成功，原文件与草稿均保留。"));
         mode = ""; ready = false;
       } finally { submitting = false; if (!closed) { refreshChoices(); void refresh(); } }
     };
@@ -241,7 +250,7 @@ export class ConflictReview extends Modal {
     this.cleanup = () => { closed = true; unsubscribe(); };
     void this.plugin.engine?.loadMergeDraft(this.fileId).then(text => {
       if (!closed && !draftInitialized && text !== null) { draft = text; draftInitialized = true; refreshChoices(); }
-    }, () => { if (!closed) q("footer-summary").setText("草稿暂时无法读取，原记录仍保留。"); });
+    }, () => { if (!closed) q("footer-summary").setText(t("草稿暂时无法读取，原记录仍保留。")); });
     refreshChoices(); void refresh();
   }
   onClose(): void { this.cleanup?.(); this.contentEl.empty(); }

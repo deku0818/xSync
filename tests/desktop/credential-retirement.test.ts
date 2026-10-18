@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-vi.mock("obsidian", () => ({ Plugin: class {}, Modal: class {}, PluginSettingTab: class {}, Setting: class {}, Notice: class {}, TFile: class {}, MarkdownView: class {}, Platform: { isDesktop: false, isIosApp: true }, requestUrl: vi.fn() }));
+vi.mock("obsidian", () => ({ getLanguage: () => "zh", Plugin: class {}, Modal: class {}, PluginSettingTab: class {}, Setting: class {}, Notice: class {}, TFile: class {}, MarkdownView: class {}, Platform: { isDesktop: false, isIosApp: true }, requestUrl: vi.fn() }));
 import ObsidianSyncPlugin from "../../plugin/src/sync-main";
 import { RememberedUnlock, type StoredMaterial } from "../../plugin/src/desktop/remembered-unlock";
 import { iosProtector, type IosRuntime, type IosKeychain } from "../../plugin/src/mobile/ios-protector";

@@ -1,3 +1,4 @@
+import { I18n } from "../../plugin/src/i18n";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { JSDOM } from "jsdom";
 import type { App } from "obsidian";
@@ -20,12 +21,15 @@ vi.mock("obsidian", async () => {
     sanitizeHTMLToDom: (markup: string) => createDOMPurify(window).sanitize(markup, { RETURN_DOM_FRAGMENT: true }),
   };
 });
+import { connectionForm } from "../../plugin/src/ui/connection-form";
+import { defaultRules } from "../../plugin/src/sync/policy";
 import { ConflictReview, SyncOverview } from "../../plugin/src/ui/sync-panels";
 
 let browser: JSDOM, listeners: Set<() => void>, pending: boolean, latest: Review, plugin: ObsidianSyncPlugin, currentStatus: EngineStatus;
-function element(this: HTMLElement, tag: string, options: { cls?: string; text?: string; attr?: Record<string, string> } = {}): HTMLElement {
+function element(this: HTMLElement, tag: string, options: { cls?: string; text?: string; type?: string; attr?: Record<string, string> } = {}): HTMLElement {
   const node = this.ownerDocument.createElement(tag);
   if (options.cls) node.className = options.cls;
+  if (options.type) node.setAttribute("type", options.type);
   if (options.text) node.textContent = options.text;
   for (const [key, value] of Object.entries(options.attr ?? {})) node.setAttribute(key, value);
   this.append(node); return node;
@@ -51,7 +55,7 @@ beforeEach(() => {
   host.close.length = 0; host.notices.length = 0; listeners = new Set(); pending = false; latest = review("computer-1", "computer first content");
   currentStatus = { state: "complete", outbox: 0, inbox: 0, conflicts: 0, errors: [] };
   plugin = {
-    deviceName: "MacBook Pro", autoSync: true, syncing: false, localPending: false, hostError: "", policy: { reason: () => null },
+    i18n: new I18n("zh"), deviceName: "MacBook Pro", autoSync: true, syncing: false, localPending: false, hostError: "", policy: { reason: () => null },
     subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); },
     sync: vi.fn(async () => {}),
     setAutoSync: vi.fn(async (enabled: boolean) => { plugin.autoSync = enabled; emit(); }),
@@ -129,4 +133,67 @@ it("allows an explicit choice among three heads and retains the complete observe
   await savePreview("three-head-conflict"); document.querySelector<HTMLButtonElement>('[data-mode="version:third"]')!.click();
   expect(button("confirm").disabled).toBe(false); button("confirm").click();
   await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest,"third",undefined,undefined));
+});
+
+it('changes overview language live, including pause state and accessible controls', async () => {
+ new SyncOverview({} as App, plugin, () => {}).open();
+ await vi.waitFor(() => expect(query('status-title').textContent).toBe('已同步'));
+ plugin.i18n.preference = 'en'; emit();
+ await vi.waitFor(() => expect(query('status-title').textContent).toBe('Synced'));
+ expect(query('close-status').getAttribute('aria-label')).toBe('Close sync status');
+ button('pause').click(); await vi.waitFor(() => expect(query('status-title').textContent).toBe('Paused'));
+ expect(query('pause').textContent).toBe('Resume sync');
+});
+
+it('preserves merge decisions and draft contents across a live language switch', async () => {
+ latest.versions[0]!.text = '已同步'; latest.versions[0]!.device = '我的电脑';
+ new ConflictReview({} as App, plugin, 'F', '中文笔记.md').open();
+ await vi.waitFor(() => expect(query('comparison').hidden).toBe(false)); button('manual-merge').click();
+ const editor = query('merge-editor') as HTMLTextAreaElement;
+ editor.value = '已同步：用户合并的中文内容'; editor.dispatchEvent(new browser.window.Event('input'));
+ await vi.waitFor(() => expect(plugin.engine!.saveMergeDraft).toHaveBeenCalledOnce());
+ plugin.i18n.preference = 'en'; emit();
+ await vi.waitFor(() => expect(button('confirm').textContent).toBe('Confirm merged result'));
+ expect(editor.value).toBe('已同步：用户合并的中文内容'); expect(query('version-a-name').textContent).toBe('我的电脑');
+ expect(query('pane-a').textContent).toContain('已同步'); expect(button('confirm').disabled).toBe(false);
+ button('confirm').click();
+ await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest, '', undefined, new TextEncoder().encode('已同步：用户合并的中文内容')));
+});
+
+it('keeps the chosen companion path when translating a conflict comparison', async () => {
+ new ConflictReview({} as App, plugin, 'F', 'note.md').open();
+ await vi.waitFor(() => expect(query('comparison').hidden).toBe(false)); button('choice-both').click();
+ const field = query('companion-path') as HTMLInputElement; field.value = '用户选的文件.md'; field.dispatchEvent(new browser.window.Event('input'));
+ plugin.i18n.preference = 'en'; emit();
+ await vi.waitFor(() => expect(button('confirm').textContent).toBe('Confirm keeping both'));
+ expect(field.value).toBe('用户选的文件.md'); expect(button('choice-both').getAttribute('aria-pressed')).toBe('true');
+});
+
+it('switches the connection form without clearing unsaved names, keys, rules or vault passwords', async () => {
+ Object.assign(plugin, {
+  rules: defaultRules(), clients: [], deviceName: '我的电脑', endpoint: '', accessSaved: true, boundVaultId: '', accessibleVaults: [],
+  localVaultName: '中文知识库', syncStatus: { label: '已同步' }, configurationReloadNeeded: false,
+  inventory: async () => [], refreshVaults: async () => {},
+  setLanguage: vi.fn(async language => { plugin.i18n.preference = language; emit(); }),
+ });
+ const root = document.body.createDiv(); const dispose = connectionForm(root, plugin);
+ try {
+  await vi.waitFor(() => expect(root.textContent).toContain('＋ 创建同步库'));
+  [...root.querySelectorAll('button')].find(button => button.textContent === '＋ 创建同步库')!.click();
+  const endpoint = query('endpoint') as HTMLInputElement, key = query('key') as HTMLInputElement, folder = query('folder-input') as HTMLInputElement;
+  endpoint.value = 'https://unsaved.example'; key.value = 'unsaved-access-key'; folder.value = '中文附件';
+  let password = root.querySelector<HTMLInputElement>('.oss-vault-fields input[type="password"]')!;
+  password.value = '尚未提交的密码';
+  const consent = root.querySelector<HTMLInputElement>('.oss-vault-consent input')!; consent.checked = true;
+  const language = query('language') as HTMLSelectElement; language.value = 'en'; language.dispatchEvent(new browser.window.Event('change'));
+  await vi.waitFor(() => expect(language.disabled).toBe(false));
+  expect(plugin.setLanguage).toHaveBeenCalledWith('en'); expect(query('save-connection').textContent).toBe('Save and test');
+  expect(endpoint.value).toBe('https://unsaved.example'); expect(key.value).toBe('unsaved-access-key'); expect(folder.value).toBe('中文附件');
+  password = root.querySelector<HTMLInputElement>('.oss-vault-fields input[type="password"]')!;
+  expect(password.value).toBe('尚未提交的密码'); expect(root.querySelector<HTMLInputElement>('.oss-vault-consent input')!.checked).toBe(true);
+  expect(root.textContent).toContain('Create and start syncing'); expect(root.textContent).toContain('我的电脑');
+  expect(root.querySelector<HTMLInputElement>('.oss-vault-fields input[type="text"]')!.value).toBe('中文知识库');
+  plugin.i18n.preference = 'zh'; emit(); expect(query('save-connection').textContent).toBe('保存并测试');
+  expect(root.querySelector<HTMLInputElement>('.oss-vault-fields input[type="password"]')!.value).toBe('尚未提交的密码');
+ } finally { dispose(); }
 });

@@ -1,3 +1,4 @@
+import { setHTML } from './dom';
 import { I18n, templateLocalizer, type LanguagePreference } from '../../shared/i18n';
 import { english } from './translations';
 
@@ -17,22 +18,23 @@ interface Vault { userId: string; id: string; name: string; userName: string; de
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const esc = (value: string): string => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 const messages: Record<string, string> = { UNAUTHORIZED: '登录已失效，请重新登录。', NAME_TAKEN: '这个名称已使用，请换一个名称。', INVALID_REQUEST: '请检查填写的内容。', LOGIN_RATE_LIMITED: '登录尝试过多，请稍后再试。', USER_NOT_FOUND: '用户已不存在，请刷新列表。', DELETE_CONFIRMATION_REQUIRED: '请输入准确的用户名称。' };
-let users: User[] = [], tab = 'users', busy = false, toastTimer: ReturnType<typeof setTimeout>;
+let users: User[] = [], tab = 'users', busy = false, toastTimer: number | undefined;
 async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
  const response = await fetch('/admin/api/' + path, { method, credentials: 'same-origin', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
- const value = await response.json();
+ const value: unknown = await response.json();
  if (!response.ok) {
+  const code = typeof value === 'object' && value !== null && 'code' in value && typeof value.code === 'string' ? value.code : '';
   if (response.status === 401 && path !== 'login') showLogin();
-  if (path === 'login' && value.code === 'UNAUTHORIZED') throw new Error(t("管理密码错误，请重试。"));
-  throw new Error(t(messages[value.code] ?? '操作未完成，请稍后重试。'));
+  if (path === 'login' && code === 'UNAUTHORIZED') throw new Error(t("管理密码错误，请重试。"));
+  throw new Error(t(messages[code] ?? '操作未完成，请稍后重试。'));
  }
  return value as T;
 }
-function toast(text: string): void { clearTimeout(toastTimer); $('toast').textContent = text; $('toast').hidden = false; toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3500); }
+function toast(text: string): void { window.clearTimeout(toastTimer); $('toast').textContent = text; $('toast').hidden = false; toastTimer = window.setTimeout(() => { $('toast').hidden = true; }, 3500); }
 function showLogin(): void { $('admin-view').hidden = true; $('login-view').hidden = false; closeModal(); }
 function closeModal(): void { $<HTMLDialogElement>('modal').close(); $('modal-body').replaceChildren(); $('modal-actions').replaceChildren(); }
 function modal(title: string, body: string, actions: { text: string; run(): void | Promise<void>; className?: string; id?: string; disabled?: boolean }[]): void {
- $('modal-body').innerHTML = `<h2 id="modal-title">${esc(title)}</h2>${body}<p id="modal-error" class="admin-error" role="alert"></p>`;
+ setHTML($('modal-body'), `<h2 id="modal-title">${esc(title)}</h2>${body}<p id="modal-error" class="admin-error" role="alert"></p>`);
  $('modal-actions').replaceChildren();
  for (const action of actions) {
   const button = document.createElement('button'); button.textContent = action.text; button.className = action.className ?? ''; if (action.id) button.id = action.id; button.disabled = !!action.disabled;
@@ -50,7 +52,7 @@ function oneTimeKey(name: string, key: string): void {
 function heading(title: string, description: string, action = ''): string { return `<div class="page-head"><div><h1>${title}</h1><p>${description}</p></div>${action}</div>`; }
 function renderRows(): void {
  const query = $<HTMLInputElement>('search').value.trim().toLocaleLowerCase();
- $('rows').innerHTML = users.filter(user => (user.name + user.id).toLocaleLowerCase().includes(query)).map(user => `<tr><td><div class="user-cell"><span class="avatar">${esc(Array.from(user.name)[0]!)}</span><div>${esc(user.name)}<small class="mono" title="${esc(user.id)}">${esc(user.id.slice(0, 8))}…</small></div></div></td><td><span class="tag ${user.active ? 'green' : 'amber'}">${user.active ? t("已启用") : t("已停用")}</span></td><td><span class="mono">•••••• …${esc(user.keyTail)}</span><small>${t("第 {0} 版 · 仅展示末尾", user.keyRevision)}</small></td><td>${t("{0} 个", user.vaults)}</td><td><div class="table-actions"><button data-id="${user.id}" data-action="detail">${t("详情")}</button><button data-id="${user.id}" data-action="rotate">${t("刷新 key")}</button><button data-id="${user.id}" data-action="toggle">${user.active ? t("停用") : t("恢复")}</button><button data-id="${user.id}" data-action="delete" class="danger">${t("删除")}</button></div></td></tr>`).join('') || `<tr><td colspan="5" class="empty">${t("暂无用户。创建用户后，将访问 key 交给对方。")}</td></tr>`;
+ setHTML($('rows'), users.filter(user => (user.name + user.id).toLocaleLowerCase().includes(query)).map(user => `<tr><td><div class="user-cell"><span class="avatar">${esc(Array.from(user.name)[0]!)}</span><div>${esc(user.name)}<small class="mono" title="${esc(user.id)}">${esc(user.id.slice(0, 8))}…</small></div></div></td><td><span class="tag ${user.active ? 'green' : 'amber'}">${user.active ? t("已启用") : t("已停用")}</span></td><td><span class="mono">•••••• …${esc(user.keyTail)}</span><small>${t("第 {0} 版 · 仅展示末尾", user.keyRevision)}</small></td><td>${t("{0} 个", user.vaults)}</td><td><div class="table-actions"><button data-id="${user.id}" data-action="detail">${t("详情")}</button><button data-id="${user.id}" data-action="rotate">${t("刷新 key")}</button><button data-id="${user.id}" data-action="toggle">${user.active ? t("停用") : t("恢复")}</button><button data-id="${user.id}" data-action="delete" class="danger">${t("删除")}</button></div></td></tr>`).join('') || `<tr><td colspan="5" class="empty">${t("暂无用户。创建用户后，将访问 key 交给对方。")}</td></tr>`);
  $('rows').querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => { button.onclick = () => { const user = users.find(item => item.id === button.dataset.id)!; act(user, button.dataset.action!); }; });
 }
 async function render(): Promise<void> {
@@ -61,7 +63,7 @@ async function render(): Promise<void> {
  try {
   if (tab === 'users') {
    users = (await api<{ users: User[] }>('users')).users;
-   $('content').innerHTML = heading(t("用户与访问 key"), t("为每位用户发放独立访问凭据，统一管理同步权限。"), `<button id="create-user" class="primary">${t("＋ 创建用户")}</button>`) + `<div class="stats"><div class="stat"><label>${t("用户总数")}</label><strong>${users.length}</strong><small>${t("{0} 位启用 · {1} 位停用", users.filter(user => user.active).length, users.filter(user => !user.active).length)}</small></div><div class="stat"><label>${t("同步库")}</label><strong>${users.reduce((sum, user) => sum + user.vaults, 0)}</strong><small>${t("由用户在 Obsidian 中创建")}</small></div><div class="stat"><label>${t("内容保护")}</label><strong>${t("端到端加密")}</strong><small>${t("管理员无法查看加密密码")}</small></div></div><section class="card"><div class="card-head"><div><h2>${t("所有用户")}</h2><p>${t("每位用户一个有效 key，刷新后原 key 及旧设备授权失效。")}</p></div><input id="search" class="search" aria-label="${t("搜索用户")}" placeholder="${t("搜索用户名或 ID")}"></div><div class="table-scroll"><table><thead><tr><th>${t("用户")}</th><th>${t("状态")}</th><th>${t("访问 key")}</th><th>${t("同步库")}</th><th>${t("操作")}</th></tr></thead><tbody id="rows"></tbody></table></div><div class="card-foot">${t("key 仅在生成时展示一次。刷新不影响库的加密密码与已有内容。")}</div></section><aside class="note purple"><strong>${t("访问权限与内容解密分开管理。")}</strong><br>${t("访问 key 允许用户与 xSync 通信；库加密密码由用户在插件中设置。")}</aside>`;
+   setHTML($('content'), heading(t("用户与访问 key"), t("为每位用户发放独立访问凭据，统一管理同步权限。"), `<button id="create-user" class="primary">${t("＋ 创建用户")}</button>`) + `<div class="stats"><div class="stat"><label>${t("用户总数")}</label><strong>${users.length}</strong><small>${t("{0} 位启用 · {1} 位停用", users.filter(user => user.active).length, users.filter(user => !user.active).length)}</small></div><div class="stat"><label>${t("同步库")}</label><strong>${users.reduce((sum, user) => sum + user.vaults, 0)}</strong><small>${t("由用户在 Obsidian 中创建")}</small></div><div class="stat"><label>${t("内容保护")}</label><strong>${t("端到端加密")}</strong><small>${t("管理员无法查看加密密码")}</small></div></div><section class="card"><div class="card-head"><div><h2>${t("所有用户")}</h2><p>${t("每位用户一个有效 key，刷新后原 key 及旧设备授权失效。")}</p></div><input id="search" class="search" aria-label="${t("搜索用户")}" placeholder="${t("搜索用户名或 ID")}"></div><div class="table-scroll"><table><thead><tr><th>${t("用户")}</th><th>${t("状态")}</th><th>${t("访问 key")}</th><th>${t("同步库")}</th><th>${t("操作")}</th></tr></thead><tbody id="rows"></tbody></table></div><div class="card-foot">${t("key 仅在生成时展示一次。刷新不影响库的加密密码与已有内容。")}</div></section><aside class="note purple"><strong>${t("访问权限与内容解密分开管理。")}</strong><br>${t("访问 key 允许用户与 xSync 通信；库加密密码由用户在插件中设置。")}</aside>`);
    $<HTMLInputElement>('search').value = search; renderRows(); $('search').oninput = renderRows;
    $('create-user').onclick = () => {
     modal(t("创建用户"), `<p class="dialog-lead">${t("填写备注名，生成独立访问 key。")}</p><label class="field" for="user-name">${t("用户名称")}</label><input id="user-name" maxlength="80" autocomplete="off">`, [{ text: t("取消"), run: closeModal }, { text: t("创建并生成 key"), className: 'primary', run: async () => {
@@ -71,10 +73,10 @@ async function render(): Promise<void> {
    };
   } else if (tab === 'vaults') {
    const { vaults } = await api<{ vaults: Vault[] }>('vaults');
-   $('content').innerHTML = heading(t("同步库"), t("查看用户所属库与设备接入记录。")) + `<section class="card"><div class="table-scroll"><table><thead><tr><th>${t("同步库")}</th><th>${t("所属用户")}</th><th>${t("已接入设备")}</th><th>${t("访问状态")}</th></tr></thead><tbody>${vaults.map(vault => `<tr><td>${esc(vault.name)}<small class="mono" title="${esc(vault.id)}">${esc(vault.id.slice(0, 8))}…</small></td><td>${esc(vault.userName)}</td><td>${t("{0} 台", vault.devices)}</td><td><span class="tag ${vault.active ? 'green' : 'amber'}">${vault.active ? t("允许同步") : t("用户已停用")}</span></td></tr>`).join('') || `<tr><td colspan="4" class="empty">${t("暂无同步库。用户连接插件后可创建。")}</td></tr>`}</tbody></table></div><div class="card-foot">${t("设备接入记录不代表当前在线或已经完成同步。")}</div></section><div class="note">${t("后台不会展示笔记内容、文件路径或库加密密码。")}</div>`;
+   setHTML($('content'), heading(t("同步库"), t("查看用户所属库与设备接入记录。")) + `<section class="card"><div class="table-scroll"><table><thead><tr><th>${t("同步库")}</th><th>${t("所属用户")}</th><th>${t("已接入设备")}</th><th>${t("访问状态")}</th></tr></thead><tbody>${vaults.map(vault => `<tr><td>${esc(vault.name)}<small class="mono" title="${esc(vault.id)}">${esc(vault.id.slice(0, 8))}…</small></td><td>${esc(vault.userName)}</td><td>${t("{0} 台", vault.devices)}</td><td><span class="tag ${vault.active ? 'green' : 'amber'}">${vault.active ? t("允许同步") : t("用户已停用")}</span></td></tr>`).join('') || `<tr><td colspan="4" class="empty">${t("暂无同步库。用户连接插件后可创建。")}</td></tr>`}</tbody></table></div><div class="card-foot">${t("设备接入记录不代表当前在线或已经完成同步。")}</div></section><div class="note">${t("后台不会展示笔记内容、文件路径或库加密密码。")}</div>`);
   } else {
    const { entries } = await api<{ entries: { at: string; message: string }[] }>('audit');
-   $('content').innerHTML = heading(t("操作记录"), t("最近的用户与访问权限管理操作。")) + `<section class="card">${entries.map(entry => `<div class="log-row"><time>${esc(new Date(entry.at).toLocaleString(i18n.locale))}</time><span>${esc(t(entry.message))}</span></div>`).join('') || `<div class="empty">${t("暂无操作记录。")}</div>`}</section>`;
+   setHTML($('content'), heading(t("操作记录"), t("最近的用户与访问权限管理操作。")) + `<section class="card">${entries.map(entry => `<div class="log-row"><time>${esc(new Date(entry.at).toLocaleString(i18n.locale))}</time><span>${esc(t(entry.message))}</span></div>`).join('') || `<div class="empty">${t("暂无操作记录。")}</div>`}</section>`);
   }
  } catch (error) { $('page-error').textContent = (error as Error).message; }
 }

@@ -129,3 +129,16 @@ it('translates management confirmations while still requiring the exact original
  name.value = 'Enabled'; name.dispatchEvent(new dom!.window.Event('input')); expect(confirm.disabled).toBe(true);
  name.value = '已启用'; name.dispatchEvent(new dom!.window.Event('input')); expect(confirm.disabled).toBe(false);
 });
+
+it('sanitizes admin template boundaries while retaining form controls, labels and action hooks', async () => {
+ const sanitizerSource = (await build({ entryPoints: ['server/admin/dom.ts'], bundle: true, write: false, format: 'iife', globalName: 'adminHTML', target: 'es2022' })).outputFiles[0]!.text;
+ dom = new JSDOM('', { runScripts: 'outside-only' });
+ const window = dom.window;
+ const renderer = window.eval(sanitizerSource + '\nadminHTML;') as { setHTML(target: HTMLElement, markup: string): void };
+ const target = window.document.createElement('div'); window.document.body.append(target);
+ renderer.setHTML(target, '<script>alert(1)</script><img src=x onerror="alert(1)"><svg onload="alert(1)"></svg><a href="javascript:alert(1)">unsafe</a><label for="key">Access key</label><input id="key" type="password" autocomplete="off"><input type="checkbox" checked><button data-action="detail" data-id="fixture">Details</button>');
+ expect(target.querySelector('script,svg,[onerror],[onload],[href^="javascript:"]')).toBeNull();
+ expect(target.querySelector('label')!.htmlFor).toBe('key'); expect(target.querySelector<HTMLInputElement>('#key')!.type).toBe('password');
+ expect(target.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+ expect(target.querySelector('button')!.dataset).toMatchObject({ action: 'detail', id: 'fixture' });
+});

@@ -23,6 +23,7 @@ RUN mkdir -p /runtime/objects && chown -R 65532:65532 /runtime
 
 FROM scratch
 COPY LICENSE /usr/share/licenses/xsync/LICENSE
+COPY --from=admin /src/node_modules/dompurify/LICENSE /usr/share/licenses/dompurify/LICENSE
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/xsync-server /usr/local/bin/xsync-server
 COPY --from=build --chown=65532:65532 /runtime/ /data/

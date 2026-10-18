@@ -350,9 +350,11 @@ export default class ObsidianSyncPlugin extends Plugin {
           const manifestPath = `${this.root}/managed-create.json`, adapter = this.app.vault.adapter;
           const schema = z.strictObject({ endpoint: z.string(), userId: z.string(), id: z.string(), name: z.string(), epoch: z.string(), keyPackage: z.unknown() });
           const pending = await adapter.exists(manifestPath) ? schema.parse(JSON.parse(await adapter.read(manifestPath))) : null;
-          let draft: z.infer<typeof schema>;
-          if (pending && pending.endpoint === this.endpoint && pending.userId === connection.user.id && pending.name === name) draft = pending;
-          else {
+          let draft = pending && pending.endpoint === this.endpoint && pending.userId === connection.user.id && pending.name === name ? pending : null;
+          stage?.("storage");
+          await this.checkManagedProgress(draft);
+          stage?.("key");
+          if (!draft) {
             const id = randomId(), created = await VaultCrypto.create(id, password); created.crypto.close();
             draft = { endpoint: this.endpoint, userId: connection.user.id, id, name, epoch: randomId(), keyPackage: created.keyPackage };
             const encoded = JSON.stringify(draft); await adapter.write(manifestPath, encoded);
@@ -368,12 +370,22 @@ export default class ObsidianSyncPlugin extends Plugin {
           const selected = connection.vaults.find(vault => vault.id === vaultId);
           if (!selected) throw new Error("VAULT_NOT_FOUND");
           vault = selected;
+          stage?.("storage");
+          await this.checkManagedProgress(vault);
+          stage?.("key");
           material = await this.unlockManagedMaterial(vault.id, vault.keyPackage, password);
         }
         await this.installManaged(client, vault, material, this.deviceName, this.endpoint, this.accessRecord!, connection.user.id, connection.user.keyRevision, stage);
         this.accessibleVaults = (await client.connection()).vaults;
       } finally { this.configuring = false; this.updateAutomation(); this.emit(); }
     });
+  }
+  private async checkManagedProgress(vault: Pick<ManagedVault, "id" | "epoch"> | null): Promise<void> {
+    if (!this.db) throw new Error("LOCAL_IDENTITY_NOT_READY");
+    const progress = await this.db.progress.get("progress");
+    if (progress && (!vault || progress.vaultId !== vault.id || progress.epoch !== vault.epoch)) {
+      throw new Error(this.boundVaultId ? "RECOVERY_RECONCILIATION_REQUIRED" : "LOCAL_SYNC_STATE_EXISTS");
+    }
   }
   private async unlockManagedMaterial(vaultId: string, keyPackage: unknown, password: string): Promise<StoredMaterial> {
     const keys = await VaultCrypto.unlock(vaultId, keyPackage, password);
@@ -393,9 +405,8 @@ export default class ObsidianSyncPlugin extends Plugin {
   }
   private async installManaged(client: AccessClient, vault: ManagedVault, material: StoredMaterial, name: string, endpoint: string, accessRecord: string, userId: string, accessRevision: number, stage?: (step: ConnectionStep) => void): Promise<void> {
     if (!this.config || !this.db || !this.port) throw new Error("LOCAL_IDENTITY_NOT_READY");
-    const progress = await this.db.progress.get("progress");
-    if (progress && (progress.vaultId !== vault.id || progress.epoch !== vault.epoch)) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
     stage?.("storage");
+    await this.checkManagedProgress(vault);
     const { token } = await this.prepareManagedMaterial(endpoint, material, accessRevision);
     if (this.disposed) throw new Error("PLUGIN_UNLOADED");
     stage?.("authorization");

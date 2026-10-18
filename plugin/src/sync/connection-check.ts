@@ -21,6 +21,7 @@ export function connectionFailure(error: unknown, step: ConnectionStep, t: Trans
   if (step === "name") return { step, message: t("客户端名称无法保存，请检查名称和服务端版本。") };
   if (code === "HANDSHAKE_MISMATCH") return { step: "authorization", message: t("服务器的库或设备信息不匹配，请确认服务器地址。") };
   if (code === "RECOVERY_RECONCILIATION_REQUIRED") return { step: "authorization", message: t("服务器进度与本机记录不一致，需要先核对恢复状态。") };
+  if (code === "LOCAL_SYNC_STATE_EXISTS") return { step: "storage", message: t("本机仍有旧同步记录，不能直接接入新库。请先备份本地库；若要保留旧记录，请在新的 Obsidian 库中连接。重复输入密码无法解决此问题。") };
   if (code === "KEY_PACKAGE_CHANGED") return { step: "key", message: t("服务器的密钥信息已变化，需要先核对，无法覆盖现有配置。") };
   if (code === "CONNECTION_KEY_REQUIRED") return { step: "key", message: t("请输入同步密钥；首次配置需要填写密钥。") };
   if (code === "PLUGIN_UNLOADED") return { step, message: t("插件已关闭，请重新打开设置后测试。") };

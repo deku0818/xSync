@@ -152,4 +152,48 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== '1')('managed plugin 
   await expect(plugin!.connectManagedVault('', 'my-vault-password', '工作笔记')).rejects.toThrow('TEST_SECURE_STORE_UNAVAILABLE');
   expect((await fixture.admin<{ vaults: unknown[] }>('vaults')).vaults).toEqual([]);
  });
+ it('rejects an unbound local database with old sync progress before publishing a creation request', async () => {
+  await plugin!.authorizeServer(fixture.endpoint, accessKey, 'MacBook');
+  const db = new SyncDB('obsidian-sync-dev-' + dbId); await db.open();
+  const progress = { id: 'progress' as const, vaultId: randomId(), epoch: randomId(), received: 12, applied: 11 };
+  await db.progress.put(progress);
+  const saved = structuredClone(host.saved), files = new Map(host.files);
+  try {
+   const stages: string[] = [];
+   await expect(plugin!.connectManagedVault('', 'my-vault-password', '工作笔记', stage => stages.push(stage))).rejects.toThrow('LOCAL_SYNC_STATE_EXISTS');
+   expect(stages.at(-1)).toBe('storage');
+   expect((await fixture.admin<{ vaults: unknown[] }>('vaults')).vaults).toEqual([]);
+   expect(await db.progress.get('progress')).toEqual(progress);
+   expect(host.saved).toEqual(saved); expect(host.files).toEqual(files);
+  } finally { db.close(); }
+ });
+ it.each(['vault', 'epoch'])('does not enroll or replace a pending creation when the local %s differs', async mismatch => {
+  await plugin!.authorizeServer(fixture.endpoint, accessKey, 'MacBook');
+  host.loseCreation = true;
+  await expect(plugin!.connectManagedVault('', 'my-vault-password', '工作笔记')).rejects.toThrow('CREATION_RECEIPT_LOST');
+  const vault = (await new AccessClient(fixture.endpoint, accessKey, recoveryHTTP).connection()).vaults[0]!;
+  const db = new SyncDB('obsidian-sync-dev-' + dbId); await db.open();
+  const progress = { id: 'progress' as const, vaultId: mismatch === 'vault' ? randomId() : vault.id, epoch: mismatch === 'epoch' ? randomId() : vault.epoch, received: 3, applied: 3 };
+  await db.progress.put(progress); const files = new Map(host.files);
+  try {
+   await expect(plugin!.connectManagedVault('', 'my-vault-password', '工作笔记')).rejects.toThrow('LOCAL_SYNC_STATE_EXISTS');
+   await expect(plugin!.connectManagedVault(vault.id, 'my-vault-password')).rejects.toThrow('LOCAL_SYNC_STATE_EXISTS');
+   expect(host.files).toEqual(files); expect(plugin!.boundVaultId).toBe('');
+   expect((await new AccessClient(fixture.endpoint, accessKey, recoveryHTTP).connection()).vaults).toEqual([vault]);
+   expect(vault.devices).toBe(0); expect(await db.progress.get('progress')).toEqual(progress);
+  } finally { db.close(); }
+ });
+ it('resumes the same pending vault when its local progress matches the creation identity', async () => {
+  await plugin!.authorizeServer(fixture.endpoint, accessKey, 'MacBook'); host.loseCreation = true;
+  await expect(plugin!.connectManagedVault('', 'my-vault-password', '工作笔记')).rejects.toThrow('CREATION_RECEIPT_LOST');
+  const vault = (await new AccessClient(fixture.endpoint, accessKey, recoveryHTTP).connection()).vaults[0]!;
+  const db = new SyncDB('obsidian-sync-dev-' + dbId); await db.open();
+  try {
+   await db.progress.put({ id: 'progress', vaultId: vault.id, epoch: vault.epoch, received: 0, applied: 0 });
+   plugin!.onunload(); await load();
+   await plugin!.connectManagedVault('', 'my-vault-password', '工作笔记');
+   expect(plugin!.boundVaultId).toBe(vault.id); expect(plugin!.engine?.unlocked).toBe(true);
+   expect((await fixture.admin<{ vaults: unknown[] }>('vaults')).vaults).toHaveLength(1);
+  } finally { db.close(); }
+ });
 });

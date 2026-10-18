@@ -22,6 +22,7 @@ vi.mock("obsidian", async () => {
   };
 });
 import { connectionForm } from "../../plugin/src/ui/connection-form";
+import { vaultConnection } from "../../plugin/src/ui/vault-connection";
 import { defaultRules } from "../../plugin/src/sync/policy";
 import { ConflictReview, SyncOverview } from "../../plugin/src/ui/sync-panels";
 
@@ -42,6 +43,35 @@ const review = (id: string, text: string): Review => ({
 const query = (id: string): HTMLElement => document.querySelector(`[data-ui="${id}"]`)!;
 const button = (id: string): HTMLButtonElement => query(id) as HTMLButtonElement;
 const emit = () => { for (const listener of listeners) listener(); };
+
+it.each(['zh', 'en'] as const)('shows pending connection and the old-state failure in %s, then permits a retry', async language => {
+  plugin.i18n.preference = language;
+  let rejectConnection!: (error: Error) => void;
+  Object.assign(plugin, {
+    accessSaved: true, boundVaultId: '', engine: undefined, accessibleVaults: [], localVaultName: 'Rabbit Hole',
+    refreshVaults: async () => {},
+    connectManagedVault: vi.fn(() => new Promise<void>((_resolve, reject) => { rejectConnection = reject; })),
+  });
+  const root = document.body.createDiv(), dispose = vaultConnection(root, plugin);
+  try {
+    await vi.waitFor(() => expect(root.querySelector('button')).not.toBeNull());
+    // Let the initial server refresh finish before opening a form.
+    await Promise.resolve();
+    root.querySelector('button')!.click();
+    const form = root.querySelector('form')!, passwords = [...form.querySelectorAll<HTMLInputElement>('input[type="password"]')];
+    passwords.forEach(input => { input.value = 'public-test-password'; });
+    form.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked = true;
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    submit.click(); expect(submit.disabled).toBe(true);
+    expect(submit.textContent).toBe(language === 'zh' ? '正在连接…' : 'Connecting…');
+    expect(root.querySelector('[role="status"]')!.textContent).toContain(language === 'zh' ? '请稍候' : 'Please wait');
+    rejectConnection(new Error('LOCAL_SYNC_STATE_EXISTS'));
+    await vi.waitFor(() => expect(submit.disabled).toBe(false));
+    expect(root.querySelector('[role="status"]')!.textContent).toContain(language === 'zh' ? '重复输入密码无法解决' : 'Re-entering the password');
+    expect(passwords.every(input => input.value === '')).toBe(true);
+    expect(submit.textContent).toBe(language === 'zh' ? '创建并开始同步' : 'Create and start syncing');
+  } finally { dispose(); }
+});
 beforeEach(() => {
   browser = new JSDOM("", { url: "https://fixture.invalid" }); vi.stubGlobal("window", browser.window); vi.stubGlobal("document", browser.window.document);
   Object.assign(browser.window.HTMLElement.prototype, {

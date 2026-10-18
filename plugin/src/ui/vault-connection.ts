@@ -70,23 +70,25 @@ export function vaultConnection(root: HTMLElement, plugin: ObsidianSyncPlugin): 
    const feedback = form.createEl('p', { cls: 'feedback', attr: { role: 'status', 'aria-live': 'polite' } });
    const actions = form.createDiv('input-line');
    if (!plugin.boundVaultId) { const back = actions.createEl('button', { text: t("返回选库"), attr: { type: 'button' } }); back.onclick = () => { mode = 'select'; redraw(); }; }
-   actions.createEl('button', { cls: 'primary', text: creating ? t("创建并开始同步") : t("解锁并开始同步"), attr: { type: 'submit' } });
+   const submit = actions.createEl('button', { cls: 'primary', text: creating ? t("创建并开始同步") : t("解锁并开始同步"), attr: { type: 'submit' } });
    form.onsubmit = async event => {
     event.preventDefault(); if (busy) return;
     if (!checked.checked) { feedback.setText(creating ? t("请确认已妥善保存加密密码。") : t("请先确认目标同步库。")); return; }
     if (creating && (password.value.length < 8 || password.value !== confirmation?.value)) { feedback.setText(t("密码至少 8 个字符，两次输入需一致。")); return; }
     busy = true; for (const field of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) field.disabled = true;
+    feedback.setText(t("正在连接同步库，请稍候…")); submit.setText(t("正在连接…"));
     let stage: ConnectionStep = 'key';
     try { await plugin.connectManagedVault(vault?.id ?? '', password.value, creating ? name!.value : undefined, next => { stage = next; }); if (!closed) redraw(); }
     catch (error) {
      const code = error instanceof Error ? error.message : '';
+     const failure = connectionFailure(error, stage, t);
      let message: string;
      if (code === 'NAME_TAKEN') message = t("已有同名库，请返回选库接入，或使用其他名称。");
      else if (code === 'VAULT_NAME_INVALID') message = t("库名称需为 1–80 个字符。");
-     else if (stage === 'key') message = t("库加密密码校验失败，请确认密码正确。");
-     else message = connectionFailure(error, stage, t).message;
+     else if (stage === 'key' && failure.step === 'key' && code !== 'KEY_PACKAGE_CHANGED') message = t("库加密密码校验失败，请确认密码正确。");
+     else message = failure.message;
      if (!closed) feedback.setText(message);
-    } finally { password.value = ''; if (confirmation) confirmation.value = ''; busy = false; if (!closed) { for (const field of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) field.disabled = false; render(); } }
+    } finally { password.value = ''; if (confirmation) confirmation.value = ''; busy = false; if (!closed) { submit.setText(creating ? t("创建并开始同步") : t("解锁并开始同步")); for (const field of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) field.disabled = false; render(); } }
    };
   } finally {
    const fields = root.querySelectorAll<HTMLInputElement>('input');

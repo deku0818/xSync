@@ -1,5 +1,8 @@
 // Chinese source messages are the stable keys; arguments are inserted without translation.
 export const english: Readonly<Record<string, string>> = {
+  "本机仍有旧同步记录，不能直接接入新库。请先备份本地库；若要保留旧记录，请在新的 Obsidian 库中连接。重复输入密码无法解决此问题。": "This device still has previous sync records and cannot connect directly to a new vault. Back up your local vault first; to retain the old records, connect from a new Obsidian vault. Re-entering the password will not resolve this.",
+  "正在连接同步库，请稍候…": "Connecting to the sync vault. Please wait…",
+  "正在连接…": "Connecting…",
   " + {0} 个目录": " + {0} folders",
   " · 另有 {0} 个目录": " · {0} more folders",
   "PROFILE_STALE: 请重新保存本机规则": "PROFILE_STALE: Save this device's rules again",

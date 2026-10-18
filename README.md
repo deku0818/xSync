@@ -16,6 +16,12 @@ Free and open source. Both the plugin and admin page support English and Simplif
 - Set file-size, folder, extension, and regular-expression exclusions independently on each device.
 - Pause and resume with your saved key. Persistent queues recover interrupted work and catch up when the app returns to the foreground.
 
+## Screenshots
+
+| Obsidian plugin | User and access key management |
+| :---: | :---: |
+| [![Obsidian plugin](docs/images/plugin-settings-en.jpg)](docs/images/plugin-settings-en.jpg) | [![User and access key management](docs/images/admin-users-en.jpg)](docs/images/admin-users-en.jpg) |
+
 ## Quick start
 
 1. **Deploy the server** using [`ycw0818/xsync-server`](https://hub.docker.com/r/ycw0818/xsync-server) from Docker Hub. Follow the [deployment guide](docs/DEPLOYMENT.md).

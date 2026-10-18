@@ -16,6 +16,12 @@
 - 每台设备独立设置文件大小、目录、后缀和正则排除规则。
 - 使用已保存密钥暂停、恢复；持久化队列恢复中断任务，回到前台后自动补齐。
 
+## 界面预览
+
+| Obsidian 插件连接设置 | 用户与访问 key 管理 |
+| :---: | :---: |
+| [![Obsidian 插件连接设置](docs/images/plugin-settings-zh.jpg)](docs/images/plugin-settings-zh.jpg) | [![用户与访问 key 管理](docs/images/admin-users-zh.jpg)](docs/images/admin-users-zh.jpg) |
+
 ## 快速开始
 
 1. **部署服务**：使用 Docker Hub 镜像 [`ycw0818/xsync-server`](https://hub.docker.com/r/ycw0818/xsync-server)，按[部署说明](docs/DEPLOYMENT.md)启动。

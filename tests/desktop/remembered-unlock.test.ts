@@ -12,6 +12,23 @@ async function protector(): Promise<SecretProtector> {
   };
 }
 const identity = { vaultId: "remembered-vault", deviceId: "device-a", databaseId: "database-a", endpoint: "http://127.0.0.1:8873" };
+it("protects access credentials and rejects copied identities without treating them as vault keys", async () => {
+  const files = new Map<string, string>();
+  const adapter: LocalTextFiles = { exists: async p => files.has(p), read: async p => files.get(p)!, write: async (p, text) => { files.set(p, text); } };
+  const os = await protector(), accessIdentity = { ...identity, vaultId: "server-access" };
+  const remember = new RememberedUnlock(adapter, "local/access", accessIdentity, os);
+  const access = { endpoint: identity.endpoint, userId: "a".repeat(64), key: "xsk_" + "b".repeat(64) };
+  await remember.saveAccess(access);
+  const saved = files.get("local/access")!;
+  expect(saved).not.toContain(access.key);
+  expect(await remember.loadAccess()).toEqual(access);
+  await expect(remember.load()).rejects.toThrow();
+  for (const changed of [{ deviceId: "other-device" }, { databaseId: "other-database" }, { endpoint: "https://other.example" }, { vaultId: "other-vault" }]) {
+    const copied = new RememberedUnlock(adapter, "local/access", { ...accessIdentity, ...changed }, os);
+    await expect(copied.loadAccess()).rejects.toThrow("UNLOCK_IDENTITY_MISMATCH");
+    expect(files.get("local/access")).toBe(saved);
+  }
+});
 it("reports protected-record presence without native decryption, excluding tombstones and malformed records", async () => {
   let disk: string | undefined;
   const unprotect = vi.fn(async () => { throw new Error("NATIVE_STORE_LOCKED"); });

@@ -118,9 +118,9 @@ func writeError(w http.ResponseWriter, e error) {
 	switch c {
 	case "UNAUTHORIZED":
 		status = 401
-	case "ENROLLMENT_CLOSED", "DEVICE_REVOKED":
+	case "ENROLLMENT_CLOSED", "DEVICE_REVOKED", "USER_DISABLED":
 		status = 403
-	case "ENROLLMENT_BUSY", "DEVICE_LIMIT":
+	case "ENROLLMENT_BUSY", "DEVICE_LIMIT", "LOGIN_RATE_LIMITED":
 		status = 429
 	case "ENROLLMENT_EXPIRED", "ENROLLMENT_REPLAY":
 		status = 409
@@ -134,9 +134,9 @@ func writeError(w http.ResponseWriter, e error) {
 		status = 429
 	case "VIEW_EXPIRED", "OBJECT_BUSY", "SNAPSHOT_TOO_LARGE", "BASE_NOT_ACCEPTED", "BASE_PROOF_INVALID", "BASE_PROOF_REQUIRED", "REQUEST_STREAM_INVALID", "OPERATION_RETIRED", "REQUEST_ACK_REQUIRED", "REQUEST_ACK_INVALID", "CAUSAL_SHADOW_MISMATCH", "RESULT_TOO_LARGE", "LEGACY_INTENT_UNREGISTERED", "LEGACY_MIGRATION_CHANGED", "METADATA_DOWNGRADE_REFUSED", "METADATA_MODE_CHANGED", "LEGACY_OBJECT_UNREGISTERED", "LEGACY_OBJECT_MIGRATION_CHANGED":
 		status = 409
-	case "OBJECT_MISSING", "FILE_MISSING":
+	case "OBJECT_MISSING", "FILE_MISSING", "USER_NOT_FOUND", "VAULT_NOT_FOUND":
 		status = 404
-	case "DEVICE_NAME_TAKEN", "PROFILE_STALE", "OP_ID_REUSED", "FILE_EXISTS", "REVISION_EXISTS", "PARENT_MISSING", "LOCATION_STALE", "PATH_OCCUPIED", "REVIEW_STALE", "EPOCH_CHANGED", "NEED_SNAPSHOT", "OBJECT_IMMUTABLE", "OBJECT_CORRUPT":
+	case "NAME_TAKEN", "VAULT_EXISTS", "DELETE_CONFIRMATION_REQUIRED", "DEVICE_NAME_TAKEN", "PROFILE_STALE", "OP_ID_REUSED", "FILE_EXISTS", "REVISION_EXISTS", "PARENT_MISSING", "LOCATION_STALE", "PATH_OCCUPIED", "REVIEW_STALE", "EPOCH_CHANGED", "NEED_SNAPSHOT", "OBJECT_IMMUTABLE", "OBJECT_CORRUPT":
 	default:
 		status = 500
 		c = "INTERNAL_ERROR"
@@ -144,6 +144,10 @@ func writeError(w http.ResponseWriter, e error) {
 	writeJSON(w, status, map[string]string{"code": c})
 }
 func (s *Store) Handler() http.Handler {
+	s.handlerOnce.Do(func() { s.handler = s.buildHandler() })
+	return s.handler
+}
+func (s *Store) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /devices", func(w http.ResponseWriter, r *http.Request) {
 		rows, e := s.Devices(r.Context())
@@ -442,7 +446,7 @@ func (s *Store) Handler() http.Handler {
 		_, _ = w.Write(b)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.enrollmentHandler(w, r) {
+		if !s.Config.Managed && s.enrollmentHandler(w, r) {
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/events" {

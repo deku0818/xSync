@@ -30,6 +30,19 @@ it("publishes completion immediately after explicit resolution, without a second
   expect(resolve).toHaveBeenCalledWith(review, "A", "copy.md");
   expect(host.labels.at(-1)).toBe("xSync · 已同步"); expect(sync).not.toHaveBeenCalled();
 });
+it.each(["UNAUTHORIZED", "USER_DISABLED"])("shares the %s warning with settings and clears it after authorization recovers", async code => {
+  const instance = await plugin();
+  const status: EngineStatus = { state: "needs-attention", outbox: 1, inbox: 0, conflicts: 0, errors: [code] };
+  instance.engine = { unlocked: true, resolve: async () => {}, status: async () => status } as unknown as SyncEngine;
+  instance.eventState = "retrying";
+  await instance.resolveConflict(review, "A");
+  expect(instance.syncStatus.label).toBe("需要重新授权");
+  expect(host.labels.at(-1)).toBe(`xSync · ${instance.syncStatus.label}`);
+  status.state = "complete"; status.outbox = 0; status.errors = [];
+  await instance.resolveConflict(review, "A");
+  expect(instance.syncStatus.label).toBe("已同步");
+  expect(host.labels.at(-1)).toBe("xSync · 已同步");
+});
 it("keeps needs-attention on stale choice and releases the host gate for later work", async () => {
   const instance = await plugin(); const stale = new Error("REVIEW_STALE");
   const resolve = vi.fn().mockRejectedValueOnce(stale).mockResolvedValueOnce(undefined);

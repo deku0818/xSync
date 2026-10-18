@@ -1,0 +1,67 @@
+import { readFile } from 'node:fs/promises';
+import { transform } from 'esbuild';
+import { JSDOM } from 'jsdom';
+import { afterEach, expect, it, vi } from 'vitest';
+let dom: JSDOM | undefined;
+afterEach(() => dom?.window.close());
+it('distinguishes a wrong login password from an expired admin session and permits a successful retry', async () => {
+ const html = await readFile('server/internal/syncstore/admin/index.html', 'utf8');
+ const source = (await transform(await readFile('server/admin/app.ts', 'utf8'), { loader: 'ts', target: 'es2022' })).code;
+ dom = new JSDOM(html, { url: 'https://sync.example.com/admin/', runScripts: 'outside-only' });
+ const window = dom.window, document = window.document;
+ window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+ let authenticated = false;
+ Object.assign(window, { fetch: async (url: string, options?: { body?: string }) => {
+  if (url.endsWith('/login')) authenticated = JSON.parse(options!.body!).password === 'test-admin-password';
+  const value = authenticated ? { users: [] } : { code: 'UNAUTHORIZED' };
+  return { ok: authenticated, status: authenticated ? 200 : 401, json: async () => value };
+ } });
+ window.eval(source);
+ const password = document.getElementById('admin-password') as HTMLInputElement;
+ const submit = document.querySelector<HTMLButtonElement>('#login-form button')!;
+ await vi.waitFor(() => expect(document.getElementById('login-view')!.hidden).toBe(false));
+ password.value = 'wrong-password'; submit.click();
+ await vi.waitFor(() => expect(document.getElementById('login-error')!.textContent).toBe('管理密码错误，请重试。'));
+ expect(document.getElementById('admin-view')!.hidden).toBe(true);
+ expect(submit.disabled).toBe(false);
+ password.value = 'test-admin-password'; submit.click();
+ await vi.waitFor(() => expect(document.getElementById('create-user')).not.toBeNull());
+ expect(password.value).toBe('');
+ expect(document.getElementById('login-error')!.textContent).toBe('');
+ authenticated = false;
+ document.querySelector<HTMLButtonElement>('[data-nav="vaults"]')!.click();
+ await vi.waitFor(() => expect(document.getElementById('page-error')!.textContent).toBe('登录已失效，请重新登录。'));
+ expect(document.getElementById('login-view')!.hidden).toBe(false);
+});
+it('renders untrusted user names safely and removes a once-issued key when its dialog closes', async () => {
+ const html = await readFile('server/internal/syncstore/admin/index.html', 'utf8');
+ const source = (await transform(await readFile('server/admin/app.ts', 'utf8'), { loader: 'ts', target: 'es2022' })).code;
+ dom = new JSDOM(html, { url: 'https://sync.example.com/admin/', runScripts: 'outside-only' });
+ const window = dom.window;
+ window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+ window.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new window.Event('close')); };
+ const name = '<img src=x onerror=alert(1)>', secret = 'xsk_' + 'e'.repeat(64);
+ const users: unknown[] = [];
+ const fetch = async (url: string, options?: { method?: string }) => {
+  let value: unknown = {};
+  if (url.endsWith('/users') && options?.method === 'POST') { const user = { id: 'a'.repeat(64), name, active: true, keyTail: 'eeeeee', keyRevision: 1, vaults: 0 }; users.push(user); value = { user, key: secret }; }
+  else if (url.endsWith('/users')) value = { users };
+  return { ok: true, status: 200, json: async () => value };
+ };
+ Object.assign(window, { fetch }); window.eval(source);
+ const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+ const document = window.document;
+ await vi.waitFor(() => expect(document.getElementById('create-user')).not.toBeNull());
+ document.getElementById('create-user')!.click();
+ (document.getElementById('user-name') as HTMLInputElement).value = name;
+ const create = [...document.querySelectorAll<HTMLButtonElement>('#modal-actions button')].find(button => button.textContent === '创建并生成 key')!;
+ create.click(); await vi.waitFor(() => expect(document.getElementById('one-time-key')).not.toBeNull());
+ expect(document.getElementById('one-time-key')?.textContent).toBe(secret);
+ expect(document.querySelector('img')).toBeNull();
+ const close = document.getElementById('close-key') as HTMLButtonElement; expect(close.disabled).toBe(true);
+ const checkbox = document.getElementById('key-saved') as HTMLInputElement; checkbox.checked = true; checkbox.dispatchEvent(new window.Event('change'));
+ expect(close.disabled).toBe(false); close.click(); await flush();
+ expect(document.body.textContent).not.toContain(secret);
+ expect(document.getElementById('rows')!.textContent).toContain(name);
+ expect(document.querySelector('img')).toBeNull();
+});

@@ -1,144 +1,64 @@
 # 自建 xSync 服务
 
-本文是可复用的配置说明；实际部署状态保存在管理员私有运维记录中。服务运行不等于生产安全或真机同步验收。服务端单进程管理一个同步库；多实例事件通知和生产容量尚未验收。设备接入见[安装说明](SETUP.md)。
+当前源码提供 Go 同步服务与内置 Web 管理端，使用 PostgreSQL。SQLite、旧库迁移和旧客户端兼容不在本轮范围；不要将新服务连接到已有旧版数据库，或将已发布的 0.1.2 插件连接到本版本。
 
-## 数据库版本与部署入口
+## 全新部署
 
-| 数据库 | 当前支持 | 部署说明 |
-| --- | --- | --- |
-| PostgreSQL | 已实现；生产 Compose 使用 `17.11-bookworm`，开发基线 `17.11-alpine` | [完整 Compose 与 Nginx 部署](deployment/postgres.md) |
-| SQLite | 尚未实现，无可运行镜像/Compose 版本 | — |
+无需运行 `server:init`，也不需要预先生成库密钥或上传 `server.json`。部署服务器只配置基础设施与管理密码，用户稍后在插件中创建加密库。
 
-已有 Docker Nginx 时，优先使用 [server/deploy/postgres/docker-compose.yaml](../server/deploy/postgres/docker-compose.yaml)：包含服务端和 PG，后端 TLS、独立数据库网络、持久目录及日志轮转；示例目录为 `/srv/xsync`，域名为 `sync.example.com`。下文保留源码进程/宿主代理的另一种配置方式。`server/compose.yaml` 只启动数据库；不要将两套同名 `xsync-server` Compose 项目同时运行。
-
-## 数据与进程
-
-需要 Go >=1.27、Docker/Compose v2、HTTPS 域名与有效证书。PostgreSQL 只在 Docker 中运行。仓库提供 `server/compose.yaml`，使用专属 `xsync-server` 项目、volume，数据库只绑定服务器 loopback 的 `55439` 端口；开发环境是另一个项目和 `55438` 端口，不混用。
-
-先在自己的电脑生成初始化材料，仅将 `server.json` 送到服务器的 `/srv/xsync/server.json`。不要在托管服务器生成或存放 `sync-key.txt`。在服务器用私有文件保存随机数据库密码，例如：
+需要 Node >=22.12（构建管理前端）、Go >=1.27 和 Docker PostgreSQL。仓库中的 PostgreSQL 必须在 Docker 中运行，不安装宿主数据库。
 
 ```sh
-umask 077
-mkdir -p /srv/xsync
-openssl rand -hex 32 > /srv/xsync/postgres-password.txt
-export XSYNC_POSTGRES_SECRET_FILE=/srv/xsync/postgres-password.txt
-docker compose -f server/compose.yaml up -d --wait
-```
-
-将密码以 URL 编码形式填入服务进程的私有环境文件，配置 `XSYNC_DATABASE_URL=postgres://xsync:<password>@127.0.0.1:55439/xsync?sslmode=disable`。上面的十六进制密码不需要额外编码。不要把真实密码写入 README、命令历史或 Git；服务与本机管理命令都从相同的进程环境读取。PG 端口不对公网开放。
-
-在 `server.json` 中配置绝对 `objectDir`，例如 `/srv/xsync/objects`。它保存不可变密文对象，必须是持久磁盘，与数据库一起备份；不能只备份其中一项。不要随意改变 vault ID、epoch、密钥包或验证公钥；服务启动会核对已有数据库身份并拒绝不一致配置。
-
-从仓库根目录构建：
-
-```sh
+npm ci
+npm run build:admin
 mkdir -p dist
 cd server
 go build -o ../dist/xsync-server ./cmd/obsidiansync
 ```
 
-## 使用服务端镜像
+运行环境变量：
 
-服务端镜像构建/上传流程和 Docker Hub 配置见[发布说明](RELEASING.md#服务端-docker-hub-镜像)。[ycw0818/xsync-server:0.1.1](https://hub.docker.com/r/ycw0818/xsync-server/tags?name=0.1.1) 已发布，支持 Linux amd64/arm64；请使用明确版本或 digest。本地也可从根目录执行 `docker build -f server/Dockerfile -t xsync-server:local .`，不需要上传。根目录 `.dockerignore` 只允许服务端 Go/SQL 源码、模块锁定文件、Dockerfile 和项目许可进入构建上下文。
+| 变量 | 用途 |
+| --- | --- |
+| `XSYNC_DATABASE_URL` | PostgreSQL DSN，使用独立数据库 |
+| `XSYNC_ADMIN_PASSWORD` | 管理端密码，至少 12 个字符；不得写入源码或公开命令历史 |
+| `XSYNC_ADMIN_PASSWORD_FILE` | 可改用私有密码文件；未设置直接密码时读取，移除末尾换行 |
+| `XSYNC_LISTEN` | 默认 `127.0.0.1:8873` |
+| `XSYNC_OBJECT_DIR` | 密文持久目录，默认工作目录的 `objects/` |
+| `XSYNC_TRUSTED_PROXIES` | 可信代理 CIDR，逗号分隔；登录限流默认忽略转发 IP |
 
-镜像使用非 root 用户 `65532:65532`，默认执行 `xsync-server --config /config/server.json`。配置与数据在运行时挂载，容器内对象路径应设置为 `/data/objects`。下面是 **Linux Docker Engine** 配合宿主 HTTPS 代理和前述 Docker PG 的运行方式；使用 host 网络，使原有 loopback HTTP/TLS 约束和 `127.0.0.1:55439` 数据库地址保持有效。此示例不适用于默认网络配置的 Docker Desktop，也不能把它改成 bridge 加 `-p` 后仍期待容器 loopback 可访问。
+将实际凭据放在管理员私有环境中启动，不在公开配置或 Git 中保存。普通监听只允许 loopback；生产非 loopback 监听须使用 `--tls-cert` 与 `--tls-key`。可以由同机 HTTPS 反向代理连接 loopback。服务与网页在同一地址，管理页面为 `/admin/`；不需要单独部署前端。
 
-1. 将所有者电脑生成的 `server.json` 放到 `/srv/xsync/server.json`，设 `listen` 为 `127.0.0.1:8873`、`objectDir` 为 `/data/objects`，其余身份/密钥包字段保持原值。
-2. 创建私有 `/srv/xsync/server.env`，只配置 `XSYNC_DATABASE_URL=postgres://xsync:<password>@127.0.0.1:55439/xsync?sslmode=disable`，文件权限设为 `0600`。密码使用前面生成的十六进制值；同步密钥不要复制到服务器。
-3. 为容器用户准备对象目录及配置读取权限，再运行已发布的确定版本：
-
-```sh
-sudo mkdir -p /srv/xsync/objects
-sudo chown 65532:65532 /srv/xsync/objects /srv/xsync/server.json
-sudo chmod 700 /srv/xsync/objects
-sudo chmod 400 /srv/xsync/server.json
-docker run -d --name xsync-server --restart unless-stopped \
-  --network host --read-only --cap-drop ALL \
-  --security-opt no-new-privileges \
-  --env-file /srv/xsync/server.env \
-  --mount type=bind,src=/srv/xsync/server.json,dst=/config/server.json,readonly \
-  --mount type=bind,src=/srv/xsync/objects,dst=/data/objects \
-  ycw0818/xsync-server:0.1.1
-```
-
-镜像标签以实际成功上传的版本为准，也可改用固定 digest。PostgreSQL 仍由 `server/compose.yaml` 独立运行，不包含在镜像内。对象目录和 PG volume 均需持久化与联合备份；删除/重建容器不能删除它们。宿主 HTTPS 代理仍须按下一节转发 WebSocket。若选择服务直接提供 TLS，需额外挂载可由 UID 65532 读取的证书与私钥，并显式传入 `--config`、`--tls-cert`、`--tls-key`；不放宽监听校验。
-
-本机管理命令通过容器内同一个二进制执行，例如：
+Docker 镜像包括前端构建及 Go 服务，运行时使用非 root 用户：
 
 ```sh
-docker exec xsync-server /usr/local/bin/xsync-server --config /config/server.json --list-devices
-docker exec xsync-server /usr/local/bin/xsync-server --config /config/server.json --enroll-for 10m
+docker build -f server/Dockerfile -t xsync-server:local .
 ```
 
-容器没有 shell，管理命令继承创建容器时的环境。运行说明尚未代替实际生产部署、备份还原或真机验收。
+完整 PostgreSQL／TLS／Nginx 模板见[Compose 部署](deployment/postgres.md)。当前新模式尚未发布镜像，不能将旧的 0.1.1 镜像用于这些步骤。本轮不发布或部署生产服务器。
 
-## HTTPS
+## 管理用户与库
 
-可使用已有反向代理：保持 `listen` 为 `127.0.0.1:8873`，服务只接受本机 HTTP，由代理提供有效的公网 HTTPS。代理必须转发 `/events` WebSocket 升级，以及其他原样路径；不得记录 Authorization 头或请求体。设置合适的请求速率、连接数和磁盘配额，单个密文对象请求上限为 16 MiB。客户端地址填 `https://sync.example.com`，不带路径、用户信息或查询参数。
+打开 `https://sync.example.com/admin/`。管理密码登录后使用 HttpOnly、SameSite=Strict 的会话 cookie，HTTPS 下设置 Secure；会话最长 12 小时，重启服务需重新登录。登录有失败尝试频率限制。管理写入请求检查来源，不将管理密码发给同步客户端。
 
-也可直接让服务提供 TLS：把 `listen` 设置为 `0.0.0.0:8873` 或明确的 IP，运行：
+使用反向代理时，将代理连接后端所用的固定 IP 配置为 `XSYNC_TRUSTED_PROXIES`（IPv4 加 `/32`，IPv6 加 `/128`，也可使用专用受控代理网段）。只有来自该范围的连接才按 `X-Real-IP` 中的真实客户端地址限流；其他连接忽略转发头。Nginx 必须用 `$remote_addr` 覆盖 `X-Real-IP`，不要传递客户端自报值。不要信任公网或包含不受控容器的宽泛网段；代理 IP 变化后需更新配置并重启服务。
 
-```sh
-./dist/xsync-server --config /srv/xsync/server.json \
-  --tls-cert /path/to/fullchain.pem --tls-key /path/to/privkey.pem
-```
+后台可以创建用户、发放一次展示的访问 key、刷新 key、停用／恢复用户、确认删除用户，查看库列表与最近管理记录。访问 key 只保存 SHA-256 摘要和展示末尾。用户在插件本机设置库加密密码，服务器不接收该密码或明文主密钥。
 
-非 loopback 正式监听必须同时提供证书和私钥。自签证书不应通过跳过校验解决；手机和电脑需要信任证书链。证书续期后需按进程管理方式重新加载/重启服务。公网 HTTP 不开放，`--dev-lan-listen` 仅用于隔离假库测试，不能作为正式部署替代。
+每个用户可创建多个库。库名是管理员可见的显示信息，文件路径和内容仍加密；库 ID 是固定身份。设备和同步请求按所属用户、库与当前授权代次校验，WebSocket 事件源也受同样约束。失效 key 不能绕过新入口通过旧设备接入 API 恢复授权。
 
-使用服务管理器配置工作目录、非特权用户、重启策略、私有环境文件、持久目录与日志轮转。服务需要数据库 schema 权限和对象目录读写权限；公开静态文件服务不得暴露配置、对象目录或密钥文件。CLI 管理命令使用相同配置和环境，不开放 HTTP 管理口。
+访问 key 更新不改变密文密钥包。停用保留数据，删除先持久撤销访问，再清理数据库和所属对象目录；中断清理在维护轮次继续。删除不会擦除设备上的本地文件。
 
-## 接入、撤销与恢复
+## 数据维护与备份
 
-首次接入需要客户端持有同步密钥。第一台成功后默认关闭接入，用 `--enroll-for 10m` 临时开放其他设备；用 `--enroll-for 0` 提前关闭。`--list-devices` 查看 ID，`--revoke-device` 撤销访问。挑战有效 90 秒，未完成挑战最多 128 个；设备记录最多 256 个，撤销记录也计入，避免删除历史身份。成功回执保留至该设备下一次令牌更换，重试不会生成第二个身份。
+后台服务每分钟运行维护，按当前内容、未解决冲突及有效传输租约保护对象，再回收不再依赖的旧密文。默认无引用宽限期一小时，增量日志按七天、10,000 条或 64 MiB 中先到者裁剪。保留日志用于断线补齐，不提供用户可操作的历史版本入口。完整对象审计在本次进程首次维护该库时执行，不每分钟重复扫描全部正文。
 
-网络断开时客户端保留队列；服务事件只是提示，HTTP 拉取负责补齐。单实例重启后的设备授权、撤销和数据依赖 PostgreSQL 持久化。对象内容不可变，不能手动替换成其他密文。
+用户删除、元数据回收与文件系统删除分别有持久完成边界，不是跨系统事务。需要同时备份 PostgreSQL 与密文对象目录，管理员密码文件另行保护；用户的库加密密码单独备份。旧数据库恢复可能触发客户端连续性保护，不能靠重置游标绕过。
 
-备份必须联合保存数据库、对象和相匹配的公开初始化包；同步密钥另由所有者离线保存。恢复旧备份后客户端可能拒绝回退/epoch 不一致状态，这是保护机制，不能通过重置客户端游标绕过。联合备份的实际还原流程尚未验收，当前没有自动修复或迁移工具。源码包可用于独立环境预发布验证，不应把这些未验收项当成生产保障。
-
-不运行 `docker system prune`，不删除其他项目容器/volume。生产数据的 `down -v` 会删除数据库；开发清理只操作 `server/compose.dev.yaml`。
+多实例事件通知、生产容量和联合备份实际还原未验收。本轮自动化验证不能替代生产与手机真机验证。
 
 ## 源码升级与协议兼容
 
-当前源码含尚未发布的协议变更，已发布的 0.1.2 插件不能连接当前源码服务端。开发验证应从同一提交构建两端；升级前停止全部旧服务实例并联合备份，不能让旧二进制并行写入新数据库/对象目录，也不能直接回退到旧程序。
+新管理模式仅支持全新部署和新库，不提供原单库服务的自动迁移。插件、服务端和管理前端应从同一提交构建。版本号尚未提升，现有 tag 与 Release 资产不变，源码完成不代表已发布。
 
-同步要求以下配套能力，缺少能力返回 `CLIENT_UPGRADE_REQUIRED`：
-
-| 能力 | 用途 |
-| --- | --- |
-| `content-leases-v1` | 上传、下载和快照的内容保护 |
-| `metadata-anchors-v1` | 准确基线凭据、请求坐标与结果确认 |
-| `compact-heads-v1` | 当前头快照与修订/位置压缩 |
-| `snapshot-pages-v2` | 分批冻结/暂存同一快照，插件和服务端配套升级；旧队列正文保持原样重试 |
-| `addressed-objects-v1` | 密文哈希对象身份与物理存储标识 |
-| `device-continuity-v1` | 检测设备已见数据库状态的回退 |
-
-默认首次打开 PG 时建立旧接受索引和检查点，不改库 epoch 或重置序号。首次切换前可在私有 `server.json` 中设置 `metadataMode: "full"` 暂缓；切换为默认/`"compact"` 后不能降回 full。full 模式仍要求对象等配套能力，不是旧客户端兼容开关。
-
-旧 outbox 及旧对象队列按原不可变请求分别一次登记，丢失响应重试同一包。每包上限为 4096 请求/32 MiB，超限保留原队列并停止迁移，不能清库绕过。旧提交入口仅返回仍保留的成功回执，新请求使用 metadata 信封。同一设备身份不能复制为两个独立活动数据库。
-
-基线 HMAC 签发密钥、请求流/确认区间、旧接受索引/回执、登记状态和 `device_continuity` 都必须随完整 PG 备份。缺失或回退时不能靠重启重建、重置请求计数、游标或设备身份绕过核对。连续性不匹配时保留本机内容并停止自动应用；全局序号追平不能证明旧备份可安全继续。
-
-## 自动清理
-
-私有 `server.json` 支持 `cleanupMode`：
-
-| 值 | 行为 |
-| --- | --- |
-| `on`（默认） | 每分钟维护，按依赖清理密文、修订、位置、日志和快照 |
-| `dry-run` | 只报告候选，不删除上述数据 |
-| `off` | 停止自动维护 |
-
-这些开关不阻止协议迁移、队列登记或正常提交确认，不能用于协议降级。内容保护有效期为 5 分钟且可续期，无依赖内容宽限为 1 小时；日志保留上限为 7 天、10,000 个提交组和 64 MiB。当前头、未解决冲突及活动保护仍被保留。
-
-沿用服务的数据库环境和私有配置，先检查再执行单次维护：
-
-```sh
-./xsync-server --config /srv/xsync/server.json --cleanup-once --cleanup-dry-run
-./xsync-server --config /srv/xsync/server.json --cleanup-once
-```
-
-命令不启动监听。配置为 `dry-run` 时，第二条命令仍只检查；要实际删除需将配置切回 `on`。新格式对象身份可随内容回收，旧格式摘要、旧接受证据、删除/撤销身份及未完成恢复证据仍可能保留。清理不提供历史版本或回收站。
-
-新对象公开 ID 为 `c_<SHA256(密文字节)>`，磁盘文件带随机 `storage_token`；旧 ID 和 `.gN` 文件仍兼容。不要按公开 ID 重命名、筛选或只复制部分对象。联合备份必须来自同一停服边界，保留完整数据库、对象目录、初始化包及私有配置，包括上传尝试、删除任务和物理标识；不能只还原 heads/revisions 或对象身份主表。
-
-隔离测试的还原与阻断检查不能替代生产恢复流程、iPhone、大库资源或生产安全验收。
+开发验证入口见[开发流程](testing/DEVELOPMENT.md)。旧单库 CLI 和初始化工具只保留给隔离的协议／恢复测试，不是新部署的产品入口。

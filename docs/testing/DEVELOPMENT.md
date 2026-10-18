@@ -79,3 +79,11 @@ python3 -m http.server 8872 --bind 127.0.0.1 --directory tests/probe
 截图、JSON、日志和临时结果放在 `.local/reports/` 等忽略目录，不提交到文档或源码目录。复测前检查已有假库、配置和服务；完整环境清理后重新 setup，已有服务不要重复启动。
 
 模型、fake IndexedDB、HTTP/PG 集成、原生浏览器强杀、物理断电和生产联合备份还原分别说明验证范围。自动测试通过不能替代移动真机、安全存储或生产安全验收。
+
+## 管理后台与新库接入
+
+`npm run build:admin` 编译 TypeScript 管理页面并嵌入 Go 服务；`npm run check` 包含该构建，直接执行 Go 构建前也需先生成前端。
+
+`server/internal/syncstore/control_test.go` 使用项目 Docker PG 的独立 schema 验证 key 摘要、一次发放、用户／库隔离、授权代次失效、停用恢复、删除确认和中断清理、管理 cookie 与来源检查。`tests/desktop/managed.integration.test.ts` 验证真实 Go HTTP／PG 的双设备加密同步与授权变更。`managed-plugin.test.ts` 验证系统保护先于创建、创建／接入回执丢失和设置指针失败后的恢复，以及新 key 保持原库和暂停状态；保护器使用明确标注的模拟实现，不代表 iPhone 真机验收。
+
+管理模式只支持新部署与新库，旧单库 fixture 仍用于同步内核回归。所有新测试服务和凭据位于隔离测试目录，不使用真实笔记库或生产数据库。

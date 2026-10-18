@@ -19,9 +19,10 @@
     "desktop:start": "node tests/desktop/start.mjs",
     "test:desktop": "node tests/desktop/run-tests.mjs",
     "desktop:stop-db": "docker compose -f server/compose.dev.yaml stop",
-    "check": "npm run typecheck && npm test && npm run build:probe && npm run build:plugin",
+    "check": "npm run typecheck && npm test && npm run build:probe && npm run build:plugin && npm run build:admin",
     "server:init": "node server/scripts/init.mjs",
-    "package:plugin": "npm run build:plugin && node plugin/scripts/package-sync.mjs"
+    "package:plugin": "npm run build:plugin && node plugin/scripts/package-sync.mjs",
+    "build:admin": "node server/scripts/build-admin.mjs"
   },
   "dependencies": {
     "dexie": "4.4.6",

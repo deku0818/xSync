@@ -12,3 +12,13 @@
 !server/internal/**/
 !server/internal/**/*.go
 !server/internal/**/*.sql
+
+!package.json
+!package-lock.json
+!server/admin/
+!server/admin/**
+!server/scripts/
+!server/scripts/build-admin.mjs
+!server/internal/syncstore/admin/
+!server/internal/syncstore/admin/index.html
+!server/internal/syncstore/admin/style.css

@@ -53,3 +53,8 @@ docs/testing/*.json
 docs/testing/*.jpg
 docs/testing/*.jpeg
 docs/testing/*.png
+
+server/internal/syncstore/admin/app.js
+access-*.json
+access-*.json.retiring
+server/deploy/postgres/secrets/

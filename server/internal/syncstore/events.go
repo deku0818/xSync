@@ -133,9 +133,8 @@ func (s *Store) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	active := func() bool {
 		check, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
-		var ok bool
-		err := s.Pool.QueryRow(check, "SELECT EXISTS(SELECT 1 FROM devices WHERE vault_id=$1 AND id=$2 AND token_hash=$3 AND revoked_at IS NULL)", s.Config.VaultID, identity.device, identity.tokenHash).Scan(&ok)
-		return err == nil && ok
+		id, err := s.authorizeHash(check, identity.tokenHash)
+		return err == nil && id == identity.device
 	}
 	if !valid || !active() {
 		_ = conn.Close(websocket.StatusPolicyViolation, "invalid event ticket")

@@ -1,3 +1,4 @@
+import { vaultConnection } from "./vault-connection";
 import { timerHost, type TimerHandle } from "../runtime/timers";
 import { Notice } from "obsidian";
 import type ObsidianSyncPlugin from "../sync-main";
@@ -7,23 +8,23 @@ import { SyncPolicy, folderPath, parseSuffixes, validateRules, type FileEntry } 
 import { clientName } from "../../../protocol/src/client-profile";
 import type { ConnectionCheck, ConnectionStep } from "../sync/connection-check";
 
-const labels: Record<ConnectionStep, string> = { server: "服务器连接", name: "名称唯一", authorization: "设备授权", key: "密钥校验", storage: "安全保存" };
+const labels: Record<ConnectionStep, string> = { server: "服务器连接", name: "名称唯一", authorization: "用户授权", key: "库解锁", storage: "安全保存" };
 export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugin): () => void {
   container.addClass("oss-app", "oss-settings-host");
   const shell = container.createDiv("shell"); const q = mountTemplate(shell, settingsTemplate);
   let refreshTimer: TimerHandle | undefined;
-  let closed = false, busy = false, draftRules = structuredClone(plugin.rules), inventory: FileEntry[] = [], selectedClient = "", dirty = false;
+  let closed = false, busy = false, connectionDirty = false, draftRules = structuredClone(plugin.rules), inventory: FileEntry[] = [], selectedClient = "", dirty = false;
   const input = (id: string) => q<HTMLInputElement>(id);
   input("client-name").value = plugin.deviceName; input("endpoint").value = plugin.endpoint; input("max-size").value = String(draftRules.maxMB);
   const renderKeyState = () => {
-    const field = input("key"), saved = plugin.hasSavedKey;
+    const field = input("key"), saved = plugin.accessSaved;
     field.dataset.savedKey = String(saved);
-    field.placeholder = saved ? "••••••••••••" : "请输入同步密钥";
-    let hint = saved ? "密钥已保存，留空复用；输入新密钥可替换。由系统安全存储保护。" : "尚未保存密钥，请输入同步密钥。密钥仅在本机校验。";
-    if (field.value) hint = saved ? "新密钥将在保存并测试通过后替换现有密钥。" : "保存并测试通过后，密钥由系统安全存储保护。";
+    field.placeholder = saved ? "••••••••••••" : "请输入访问 key";
+    let hint = saved ? "访问 key 已保存，留空复用；新值验证成功才替换。" : "填写管理员提供的访问 key，仅用于服务授权。";
+    if (field.value) hint = saved ? "新访问 key 验证并安全保存成功后才替换。" : "访问 key 仅用于服务授权，库加密密码在下一步设置。";
     q("key-hint").setText(hint);
   };
-  q("connection-badge").setText(plugin.hasSavedKey ? "已保存" : "未配置");
+  q("connection-badge").setText(plugin.accessSaved ? "已保存" : "未配置");
   q("current-name").setText(plugin.deviceName || "当前客户端");
   const meta = q("sync-state").nextElementSibling; if (meta) meta.textContent = "· 当前设备";
   const error = (id: string, message: string) => { q(id).setText(message); q(id).hidden = !message; };
@@ -38,10 +39,13 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
   };
   const renderStatus = () => {
     renderKeyState();
+    if (!connectionDirty && plugin.engine?.unlocked && plugin.boundVaultId) {
+      update({ step: "key", state: "passed" }); update({ step: "name", state: "passed" });
+    }
     q("current-name").setText(plugin.deviceName || "当前客户端");
     const count = q("tab-clients").querySelector(".count"); if (count) count.textContent = plugin.clients.length ? String(plugin.clients.length) : "—";
     q("pause").setText(plugin.autoSync ? "暂停同步" : "恢复同步");
-    q("sync-state").setText(!plugin.autoSync ? "同步已暂停" : !plugin.engine?.unlocked ? "等待配置" : plugin.eventState === "retrying" ? "等待连接恢复" : "自动同步已开启");
+    q("sync-state").setText(plugin.syncStatus.label);
     q("sync-dot").className = `dot${!plugin.autoSync ? " paused" : plugin.eventState !== "connected" ? " offline" : ""}`;
     if (plugin.configurationReloadNeeded) q("rules-feedback").setText("配置文件已同步；重载 Obsidian 后应用主题或插件更新。");
   };
@@ -50,7 +54,7 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
     let message = "";
     try { const name = clientName(input("client-name").value); if (plugin.clients.some(c => c.id !== plugin.engine?.deviceId && canonicalName(c.name) === canonicalName(name))) message = "这个客户端名称已被占用，请换一个名称。"; }
     catch (e) { message = String((e as Error).message); }
-    q("name-hint").setText(message || "同一同步库内唯一，保存时由服务器最终确认。"); q("name-hint").className = `hint${message ? " error" : ""}`; input("client-name").setAttribute("aria-invalid", String(!!message));
+    q("name-hint").setText(message || "同一同步库内唯一，接入库时由服务器最终确认。"); q("name-hint").className = `hint${message ? " error" : ""}`; input("client-name").setAttribute("aria-invalid", String(!!message));
     return !message;
   };
   const renderTree = () => {
@@ -148,20 +152,21 @@ export function connectionForm(container: HTMLElement, plugin: ObsidianSyncPlugi
     if (tab === "clients") { q("client-detail").setText("正在读取配置快照…"); try { await plugin.refreshClients(); if (!closed) renderClients(); } catch (e) { if (!closed) q("client-detail").setText(`无法获取配置快照：${(e as Error).message}`); } }
   };
   for (const tab of ["local", "clients"] as const) { q(`tab-${tab}`).onclick = () => { void chooseTab(tab); }; q(`tab-${tab}`).onkeydown = e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); const next = tab === "local" ? "clients" : "local"; void chooseTab(next); q(`tab-${next}`).focus(); } }; }
-  for (const id of ["client-name", "endpoint", "key"]) input(id).oninput = () => { if (id === "key") renderKeyState(); resetChecks(); validateName(); q("connection-badge").setText("未保存"); q("connection-feedback").setText("连接配置有修改，请保存并测试。"); };
+  for (const id of ["client-name", "endpoint", "key"]) input(id).oninput = () => { connectionDirty = true; if (id === "key") renderKeyState(); resetChecks(); validateName(); q("connection-badge").setText("未保存"); q("connection-feedback").setText("连接配置有修改，请保存并测试。"); };
   q("connection-form").onsubmit = async event => {
     event.preventDefault(); if (busy || !validateName()) return; busy = true; resetChecks();
     for (const id of ["client-name", "endpoint", "key", "save-connection", "pause"]) q<HTMLInputElement | HTMLButtonElement>(id).disabled = true;
     q("save-connection").setText("测试中…");
-    try { await plugin.saveConnection(input("endpoint").value, input("key").value, update, input("client-name").value); if (closed) return; input("key").value = ""; renderKeyState(); input("endpoint").value = plugin.endpoint; input("client-name").value = plugin.deviceName; q("connection-badge").setText("验证通过"); q("connection-badge").dataset.state = "passed"; q("connection-feedback").setText(plugin.autoSync ? "连接、名称和密钥校验通过，配置已安全保存。" : "配置已安全保存，同步保持暂停。"); }
+    try { await plugin.authorizeServer(input("endpoint").value, input("key").value, input("client-name").value, update); if (closed) return; connectionDirty = false; input("key").value = ""; renderKeyState(); input("endpoint").value = plugin.endpoint; input("client-name").value = plugin.deviceName; q("connection-badge").setText("验证通过"); q("connection-badge").dataset.state = "passed"; q("connection-feedback").setText(plugin.autoSync ? "服务授权已安全保存。请选择或创建同步库；已有绑定保留。" : "配置已安全保存，同步保持暂停。"); }
     catch { /* The host reports the exact failed boundary through update(). */ }
     finally { busy = false; if (!closed) { for (const id of ["client-name", "endpoint", "key", "save-connection", "pause"]) q<HTMLInputElement | HTMLButtonElement>(id).disabled = false; q("save-connection").setText("保存并测试"); renderStatus(); } }
   };
   q("pause").onclick = async () => { if (busy) return; try { await plugin.setAutoSync(!plugin.autoSync); renderStatus(); } catch { new Notice("无法保存暂停状态，请检查本机存储。"); } };
+  const disposeVault = vaultConnection(q("vault-connection"), plugin);
   resetChecks(); renderStatus(); renderRules(); renderTree(); const unsubscribe = plugin.subscribe(() => {
     renderStatus(); timerHost().clearTimeout(refreshTimer);
     refreshTimer = timerHost().setTimeout(() => { void plugin.inventory().then(entries => { if (!closed && JSON.stringify(inventory) !== JSON.stringify(entries)) { inventory = entries; renderTree(); } }, () => {}); }, 200);
   });
   void plugin.inventory().then(entries => { if (!closed) { inventory = entries; renderTree(); } }, () => { if (!closed) q("excluded-tree").setText("仓库索引读取失败，未把缺失内容当成删除。"); });
-  return () => { closed = true; timerHost().clearTimeout(refreshTimer); input("key").value = ""; unsubscribe(); };
+  return () => { closed = true; disposeVault(); timerHost().clearTimeout(refreshTimer); input("key").value = ""; unsubscribe(); };
 }

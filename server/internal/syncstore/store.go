@@ -9,18 +9,22 @@ import (
 	"fmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"net/http"
+	"sync"
 )
 
 //go:embed schema.sql
 var schema string
 
 type Store struct {
-	compact  bool
-	proofKey []byte
-	Pool     *pgxpool.Pool
-	Config   Config
-	Fault    func(string) error
-	events   *eventHub
+	handlerOnce sync.Once
+	handler     http.Handler
+	compact     bool
+	proofKey    []byte
+	Pool        *pgxpool.Pool
+	Config      Config
+	Fault       func(string) error
+	events      *eventHub
 }
 
 func (s *Store) fault(point string) error {
@@ -149,9 +153,17 @@ func Open(ctx context.Context, c Config) (*Store, error) {
 }
 func (s *Store) Authorize(ctx context.Context, token string) (string, error) {
 	h := sha256.Sum256([]byte(token))
+	return s.authorizeHash(ctx, h[:])
+}
+func (s *Store) authorizeHash(ctx context.Context, hash []byte) (string, error) {
+	query := "SELECT d.id FROM devices d WHERE d.vault_id=$1 AND d.token_hash=$2 AND d.revoked_at IS NULL"
+	if s.Config.Managed {
+		query += ` AND EXISTS(SELECT 1 FROM vault_owners o JOIN sync_users u ON u.id=o.user_id
+   JOIN device_access a ON a.vault_id=o.vault_id AND a.device_id=d.id
+   WHERE o.vault_id=d.vault_id AND u.active AND u.deleted_at IS NULL AND u.key_revision=a.key_revision)`
+	}
 	var id string
-	e := s.Pool.QueryRow(ctx, "SELECT id FROM devices WHERE vault_id=$1 AND token_hash=$2 AND revoked_at IS NULL", s.Config.VaultID, h[:]).Scan(&id)
-	if e != nil {
+	if e := s.Pool.QueryRow(ctx, query, s.Config.VaultID, hash).Scan(&id); e != nil {
 		return "", code("UNAUTHORIZED")
 	}
 	return id, nil

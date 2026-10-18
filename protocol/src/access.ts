@@ -1,0 +1,10 @@
+import { z } from 'zod';
+const id = z.string().regex(/^[a-f0-9]{64}$/);
+export const accessKeySchema = z.string().regex(/^xsk_[a-f0-9]{64}$/);
+export const managedUserSchema = z.object({ id, name: z.string(), active: z.boolean(), keyRevision: z.number().int().positive() });
+export const managedVaultSchema = z.object({ id, name: z.string(), userId: id, userName: z.string(), epoch: id, keyPackage: z.unknown(), devices: z.number().int().nonnegative(), active: z.boolean() });
+export const accessConnectionSchema = z.strictObject({ user: managedUserSchema, vaults: z.array(managedVaultSchema) });
+export type ManagedVault = z.infer<typeof managedVaultSchema>;
+export type ManagedUser = z.infer<typeof managedUserSchema>;
+export const accessRecordSchema = z.strictObject({ endpoint: z.string(), userId: id, key: accessKeySchema });
+export type AccessRecord = z.infer<typeof accessRecordSchema>;

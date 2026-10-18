@@ -28,30 +28,31 @@ services:
         max-file: "3"
 
   server:
-    image: ${XSYNC_SERVER_IMAGE:-ycw0818/xsync-server:0.1.1@sha256:9d1b0d07ddfbbbb30b7862e38af240aec1470efde1c7d510696b1f054cdbdfff}
+    image: ${XSYNC_SERVER_IMAGE:-xsync-server:local}
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     command:
-      - --config
-      - /config/server.json
       - --tls-cert
       - /tls/fullchain.pem
       - --tls-key
       - /tls/privkey.pem
+    env_file:
+      - ./secrets/server.env
+    environment:
+      XSYNC_LISTEN: 0.0.0.0:8873
+      XSYNC_OBJECT_DIR: /data/objects
+      XSYNC_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      XSYNC_TRUSTED_PROXIES: ${XSYNC_TRUSTED_PROXIES:?Set the Nginx proxy IP/CIDR for login rate limiting}
+    secrets:
+      - admin_password
     read_only: true
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 15s
     volumes:
-      - type: bind
-        source: ./secrets/server.json
-        target: /config/server.json
-        read_only: true
-        bind:
-          create_host_path: false
       - type: bind
         source: ./secrets/tls
         target: /tls
@@ -75,6 +76,8 @@ services:
         max-file: "3"
 
 secrets:
+  admin_password:
+    file: ./secrets/admin-password.txt
   postgres_password:
     file: ./secrets/postgres-password.txt
 

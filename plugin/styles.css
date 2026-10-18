@@ -543,3 +543,5 @@
 .oss-overview-host, .oss-review-host { box-sizing: border-box; }
 .oss-sync-ribbon { position: relative; }
 .oss-sync-ribbon[data-state="conflict"]::after { content: attr(data-count); position: absolute; top: 0; right: 0; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: var(--text-warning); color: var(--background-primary); font-size: 9px; line-height: 13px; text-align: center; }
+
+.oss-app .oss-vault-fields{display:grid;gap:16px}.oss-app .oss-vault-choice{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;text-align:left;padding:12px}.oss-app .oss-vault-consent{display:flex;align-items:flex-start;gap:9px;font-size:12px;color:var(--muted)}.oss-app .oss-vault-consent input{width:15px;height:15px;flex-shrink:0;margin-top:3px}

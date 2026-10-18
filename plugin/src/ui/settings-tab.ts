@@ -11,7 +11,7 @@ export class SyncSettingTab extends PluginSettingTab {
   getSettingDefinitions(): SettingDefinitionItem[] {
     return [{
       name: "同步连接与本机规则",
-      desc: "配置客户端名称、服务器地址与同步密钥；暂停或恢复同步，设置大小、目录、后缀和正则排除规则，查看客户端快照。",
+      desc: "配置客户端名称、服务器地址与访问 key，设置或输入库加密密码；暂停或恢复同步，设置大小、目录、后缀和正则排除规则，查看客户端快照。",
       aliases: ["sync", "server", "endpoint", "key", "password", "pause", "resume", "exclude", "folder", "extension", "regex", "clients", "服务器", "密钥", "暂停", "恢复", "排除", "客户端"],
       render: setting => {
         this.hide();

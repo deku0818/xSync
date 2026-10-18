@@ -39,8 +39,9 @@ export class Transport {
   private activeSnapshot?: { id: string; leaseId: string };
   private snapshotRequest?: string;
   private leaseRenewed = new Map<string, number>();
-  constructor(private endpoint: string, private token: string, private http: HTTP, developmentEndpoint?: string) {
+  constructor(private endpoint: string, private token: string, private http: HTTP, developmentEndpoint?: string, vaultId?: string) {
     this.endpoint = normalizeEndpoint(endpoint, developmentEndpoint);
+    if (vaultId) { if (!/^[a-f0-9]{64}$/.test(vaultId)) throw new Error("INVALID_VAULT"); this.endpoint += `/sync/${vaultId}`; }
   }
   setToken(token: string): void { this.token = token; }
   private async request(path: string, method = "GET", body?: Uint8Array, extra: Record<string, string> = {}, publicRequest = false): Promise<HTTPResponse> {

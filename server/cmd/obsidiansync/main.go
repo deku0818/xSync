@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -50,16 +51,30 @@ func main() {
 	if *resumeTestSchema && *testSchema == "" {
 		log.Fatal("--resume-test-schema requires --test-schema")
 	}
-	if *file == "" {
-		log.Fatal("--config is required")
+	c := syncstore.Config{Listen: "127.0.0.1:8873", ObjectDir: "./objects"}
+	var e error
+	if *file != "" {
+		b, err := os.ReadFile(*file)
+		if err != nil {
+			log.Fatal("cannot read config")
+		}
+		if e = json.Unmarshal(b, &c); e != nil {
+			log.Fatal("invalid config")
+		}
 	}
-	b, e := os.ReadFile(*file)
-	if e != nil {
-		log.Fatal("cannot read config")
+	if listen := os.Getenv("XSYNC_LISTEN"); listen != "" {
+		c.Listen = listen
 	}
-	var c syncstore.Config
-	if e = json.Unmarshal(b, &c); e != nil {
-		log.Fatal("invalid config")
+	if objects := os.Getenv("XSYNC_OBJECT_DIR"); objects != "" {
+		c.ObjectDir = objects
+	}
+	if value, present := os.LookupEnv("XSYNC_TRUSTED_PROXIES"); present {
+		c.TrustedProxies = nil
+		for _, prefix := range strings.Split(value, ",") {
+			if prefix = strings.TrimSpace(prefix); prefix != "" {
+				c.TrustedProxies = append(c.TrustedProxies, prefix)
+			}
+		}
 	}
 	if dsn := os.Getenv("XSYNC_DATABASE_URL"); dsn != "" {
 		c.DSN = dsn
@@ -132,6 +147,29 @@ func main() {
 			}()
 		}
 		c.DSN += "&search_path=" + *testSchema
+	}
+	if c.VaultID == "" {
+		if commands != 0 {
+			log.Fatal("use the web administration interface for managed deployments")
+		}
+		password := os.Getenv("XSYNC_ADMIN_PASSWORD")
+		if password == "" && os.Getenv("XSYNC_ADMIN_PASSWORD_FILE") != "" {
+			secret, readErr := os.ReadFile(os.Getenv("XSYNC_ADMIN_PASSWORD_FILE"))
+			if readErr != nil {
+				log.Fatal("cannot read administrator password file")
+			}
+			password = strings.TrimRight(string(secret), "\r\n")
+		}
+		manager, err := syncstore.NewManagedServer(ctx, c, password)
+		if err != nil {
+			log.Fatal("managed server startup failed: ", err)
+		}
+		defer manager.Close()
+		done := make(chan struct{})
+		go func() { defer close(done); manager.Maintain(ctx) }()
+		defer func() { stop(); <-done }()
+		serve(ctx, c.Listen, manager.Handler(), *tlsCert, *tlsKey)
+		return
 	}
 	s, e := syncstore.Open(ctx, c)
 	if e != nil {
@@ -230,22 +268,25 @@ func main() {
 		}
 	}()
 	defer func() { stop(); <-maintenanceDone }()
-	srv := &http.Server{Addr: c.Listen, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+	serve(ctx, c.Listen, s.Handler(), *tlsCert, *tlsKey)
+}
+func serve(ctx context.Context, listen string, handler http.Handler, cert, key string) {
+	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {
 		<-ctx.Done()
-		s.CloseEvents()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
-	log.Print("xSync server on ", c.Listen)
-	if *tlsCert != "" {
-		e = srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+	log.Print("xSync server on ", listen)
+	var e error
+	if cert != "" {
+		e = srv.ListenAndServeTLS(cert, key)
 	} else {
 		e = srv.ListenAndServe()
 	}
 	if e != nil && e != http.ErrServerClosed {
-		log.Fatal(e)
+		log.Fatal("HTTP server stopped: ", e)
 	}
 }
 

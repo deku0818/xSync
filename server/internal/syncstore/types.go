@@ -83,6 +83,8 @@ type Device struct {
 	Token string `json:"token,omitempty"`
 }
 type Config struct {
+	Managed             bool            `json:"-"`
+	TrustedProxies      []string        `json:"trustedProxies,omitempty"`
 	MetadataMode        string          `json:"metadataMode,omitempty"`
 	CleanupMode         string          `json:"cleanupMode,omitempty"`
 	DSN                 string          `json:"dsn"`

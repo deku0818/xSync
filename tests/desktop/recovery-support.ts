@@ -86,7 +86,7 @@ export class RecoveryFixture {
   server?: ChildProcess;
   clients: RecoveryClient[] = [];
   httpHook?: (request: HTTPRequest, next: () => ReturnType<HTTP>) => ReturnType<HTTP>;
-  private resumed = false;
+  protected resumed = false;
   async open(onboarding = false, metadataMode?: "full", deviceCount = 2): Promise<void> {
     await mkdir(".local", { recursive: true }); this.root = await mkdtemp(join(process.cwd(), ".local/recovery-"));
     const base = JSON.parse(await readFile(".local/desktop/server.json", "utf8"));

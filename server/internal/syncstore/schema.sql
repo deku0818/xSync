@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
  PRIMARY KEY(vault_id,id)
 );
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS name_key text;
+CREATE UNIQUE INDEX IF NOT EXISTS devices_name_unique ON devices(vault_id,name_key);
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS profile_revision bigint NOT NULL DEFAULT 0;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS profile_ciphertext text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS profile_reported_at timestamptz;
@@ -154,3 +155,24 @@ CREATE TABLE IF NOT EXISTS snapshot_items (
  FOREIGN KEY(vault_id,snapshot_id) REFERENCES snapshots(vault_id,id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS snapshot_item_file_lookup ON snapshot_items(vault_id,snapshot_id,(value->>'id')) WHERE kind='files';
+
+-- The control plane owns users; cryptographic material remains independent of access credentials.
+CREATE TABLE IF NOT EXISTS sync_users (
+ id text PRIMARY KEY, name text NOT NULL, name_key text NOT NULL UNIQUE,
+ key_hash bytea UNIQUE, key_tail text NOT NULL, key_revision bigint NOT NULL DEFAULT 1,
+ active boolean NOT NULL DEFAULT true, deleted_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS vault_owners (
+ vault_id text PRIMARY KEY REFERENCES vaults(id), user_id text NOT NULL REFERENCES sync_users(id),
+ name text NOT NULL, name_key text NOT NULL, UNIQUE(user_id,name_key)
+);
+CREATE TABLE IF NOT EXISTS device_access (
+ vault_id text NOT NULL, device_id text NOT NULL, key_revision bigint NOT NULL,
+ PRIMARY KEY(vault_id,device_id), FOREIGN KEY(vault_id,device_id) REFERENCES devices(vault_id,id)
+);
+CREATE TABLE IF NOT EXISTS admin_sessions (
+ token_hash bytea PRIMARY KEY, expires_at timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS admin_audit (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, at timestamptz NOT NULL DEFAULT now(), message text NOT NULL
+);

@@ -1,8 +1,10 @@
 // Based on obsidianmd/obsidian-sample-plugin, commit 07ceb81d1fb3384af611ebf665a1ec42a7e5926d (0BSD).
-import { Modal, Notice, Platform, Plugin, TFile, requestUrl, type App } from "obsidian";
+import { Modal, Notice, Platform, Plugin, TFile, type App } from "obsidian";
 import { z } from "zod";
 
 import buildManifest from "../../manifest.json";
+import { accessKeySchema, type ManagedUser, type ManagedVault } from "../../protocol/src/access";
+import { AccessClient } from "./sync/access-client";
 import { clientName } from "../../protocol/src/client-profile.js";
 import { canonical } from "../../protocol/src/model.js";
 import { desktopProtector } from "./desktop/protector.js";
@@ -15,10 +17,11 @@ import { connectionSettings } from "./sync/connection-settings.js";
 import { randomId, fingerprint, VaultCrypto } from "./sync/crypto.js";
 import { SyncEngine, type EngineStatus, type Review } from "./sync/engine.js";
 import { enrollConnection } from "./sync/enrollment.js";
+import { obsidianHTTP } from "./sync/obsidian-http.js";
 import { SyncPolicy, defaultRules, validateRules, type SyncRules, type FileEntry } from "./sync/policy.js";
 import { AutomaticSync, RemoteEvents, SerialWork } from "./sync/realtime.js";
 import { SyncDB } from "./sync/store.js";
-import { Transport, boundedRequest, normalizeEndpoint } from "./sync/transport.js";
+import { Transport, normalizeEndpoint } from "./sync/transport.js";
 import { ObsidianVaultPort } from "./sync/vault-port.js";
 import { connectionForm } from "./ui/connection-form.js";
 import { SyncSettingTab } from "./ui/settings-tab.js";
@@ -47,6 +50,15 @@ export default class ObsidianSyncPlugin extends Plugin {
   private restoreAllowed = true;
   private configuring = false;
   hasSavedKey = false;
+  accessSaved = false;
+  accessUser?: ManagedUser;
+  accessibleVaults: ManagedVault[] = [];
+  vaultName = "";
+  private accessRecord?: string;
+  private accessUserId?: string;
+  get localVaultName(): string { return this.app.vault.getName(); }
+  get boundVaultId(): string { return this.config?.vaultId ?? ""; }
+
   eventState = "stopped";
   hostError = "";
   localPending = false;
@@ -75,7 +87,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     this.ribbonEl = this.addRibbonIcon("cloud", "xSync 同步状态", () => this.openStatus());
     this.ribbonEl.addClass("oss-sync-ribbon");
     this.addCommand({ id: "open-sync-panel", name: "查看同步状态", callback: () => this.openStatus() });
-    this.addCommand({ id: "configure-sync", name: "配置服务器与同步密钥", callback: () => new ConnectionModal(this.app, this).open() });
+    this.addCommand({ id: "configure-sync", name: "配置服务器、访问 key 与同步库", callback: () => new ConnectionModal(this.app, this).open() });
     this.addCommand({ id: "toggle-sync", name: "暂停 / 恢复同步", callback: () => { void this.setAutoSync(!this.autoSync).catch(error => new Notice(String(error))); } });
     this.addSettingTab(new SyncSettingTab(this.app, this));
     try {
@@ -105,8 +117,10 @@ export default class ObsidianSyncPlugin extends Plugin {
       this.rules = saved.rules; this.policy = new SyncPolicy(this.rules); this.deviceName = saved.clientName ?? config.deviceName;
       this.profileRevision = saved.profileRevision; this.profileDirty = saved.profileDirty; this.profilePending = saved.profilePending;
       this.connectionRecord = saved.record; this.restoreAllowed = saved.restoreAllowed;
+      this.accessRecord = saved.accessRecord; this.accessUserId = saved.userId; this.vaultName = saved.vaultName ?? "";
+      if (this.accessRecord) this.accessSaved = await this.unlockStore(this.endpoint, this.accessRecord, "server-access").hasRecord();
       this.db = new SyncDB(`obsidian-sync-dev-${config.databaseId}`); await this.db.open();
-      const remote = this.endpoint ? this.transport(this.endpoint) : undefined; this.remote = remote;
+      const remote = this.endpoint && config.vaultId ? this.transport(this.endpoint) : undefined; this.remote = remote;
       const port = new ObsidianVaultPort(this.app, root, () => this.policy); this.port = port;
       if (remote && config.vaultId) this.engine = new SyncEngine(this.db, remote, port, config.deviceId, config.vaultId, this.policy);
       try {
@@ -189,10 +203,7 @@ export default class ObsidianSyncPlugin extends Plugin {
   }
   private transport(endpoint: string): Transport {
     if (!this.config) throw new Error("LOCAL_IDENTITY_NOT_READY");
-    return new Transport(endpoint, this.config.token, async r => {
-      const response = await boundedRequest(requestUrl({ url: r.url, method: r.method, headers: r.headers, body: r.body?.slice().buffer, throw: false }));
-      return { status: response.status, headers: Object.fromEntries(Object.entries(response.headers).map(([k, v]) => [k.toLowerCase(), v])), bytes: new Uint8Array(response.arrayBuffer) };
-    }, this.config.developmentEndpoint);
+    return new Transport(endpoint, this.config.token, obsidianHTTP, this.config.developmentEndpoint, this.accessRecord ? this.config.vaultId : undefined);
   }
   private unlockStore(endpoint: string, record: string, vaultId = this.config?.vaultId ?? ""): RememberedUnlock {
     if (!this.config) throw new Error("LOCAL_IDENTITY_NOT_READY");
@@ -209,6 +220,14 @@ export default class ObsidianSyncPlugin extends Plugin {
       const listing = await adapter.list(this.root);
       const names = new Set(listing.files.filter(path => path.startsWith(`${this.root}/`)).map(path => path.slice(this.root.length + 1).replace(/\.retiring$/, "")));
       for (const name of names) {
+        if (/^access-[a-f0-9]{64}\.json$/.test(name)) {
+          if (!this.accessRecord || name === this.accessRecord) continue;
+          try {
+            const identity = await this.accessStore(this.endpoint, name).retirementIdentity();
+            if (identity) await this.unlockStore(identity.endpoint, name, identity.vaultId).retire(this.accessStore());
+          } catch { /* Uncertain or active access records remain protected. */ }
+          continue;
+        }
         if (name === this.connectionRecord ||
             !/^(?:(?:connection|pending)-[a-f0-9]{64}|desktop-unlock)\.json$/.test(name)) continue;
         if (!active) {
@@ -242,6 +261,163 @@ export default class ObsidianSyncPlugin extends Plugin {
         if (hint.type === "ready" || !progress || hint.epoch !== progress.epoch || hint.seq > progress.received) this.automatic?.trigger("remote");
       }).catch(() => { /* Unload closes DB after stopping the event source. */ });
     }, state => { this.eventState = state; this.emit(); });
+  }
+  private accessStore(endpoint = this.endpoint, record = this.accessRecord): RememberedUnlock {
+    if (!record) throw new Error("ACCESS_KEY_REQUIRED");
+    return this.unlockStore(endpoint, record, "server-access");
+  }
+  private async loadAccessClient(): Promise<AccessClient> {
+    const access = await this.accessStore().loadAccess();
+    if (!access || access.userId !== this.accessUserId) throw new Error("ACCESS_KEY_REQUIRED");
+    return new AccessClient(access.endpoint, access.key, obsidianHTTP);
+  }
+  async authorizeServer(inputEndpoint: string, key: string, proposedName: string, observe?: ConnectionObserver): Promise<void> {
+    let step: ConnectionStep = "server";
+    try {
+      const endpoint = normalizeEndpoint(inputEndpoint.trim()), name = clientName(proposedName);
+      await this.work.run(async () => {
+        if (!this.config || !this.db || !this.port || this.disposed) throw new Error("LOCAL_IDENTITY_NOT_READY");
+        if (this.boundVaultId && (!this.accessRecord || endpoint !== this.endpoint)) throw new Error("USE_NEW_LOCAL_VAULT");
+        this.configuring = true; this.updateAutomation();
+        try {
+          if (!key.trim() && endpoint !== this.endpoint) throw new Error("ACCESS_KEY_REQUIRED");
+          const prior = !key.trim() ? await this.accessStore().loadAccess() : null;
+          const parsed = accessKeySchema.safeParse(key.trim() || prior?.key);
+          if (!parsed.success) throw new Error("ACCESS_KEY_INVALID");
+          const value = parsed.data;
+          const client = new AccessClient(endpoint, value, obsidianHTTP);
+          observe?.({ step: "server", state: "running" });
+          const connection = await client.connection();
+          observe?.({ step: "server", state: "passed" }); step = "authorization";
+          observe?.({ step, state: "passed" });
+          if (this.boundVaultId && this.accessUserId && this.accessUserId !== connection.user.id) throw new Error("USE_NEW_LOCAL_VAULT");
+          step = "storage"; observe?.({ step, state: "running" });
+          const record = `access-${randomId()}.json`, protectedAccess = this.accessStore(endpoint, record);
+          await protectedAccess.saveAccess({ endpoint, userId: connection.user.id, key: value });
+          if (this.disposed) throw new Error("PLUGIN_UNLOADED");
+          let material: StoredMaterial | null | undefined;
+          if (this.boundVaultId) {
+            const vault = connection.vaults.find(vault => vault.id === this.boundVaultId);
+            if (!vault) throw new Error("VAULT_NOT_FOUND");
+            try { material = this.engine?.unlocked ? this.engine.rememberedMaterial() : await this.remembered?.load(); }
+            catch { /* Keep unreadable decryption material; the user may unlock again with the vault password. */ }
+            if (material) await this.installManaged(client, vault, material, name, endpoint, record, connection.user.id, connection.user.keyRevision, next => { step = next; observe?.({ step: next, state: "running" }); });
+          }
+          if (!material) await this.saveAccessPointer(endpoint, record, connection.user.id, name, protectedAccess);
+          this.accessUser = connection.user; this.accessibleVaults = connection.vaults; this.accessSaved = true; this.hostError = "";
+          observe?.({ step: "storage", state: "passed" });
+        } finally { this.configuring = false; this.updateAutomation(); this.emit(); }
+      });
+    } catch (error) { const failed = connectionFailure(error, step); observe?.({ step: failed.step, state: "failed", message: failed.message }); throw error; }
+  }
+  private async saveAccessPointer(endpoint: string, record: string, userId: string, name: string, protectedAccess: RememberedUnlock): Promise<void> {
+    const previous = this.accessRecord ? this.accessStore() : undefined;
+    await previous?.prepareRetirement();
+    if (this.disposed) throw new Error("PLUGIN_UNLOADED");
+    await this.saveData({ format: 4, vaultId: this.boundVaultId, vaultName: this.vaultName, autoSync: this.autoSync, endpoint, record: this.connectionRecord, accessRecord: record, userId, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty });
+    this.endpoint = endpoint; this.accessRecord = record; this.accessUserId = userId; this.deviceName = name;
+    try { await previous?.retire(protectedAccess); } catch { /* Startup resumes journaled retirement. */ }
+  }
+  async refreshVaults(): Promise<void> {
+    const client = await this.loadAccessClient(), connection = await client.connection();
+    if (connection.user.id !== this.accessUserId) throw new Error("UNLOCK_IDENTITY_MISMATCH");
+    this.accessUser = connection.user; this.accessibleVaults = connection.vaults;
+  }
+  async connectManagedVault(vaultId: string, password: string, createName?: string, stage?: (step: ConnectionStep) => void): Promise<void> {
+    await this.work.run(async () => {
+      if (!this.config || !this.db || !this.port || this.disposed) throw new Error("LOCAL_IDENTITY_NOT_READY");
+      if (this.boundVaultId && this.boundVaultId !== vaultId) throw new Error("USE_NEW_LOCAL_VAULT");
+      this.configuring = true; this.updateAutomation();
+      try {
+        stage?.("storage");
+        const client = await this.loadAccessClient(); stage?.("server");
+        const connection = await client.connection();
+        if (connection.user.id !== this.accessUserId) throw new Error("UNLOCK_IDENTITY_MISMATCH");
+        let vault: ManagedVault, material: StoredMaterial;
+        stage?.("key");
+        if (createName !== undefined) {
+          if (this.boundVaultId) throw new Error("USE_NEW_LOCAL_VAULT");
+          const name = createName.normalize("NFKC").trim();
+          if (!name || [...name].length > 80) throw new Error("VAULT_NAME_INVALID");
+          if (password.length < 8) throw new Error("VAULT_PASSWORD_TOO_SHORT");
+          const manifestPath = `${this.root}/managed-create.json`, adapter = this.app.vault.adapter;
+          const schema = z.strictObject({ endpoint: z.string(), userId: z.string(), id: z.string(), name: z.string(), epoch: z.string(), keyPackage: z.unknown() });
+          const pending = await adapter.exists(manifestPath) ? schema.parse(JSON.parse(await adapter.read(manifestPath))) : null;
+          let draft: z.infer<typeof schema>;
+          if (pending && pending.endpoint === this.endpoint && pending.userId === connection.user.id && pending.name === name) draft = pending;
+          else {
+            const id = randomId(), created = await VaultCrypto.create(id, password); created.crypto.close();
+            draft = { endpoint: this.endpoint, userId: connection.user.id, id, name, epoch: randomId(), keyPackage: created.keyPackage };
+            const encoded = JSON.stringify(draft); await adapter.write(manifestPath, encoded);
+            if (await adapter.read(manifestPath) !== encoded) throw new Error("CREATION_WRITE_INCOMPLETE");
+          }
+          material = await this.unlockManagedMaterial(draft.id, draft.keyPackage, password);
+          // Protect the decryption material before publishing the immutable creation request.
+          stage?.("storage");
+          material = await this.prepareManagedMaterial(this.endpoint, material, connection.user.keyRevision);
+          stage?.("server");
+          vault = await client.create({ id: draft.id, name, epoch: draft.epoch, keyPackage: draft.keyPackage });
+        } else {
+          const selected = connection.vaults.find(vault => vault.id === vaultId);
+          if (!selected) throw new Error("VAULT_NOT_FOUND");
+          vault = selected;
+          material = await this.unlockManagedMaterial(vault.id, vault.keyPackage, password);
+        }
+        await this.installManaged(client, vault, material, this.deviceName, this.endpoint, this.accessRecord!, connection.user.id, connection.user.keyRevision, stage);
+        this.accessibleVaults = (await client.connection()).vaults;
+      } finally { this.configuring = false; this.updateAutomation(); this.emit(); }
+    });
+  }
+  private async unlockManagedMaterial(vaultId: string, keyPackage: unknown, password: string): Promise<StoredMaterial> {
+    const keys = await VaultCrypto.unlock(vaultId, keyPackage, password);
+    try {
+      return { format: 0, vaultId, keyPackageFingerprint: await fingerprint(new TextEncoder().encode(canonical(keyPackage))), session: keys.sessionMaterial() };
+    } finally { keys.close(); }
+  }
+  private async prepareManagedMaterial(endpoint: string, material: StoredMaterial, accessRevision: number): Promise<StoredMaterial & { token: string }> {
+    const pendingStore = this.unlockStore(endpoint, `pending-${await fingerprint(new TextEncoder().encode(`managed:${endpoint}:${material.vaultId}`))}.json`, material.vaultId);
+    const pending = await pendingStore.load();
+    if (pending && pending.keyPackageFingerprint !== material.keyPackageFingerprint) throw new Error("KEY_PACKAGE_CHANGED");
+    const token = (pending?.accessRevision === accessRevision ? pending.token : undefined) ?? (material.accessRevision === accessRevision ? material.token : undefined) ?? randomId();
+    // Persist the exact token before publishing a vault or enrolling a device, so either operation can retry.
+    const prepared = { ...material, token, accessRevision };
+    await pendingStore.save(prepared);
+    return prepared;
+  }
+  private async installManaged(client: AccessClient, vault: ManagedVault, material: StoredMaterial, name: string, endpoint: string, accessRecord: string, userId: string, accessRevision: number, stage?: (step: ConnectionStep) => void): Promise<void> {
+    if (!this.config || !this.db || !this.port) throw new Error("LOCAL_IDENTITY_NOT_READY");
+    const progress = await this.db.progress.get("progress");
+    if (progress && (progress.vaultId !== vault.id || progress.epoch !== vault.epoch)) throw new Error("RECOVERY_RECONCILIATION_REQUIRED");
+    stage?.("storage");
+    const { token } = await this.prepareManagedMaterial(endpoint, material, accessRevision);
+    if (this.disposed) throw new Error("PLUGIN_UNLOADED");
+    stage?.("authorization");
+    await client.enroll(vault.id, { deviceId: this.config.deviceId, name, tokenHash: await fingerprint(new TextEncoder().encode(token)) });
+    const remote = new Transport(endpoint, token, obsidianHTTP, undefined, vault.id);
+    const candidate = new SyncEngine(this.db, remote, this.port, this.config.deviceId, vault.id, this.policy);
+    let installed = false;
+    try {
+      await candidate.restoreRemembered(material); await candidate.validateConnection();
+      const own = (await remote.devices()).find(device => device.id === this.config!.deviceId);
+      if (!own) throw new Error("HANDSHAKE_MISMATCH");
+      stage?.("name");
+      const profile = await remote.putProfile({ name, expectedRevision: own.revision, ciphertext: candidate.sealProfile(own.revision + 1, this.configuration(name)) });
+      stage?.("storage");
+      const record = `connection-${randomId()}.json`, remembered = this.unlockStore(endpoint, record, vault.id), previous = this.remembered;
+      await remembered.save({ ...candidate.rememberedMaterial(), token, accessRevision });
+      await previous?.prepareRetirement();
+      const oldAccess = this.accessRecord && this.accessRecord !== accessRecord ? this.accessStore() : undefined;
+      await oldAccess?.prepareRetirement();
+      if (this.disposed) throw new Error("PLUGIN_UNLOADED");
+      await this.saveData({ format: 4, vaultId: vault.id, vaultName: vault.name, accessRecord, userId, autoSync: this.autoSync, endpoint, record, restoreAllowed: true, clientName: name, rules: this.rules, profileRevision: profile.revision, profileDirty: false });
+      if (this.disposed) throw new Error("PLUGIN_UNLOADED");
+      this.engine?.lock(); this.engine = candidate; installed = true; this.config.vaultId = vault.id; this.config.token = token;
+      this.remote = remote; this.endpoint = endpoint; this.deviceName = name; this.connectionRecord = record; this.remembered = remembered;
+      this.accessRecord = accessRecord; this.accessUserId = userId; this.vaultName = vault.name; this.restoreAllowed = true; this.hasSavedKey = true; this.accessSaved = true;
+      this.profileRevision = profile.revision; this.profileDirty = false; this.profilePending = undefined;
+      try { await previous?.retire(remembered); await oldAccess?.retire(this.accessStore()); } catch { /* Installed pointers remain authoritative; retirement can retry. */ }
+      await this.cleanupConnectionRecords(); this.connectEvents(remote);
+    } finally { if (!installed) candidate.lock(); }
   }
   async saveConnection(inputEndpoint: string, key: string, observe?: ConnectionObserver, proposedName = this.deviceName): Promise<void> {
     let step: ConnectionStep = "server";
@@ -379,8 +555,11 @@ export default class ObsidianSyncPlugin extends Plugin {
       }
     });
   }
+  get syncStatus(): ReturnType<typeof syncPresentation> {
+    return syncPresentation(this.lastStatus, !!this.engine?.unlocked, this.autoSync, this.syncing, this.localPending);
+  }
   private renderStatusBar(): string {
-    const display = syncPresentation(this.lastStatus, !!this.engine?.unlocked, this.autoSync, this.syncing, this.localPending);
+    const display = this.syncStatus;
     this.statusEl?.setText(`xSync · ${display.label}`);
     if (this.statusEl) this.statusEl.dataset.state = display.state;
     if (this.ribbonEl) {
@@ -473,7 +652,7 @@ export default class ObsidianSyncPlugin extends Plugin {
     finally { this.configScanning = false; }
   }
   async saveSettings(): Promise<void> {
-    await this.saveData({ format: 4, vaultId: this.config?.vaultId ?? "", autoSync: this.autoSync, endpoint: this.endpoint, record: this.connectionRecord, restoreAllowed: this.restoreAllowed, clientName: this.deviceName, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty, ...(this.profilePending ? { profilePending: this.profilePending } : {}) });
+    await this.saveData({ format: 4, vaultId: this.config?.vaultId ?? "", autoSync: this.autoSync, endpoint: this.endpoint, record: this.connectionRecord, restoreAllowed: this.restoreAllowed, clientName: this.deviceName, rules: this.rules, profileRevision: this.profileRevision ?? 0, profileDirty: this.profileDirty, ...(this.accessRecord ? { accessRecord: this.accessRecord, userId: this.accessUserId, vaultName: this.vaultName } : {}), ...(this.profilePending ? { profilePending: this.profilePending } : {}) });
   }
 
 }

@@ -35,5 +35,8 @@ export function syncPresentation(status: EngineStatus | undefined, ready: boolea
     attention: "同步暂时无法完成，本机笔记与待处理内容仍保留。", pending: "更改已保存在本机，将自动同步。",
     complete: "更改已同步，无需其他操作。",
   };
+  if (state === "attention" && status?.errors.some(error => /^(UNAUTHORIZED|USER_DISABLED|VAULT_NOT_FOUND)$/.test(error))) {
+    return { state, label: "需要重新授权", message: "请向管理员确认当前访问 key，并在同步设置中重新保存。本地笔记与库解密材料仍保留。" };
+  }
   return { state, label: labels[state], message: messages[state] };
 }

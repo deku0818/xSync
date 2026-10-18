@@ -2,7 +2,7 @@
 
 Go/pgx HTTP 与 WebSocket 服务，使用 PostgreSQL 保存元数据，持久目录保存不可变密文对象。服务端不持有内容解密密钥。数据库使用项目专属 Docker 资源。
 
-- [部署与管理](../docs/DEPLOYMENT.md)：HTTPS、设备接入/撤销、自动清理、升级与备份。
+- [部署与管理](../docs/DEPLOYMENT.md)：HTTPS、Web 管理后台、用户访问 key、多库、自动清理与备份。
 - [PostgreSQL Compose 模板](deploy/postgres/README.md)。
 - [开发环境](../docs/testing/desktop.md)与[测试流程](../docs/testing/DEVELOPMENT.md)。
 

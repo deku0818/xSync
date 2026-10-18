@@ -4,9 +4,8 @@
 
 ## 使用与运维
 
-- [安装与设备接入](SETUP.md)：安装、密钥保存、设备撤销与凭据恢复。
-- [服务部署](DEPLOYMENT.md)：运行配置、HTTPS、升级兼容与联合备份。
-- [PostgreSQL Compose 部署](deployment/postgres.md)：容器、Nginx、证书和持久化目录。
+- [连接 Obsidian](SETUP.md)：安装插件、创建或加入同步库。
+- [部署 xSync](DEPLOYMENT.md)：拉取镜像、后台创建用户、连接插件。
 
 ## 开发与维护
 

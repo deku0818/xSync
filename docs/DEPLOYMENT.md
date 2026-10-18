@@ -1,64 +1,101 @@
-# 自建 xSync 服务
+# 部署 xSync
 
-当前源码提供 Go 同步服务与内置 Web 管理端，使用 PostgreSQL。SQLite、旧库迁移和旧客户端兼容不在本轮范围；不要将新服务连接到已有旧版数据库，或将已发布的 0.1.2 插件连接到本版本。
+准备一台安装了 Docker Compose、OpenSSL 的 Linux 服务器。xSync 服务本体可以通过 HTTP 运行，不需要先配置域名或证书。
 
-## 全新部署
+## 1. 启动服务
 
-无需运行 `server:init`，也不需要预先生成库密钥或上传 `server.json`。部署服务器只配置基础设施与管理密码，用户稍后在插件中创建加密库。
+新建目录，在其中生成密码文件：
 
-需要 Node >=22.12（构建管理前端）、Go >=1.27 和 Docker PostgreSQL。仓库中的 PostgreSQL 必须在 Docker 中运行，不安装宿主数据库。
-
-```sh
-npm ci
-npm run build:admin
-mkdir -p dist
-cd server
-go build -o ../dist/xsync-server ./cmd/obsidiansync
+```bash
+mkdir -p xsync && cd xsync
+umask 077
+test -f .env || printf 'POSTGRES_PASSWORD=%s\nXSYNC_ADMIN_PASSWORD=%s\n' \
+  "$(openssl rand -hex 32)" "$(openssl rand -hex 16)" > .env
 ```
 
-运行环境变量：
+将以下内容保存为 `compose.yaml`：
 
-| 变量 | 用途 |
-| --- | --- |
-| `XSYNC_DATABASE_URL` | PostgreSQL DSN，使用独立数据库 |
-| `XSYNC_ADMIN_PASSWORD` | 管理端密码，至少 12 个字符；不得写入源码或公开命令历史 |
-| `XSYNC_ADMIN_PASSWORD_FILE` | 可改用私有密码文件；未设置直接密码时读取，移除末尾换行 |
-| `XSYNC_LISTEN` | 默认 `127.0.0.1:8873` |
-| `XSYNC_OBJECT_DIR` | 密文持久目录，默认工作目录的 `objects/` |
-| `XSYNC_TRUSTED_PROXIES` | 可信代理 CIDR，逗号分隔；登录限流默认忽略转发 IP |
-
-将实际凭据放在管理员私有环境中启动，不在公开配置或 Git 中保存。普通监听只允许 loopback；生产非 loopback 监听须使用 `--tls-cert` 与 `--tls-key`。可以由同机 HTTPS 反向代理连接 loopback。服务与网页在同一地址，管理页面为 `/admin/`；不需要单独部署前端。
-
-Docker 镜像包括前端构建及 Go 服务，运行时使用非 root 用户：
-
-```sh
-docker build -f server/Dockerfile -t xsync-server:local .
+```yaml
+name: xsync
+services:
+  postgres:
+    image: postgres:17.11-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xsync
+      POSTGRES_DB: xsync
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    ports:
+      - "127.0.0.1:55439:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U xsync -d xsync"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  server:
+    image: ycw0818/xsync-server:latest
+    command: []
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      XSYNC_DATABASE_URL: postgres://xsync:${POSTGRES_PASSWORD}@127.0.0.1:55439/xsync?sslmode=disable
+      XSYNC_ADMIN_PASSWORD: ${XSYNC_ADMIN_PASSWORD:?}
+      XSYNC_LISTEN: 127.0.0.1:8873
+      XSYNC_TRUSTED_PROXIES: 127.0.0.1/32,::1/128
+    volumes:
+      - sync-data:/data
+volumes:
+  postgres-data:
+  sync-data:
 ```
 
-完整 PostgreSQL／TLS／Nginx 模板见[Compose 部署](deployment/postgres.md)。当前新模式尚未发布镜像，不能将旧的 0.1.1 镜像用于这些步骤。本轮不发布或部署生产服务器。
+启动：
 
-## 管理用户与库
+```bash
+docker compose up -d --wait
+```
 
-打开 `https://sync.example.com/admin/`。管理密码登录后使用 HttpOnly、SameSite=Strict 的会话 cookie，HTTPS 下设置 Secure；会话最长 12 小时，重启服务需重新登录。登录有失败尝试频率限制。管理写入请求检查来源，不将管理密码发给同步客户端。
+服务启动后，本机地址为 `http://127.0.0.1:8873`。
 
-使用反向代理时，将代理连接后端所用的固定 IP 配置为 `XSYNC_TRUSTED_PROXIES`（IPv4 加 `/32`，IPv6 加 `/128`，也可使用专用受控代理网段）。只有来自该范围的连接才按 `X-Real-IP` 中的真实客户端地址限流；其他连接忽略转发头。Nginx 必须用 `$remote_addr` 覆盖 `X-Real-IP`，不要传递客户端自报值。不要信任公网或包含不受控容器的宽泛网段；代理 IP 变化后需更新配置并重启服务。
+手机和远程插件连接使用 HTTPS，可自行用 Nginx 等反向代理到上述 HTTP 地址，开启 WebSocket，上传大小限制至少设为 17 MB。本例的 HTTP 服务仅监听本机回环地址，不直接向公网暴露。
 
-后台可以创建用户、发放一次展示的访问 key、刷新 key、停用／恢复用户、确认删除用户，查看库列表与最近管理记录。访问 key 只保存 SHA-256 摘要和展示末尾。用户在插件本机设置库加密密码，服务器不接收该密码或明文主密钥。
+<details>
+<summary>HTTPS 反向代理参考（Nginx）</summary>
 
-每个用户可创建多个库。库名是管理员可见的显示信息，文件路径和内容仍加密；库 ID 是固定身份。设备和同步请求按所属用户、库与当前授权代次校验，WebSocket 事件源也受同样约束。失效 key 不能绕过新入口通过旧设备接入 API 恢复授权。
+在域名已有的 HTTPS `server {}` 中添加。此示例的 Nginx 运行在宿主机上；若也运行在 Docker 中，需使用 host 网络：
 
-访问 key 更新不改变密文密钥包。停用保留数据，删除先持久撤销访问，再清理数据库和所属对象目录；中断清理在维护轮次继续。删除不会擦除设备上的本地文件。
+```nginx
+client_max_body_size 17m;
+location / {
+    proxy_pass http://127.0.0.1:8873;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
 
-## 数据维护与备份
+</details>
 
-后台服务每分钟运行维护，按当前内容、未解决冲突及有效传输租约保护对象，再回收不再依赖的旧密文。默认无引用宽限期一小时，增量日志按七天、10,000 条或 64 MiB 中先到者裁剪。保留日志用于断线补齐，不提供用户可操作的历史版本入口。完整对象审计在本次进程首次维护该库时执行，不每分钟重复扫描全部正文。
+## 2. 创建用户，取得 key
 
-用户删除、元数据回收与文件系统删除分别有持久完成边界，不是跨系统事务。需要同时备份 PostgreSQL 与密文对象目录，管理员密码文件另行保护；用户的库加密密码单独备份。旧数据库恢复可能触发客户端连续性保护，不能靠重置游标绕过。
+打开服务的 `/admin/` 页面（本机为 `http://127.0.0.1:8873/admin/`，配置反代后为 `https://你的域名/admin/`），用 `.env` 中的 `XSYNC_ADMIN_PASSWORD` 登录。点击“创建用户”，填写名称并保存访问 key；key 只展示一次。
 
-多实例事件通知、生产容量和联合备份实际还原未验收。本轮自动化验证不能替代生产与手机真机验证。
+可以为自己和朋友分别创建用户，每人使用独立的访问 key 与知识库。后台可以刷新 key、停用或删除用户。库加密密码由用户在插件中设置，服务器无法解密知识库内容。
 
-## 源码升级与协议兼容
+## 3. 连接 Obsidian
 
-新管理模式仅支持全新部署和新库，不提供原单库服务的自动迁移。插件、服务端和管理前端应从同一提交构建。版本号尚未提升，现有 tag 与 Release 资产不变，源码完成不代表已发布。
+按[插件接入说明](SETUP.md)安装 xSync，填写服务地址与访问 key，即可创建或加入同步库。
 
-开发验证入口见[开发流程](testing/DEVELOPMENT.md)。旧单库 CLI 和初始化工具只保留给隔离的协议／恢复测试，不是新部署的产品入口。
+## 常用操作
+
+- 查看日志：`docker compose logs --tail 100 server`
+- 更新服务：`docker compose pull && docker compose up -d`
+- 备份：保留 `.env`，停止服务后同时备份 `postgres-data`、`sync-data` 两个数据卷。用户另行保存库加密密码。

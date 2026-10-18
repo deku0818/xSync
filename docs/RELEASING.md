@@ -16,7 +16,7 @@ GitHub Actions 的常规检查验证类型、自动测试、构建、发布包�
 
 ## 服务端 Docker Hub 镜像
 
-`.github/workflows/dockerhub.yml` 提供独立的 **Publish server to Docker Hub** 工作流。目标为 `ycw0818/xsync-server`，只打包 Go 服务端，不含插件、PostgreSQL、配置、同步密钥或数据。按 Docker 官方 [Actions 构建方式](https://docs.docker.com/build/ci/github-actions/multi-platform/) 构建 `linux/amd64` 与 `linux/arm64`，附带 OCI 源码版本标签、BuildKit provenance 与 SBOM；不等同于插件的 GitHub 文件来源证明。
+`.github/workflows/dockerhub.yml` 提供独立的 **Publish server to Docker Hub** 工作流。目标为 `ycw0818/xsync-server`，打包 Go 服务端与管理页面，不含插件、PostgreSQL、配置、凭据或数据。按 Docker 官方 [Actions 构建方式](https://docs.docker.com/build/ci/github-actions/multi-platform/) 构建 `linux/amd64` 与 `linux/arm64`，附带 OCI 源码版本标签、BuildKit provenance 与 SBOM；不等同于插件的 GitHub 文件来源证明。
 
 首次配置：
 
@@ -42,9 +42,11 @@ GitHub Actions 的常规检查验证类型、自动测试、构建、发布包�
 
 上传前复用 `check.yml` 的完整验证，包括数据库合同/race、浏览器恢复，以及两种架构镜像的构建和入口冒烟检查；任何检查失败均不上传。普通 push/PR 只检查，不登录 Docker Hub、不推送镜像。首次补发旧版本应使用包含新 CI 的分支手动运行，不能对缺少工作流/Dockerfile 的旧 tag 直接运行。新 Release 对应的提交必须包含这些文件。
 
-镜像运行与持久化方式见[部署说明](DEPLOYMENT.md#使用服务端镜像)。工作流成功不代表部署或真机验收完成。
+镜像运行与持久化方式见[部署说明](DEPLOYMENT.md)。工作流成功不代表部署或真机验收完成。
 
 ## 插件发布流程
+
+正式发布管理后台版本时，同时更新 Docker Hub 镜像与插件发布包，确认 `/admin/` 和插件接入流程配套可用，再发布面向用户的安装说明。
 
 1. 确认目标版本，更新 manifest、最低宿主映射与更新记录。tag 与 manifest 版本完全一致，不加 `v`；不改写已发布 tag 或资产。
 2. 在目标提交运行常规 CI 和官方预审，检查阻断问题。需要说明的扫描结果应对照源码解释，不通过隐藏依赖代码或改变同步语义消除提示。
@@ -64,6 +66,6 @@ gh attestation verify styles.css --repo deku0818/xSync
 
 ## 发布说明
 
-发布说明应写清用户可见变化、升级要求与已完成的验证。当前源码含尚未发布的协议变更，插件与服务端必须配套，见[升级兼容说明](DEPLOYMENT.md#源码升级与协议兼容)。
+发布说明应写清用户可见变化、升级要求与已完成的验证。当前源码含尚未发布的协议变更，插件与服务端必须配套，见[升级兼容说明](DEPLOYMENT.md)。
 
 平台、安全存储、网络/隐私披露和生产备份限制见[安装说明](SETUP.md)。自动检查、来源证明和构建复现不能替代原生设备与生产安全验收。扫描报告、逐次发布操作和私有运维记录不提交到代码仓库。

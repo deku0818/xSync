@@ -39,5 +39,12 @@ export function syncPresentation(status: EngineStatus | undefined, ready: boolea
   if (state === "attention" && status?.errors.some(error => /^(UNAUTHORIZED|USER_DISABLED|VAULT_NOT_FOUND)$/.test(error))) {
     return { state, label: t("需要重新授权"), message: t("请向管理员确认当前访问 key，并在同步设置中重新保存。本地笔记与库解密材料仍保留。") };
   }
+  if (state === "attention" && status?.issues?.length && status.errors.every(error => /^(UNSUPPORTED_PATH|UNSAFE_PATH)$/.test(error))) {
+    return { state, label: t("部分文件未同步"), message: status.outbox || status.inbox ? t("正常文件继续同步，下面这些文件需要处理。") : t("其他文件已同步，下面这些文件需要处理。") };
+  }
+  if (state === "syncing" && status?.activity) {
+    const phases = { checking: t("正在核对文件。"), uploading: t("正在上传文件。"), downloading: t("正在接收更改。"), applying: t("正在应用更改。") };
+    return { state, label: labels[state], message: phases[status.activity] };
+  }
   return { state, label: labels[state], message: messages[state] };
 }

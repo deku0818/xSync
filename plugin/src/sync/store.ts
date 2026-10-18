@@ -23,6 +23,7 @@ export interface ApplyTask {
   backupChunks?: string[];
 }
 export interface SkippedFile { id: string; path: string; reason: string }
+export interface FileIssue { path: string; code: string; phase: "checking" | "uploading" | "downloading" | "applying" }
 export interface Reconciliation {
   id: string; reason: string; local: LocalFile; outbox: Outbox[]; tasks: ApplyTask[];
   replacementFileId?: string;
@@ -47,6 +48,7 @@ export class SyncDB extends Dexie {
   baseProofs!: Table<{ id: string; proof: BaseProof }, string>;
   requestAcks!: Table<{ id: string; ack: RequestAck }, string>;
   skipped!: Table<SkippedFile, string>;
+  issues!: Table<FileIssue, string>;
   reconciliations!: Table<Reconciliation, string>;
   mergeDrafts!: Table<{ id: string; ciphertext: Uint8Array }, string>;
   progress!: Table<Progress, string>;
@@ -73,13 +75,14 @@ export class SyncDB extends Dexie {
     // Incoming atomic groups may exchange paths; an IndexedDB unique index is not deferrable.
     this.version(9).stores({ dirtyFiles: "path", remoteFiles: "id,location.pathKey" });
     this.version(10).stores({ snapshotFiles: "id", snapshotRevisions: "id", snapshotProofs: "id", snapshotHeads: "id" });
+    this.version(11).stores({ issues: "path" });
     const watched = new WeakSet<Transaction>();
     const changed = (transaction: Transaction): void => {
       if (watched.has(transaction)) return;
       watched.add(transaction);
       transaction.on("complete", () => { this.writeVersion++; });
     };
-    const counted = new Set(["outbox", "inbox", "conflicts", "applyTasks", "skipped", "dirtyFiles"]);
+    const counted = new Set(["outbox", "inbox", "conflicts", "applyTasks", "skipped", "dirtyFiles", "issues"]);
     for (const table of this.tables.filter(table => counted.has(table.name))) {
       table.hook("creating", (_key, _row, transaction) => { changed(transaction); });
       table.hook("updating", (_changes, _key, _row, transaction) => { changed(transaction); });

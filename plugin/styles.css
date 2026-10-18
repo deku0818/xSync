@@ -503,9 +503,9 @@
 .oss-status-bar { cursor: pointer; }
 .oss-status-bar[data-state="conflict"], .oss-status-bar[data-state="attention"] { color: var(--text-warning); }
 .oss-status-bar[data-state="syncing"] { color: var(--text-accent); }
-.oss-overview-host { width: min(360px, 94vw); padding: 20px; }
+.oss-overview-host { width: min(520px, 94vw); padding: 22px; }
 .oss-status-container .modal-bg { background: transparent; }
-.oss-status-container .oss-overview-host { position: fixed; right: var(--oss-status-right, 12px); bottom: var(--oss-status-bottom, 36px); left: auto; margin: 0; max-height: min(560px, 88vh); overflow: auto; }
+.oss-status-container .oss-overview-host { position: fixed; right: var(--oss-status-right, 12px); bottom: var(--oss-status-bottom, 36px); left: auto; margin: 0; max-height: min(760px, 90vh); overflow: auto; }
 .oss-app .quiet-status-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 17px; }
 .oss-app .quiet-status-head h1 { font-size: 15px; }
 .oss-app .quiet-status-head span { font-size: 10px; color: var(--muted); }
@@ -515,6 +515,30 @@
 .oss-app[data-state="complete"] .quiet-status-summary svg { color: var(--green); }
 .oss-app[data-state="attention"] .quiet-status-summary svg, .oss-app[data-state="conflict"] .quiet-status-summary svg { color: var(--amber); }
 .oss-app .quiet-status-copy { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.8; }
+.oss-app .quiet-sync-progress { margin: 12px 0; font-size: 12px; }
+.oss-app .quiet-sync-progress progress { width: 100%; height: 6px; accent-color: var(--interactive-accent); }
+.oss-app .quiet-progress-path { overflow-wrap: anywhere; color: var(--muted); font-size: 11px; }
+.oss-app .quiet-queue-summary { color: var(--muted); font-size: 11px; margin: 10px 0; }
+.oss-app .quiet-unsynced { margin-top: 15px; border-top: 1px solid var(--line); }
+.oss-app .quiet-unsynced-head { display: flex; align-items: center; gap: 7px; padding: 14px 0 8px; }
+.oss-app .quiet-unsynced-head h3 { margin: 0; font-size: 12px; }
+.oss-app .quiet-unsynced-head small { margin-left: auto; color: var(--muted); font-size: 10px; }
+.oss-app .quiet-file-count { color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 10px; }
+.oss-app .quiet-unsynced-list { max-height: min(370px, 42vh); overflow-y: auto; }
+.oss-app .quiet-file-issue { display: grid; gap: 8px; padding: 11px 0 13px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.oss-app .quiet-file-issue:last-child { border-bottom: 0; }
+.oss-app .quiet-file-head { display: flex; align-items: flex-start; gap: 10px; }
+.oss-app .quiet-file-names { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.oss-app .quiet-file-names strong { font-size: 12px; font-weight: 500; }
+.oss-app .quiet-file-directory { font-size: 10px; color: var(--muted); }
+.oss-app .quiet-file-tag { flex-shrink: 0; font-size: 10px; padding: 1px 6px; border-radius: 4px; color: var(--amber); background: var(--tint); }
+.oss-app .quiet-file-skipped { color: var(--muted); }
+.oss-app .quiet-file-issue p { margin: 0; font-size: 11px; color: var(--muted); }
+.oss-app .quiet-file-actions { display: flex; gap: 14px; }
+.oss-app .quiet-file-actions button { border: 0; padding: 0; box-shadow: none; background: transparent; height: auto; font-size: 11px; color: var(--text-accent); }
+.oss-app .quiet-skipped-heading { font-size: 11px; color: var(--muted); padding: 10px 0 0; }
+.oss-app .quiet-unsynced-note { margin-top: 10px; color: var(--muted); font-size: 10px; }
+.oss-app .quiet-status-actions-right { display: flex; align-items: center; gap: 18px; }
 .oss-app .quiet-status-actions { display: flex; justify-content: space-between; gap: 10px; border-top: 1px solid var(--line); margin-top: 18px; padding-top: 10px; }
 .oss-app .quiet-status-actions button { font-size: 11px; padding: 4px 5px; }
 .oss-app .quiet-conflict-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; }
@@ -522,7 +546,7 @@
 .oss-app .quiet-conflict-row button { flex-shrink: 0; font-size: 11px; }
 .oss-app .quiet-diagnostics { font-size: 11px; color: var(--muted); margin-top: 12px; }
 .oss-app .quiet-diagnostics p { margin-top: 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.oss-app [data-ui="retry"] { margin-top: 12px; width: 100%; }
+.oss-app [data-ui="retry"] { color: var(--text-normal); }
 .oss-app .quiet-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .oss-app .quiet-choices button { white-space: normal; }
 .oss-app .quiet-choices button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--tint); }
@@ -533,9 +557,7 @@
 .oss-app [data-ui="manual-merge"] { font-size: 11px; padding: 3px 0; }
 @media (max-width: 600px) { .oss-app .quiet-choices { grid-template-columns: 1fr; } }
 .oss-status-container .modal-bg { backdrop-filter: none; }
-.oss-overview-host .modal-close-button { display: none; }
 .oss-app .quiet-status-head span { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oss-app .quiet-status-head button { flex-shrink: 0; }
 .oss-review-host { width: min(850px, 95vw); }
 .oss-app h3.decision-heading { font-size: 13px; font-weight: 550; margin-top: 18px; }
 .oss-review-host .code-pane { height: 200px; }

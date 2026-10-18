@@ -18,6 +18,12 @@ it("distinguishes an active upload, queued work, and completion", () => {
   expect(syncDisplayState(complete, true, true, false, true)).toBe("pending");
   expect(syncDisplayState(complete, true, true, false, false)).toBe("complete");
 });
+it("explains unsupported files without masking a global recovery or authorization failure", () => {
+  const unsupported: EngineStatus = { state: "needs-attention", outbox: 0, inbox: 0, conflicts: 0, errors: ["UNSUPPORTED_PATH"], issues: [{ path: "bad?.md", code: "UNSUPPORTED_PATH", phase: "checking" }] };
+  expect(syncPresentation(unsupported, true, true, false, false).label).toBe("部分文件未同步");
+  expect(syncPresentation({ ...unsupported, errors: ["UNSUPPORTED_PATH", "RECOVERY_RECONCILIATION_REQUIRED"] }, true, true, false, false).label).toBe("同步未完成");
+  expect(syncPresentation({ ...unsupported, errors: ["UNAUTHORIZED"] }, true, true, false, false).label).toBe("需要重新授权");
+});
 
 
 it("keeps temporary failures quiet without masking safety or mixed failures", () => {

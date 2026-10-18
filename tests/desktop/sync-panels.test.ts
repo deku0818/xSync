@@ -13,7 +13,7 @@ vi.mock("obsidian", async () => {
   return {
     Modal: class {
       containerEl = document.createElement("div"); modalEl = document.createElement("div"); contentEl = document.createElement("div");
-      constructor() { this.containerEl.className = "modal-container"; this.modalEl.className = "modal"; this.contentEl.className = "modal-content"; this.containerEl.append(this.modalEl); this.modalEl.append(this.contentEl); host.close.push(() => this.close()); }
+      constructor(public app: App) { this.containerEl.className = "modal-container"; this.modalEl.className = "modal"; this.contentEl.className = "modal-content"; this.containerEl.append(this.modalEl); const close = document.createElement('button'); close.className = 'modal-close-button'; close.onclick = () => this.close(); this.modalEl.append(close, this.contentEl); host.close.push(() => this.close()); }
       open() { document.body.append(this.containerEl); (this as unknown as { onOpen(): void }).onOpen(); }
       close() { (this as unknown as { onClose(): void }).onClose(); this.containerEl.remove(); }
     },
@@ -113,6 +113,58 @@ it("shows compact, quiet status without queue counters and keeps pause/configure
   await savePreview("status"); button("pause").click(); await vi.waitFor(() => expect(query("status-title").textContent).toBe("已暂停"));
   button("configure").click(); expect(configure).toHaveBeenCalledOnce();
 });
+it("uses only the host close control and unsubscribes when it closes the status panel", async () => {
+  new SyncOverview({} as App, plugin, () => {}).open();
+  await vi.waitFor(() => expect(query('status-title').textContent).toBe('已同步'));
+  expect(document.querySelector('#close-status,[data-ui="close-status"]')).toBeNull();
+  expect(document.querySelectorAll('.modal-close-button')).toHaveLength(1); expect(listeners.size).toBe(1);
+  (document.querySelector('.modal-close-button') as HTMLButtonElement).click();
+  expect(listeners.size).toBe(0); expect(document.querySelector('.modal-container')).toBeNull(); emit();
+});
+it.each(['zh', 'en'] as const)("shows live progress and exact problem paths safely in %s", async language => {
+  plugin.i18n.preference = language; plugin.syncing = true;
+  const path = '资料/<script>alert(1)</script>?.md';
+  currentStatus = { state: 'pending', outbox: 3, inbox: 1, conflicts: 0, errors: ['UNSUPPORTED_PATH'],
+    activity: 'uploading', progress: { phase: 'uploading', completed: 2, total: 5, path: '附件/image.png', bytesDone: 1048576, bytesTotal: 2097152 },
+    issues: [{ path, phase: 'checking', code: 'UNSUPPORTED_PATH' }] };
+  new SyncOverview({} as App, plugin, () => {}).open();
+  await vi.waitFor(() => expect(query('progress-count').textContent).toContain('2 / 5'));
+  expect((query('progress-bar') as HTMLProgressElement).value).toBe(2);
+  expect((query('progress-bar') as HTMLProgressElement).max).toBe(5);
+  expect(query('progress-path').textContent).toBe('附件/image.png');
+  expect(query('transfer-progress').textContent).toContain('1.0 / 2.0 MB');
+  expect(query('file-issues').querySelector('.quiet-file-directory')!.textContent! + query('file-issues').querySelector('strong')!.textContent!).toBe(path);
+  expect(query('file-issues').querySelector('script')).toBeNull();
+  expect(query('file-issues').textContent).toContain(language === 'zh' ? '重命名后同步' : 'Rename it in Obsidian');
+  expect(query('queue-summary').textContent).toContain(language === 'zh' ? '待上传 3' : 'Pending upload 3');
+  plugin.syncing = false; currentStatus = { state: 'needs-attention', outbox: 0, inbox: 0, conflicts: 0, errors: ['UNSUPPORTED_PATH'], issues: currentStatus.issues };
+  emit(); await vi.waitFor(() => expect(query('sync-progress').hidden).toBe(true));
+  expect(query('diagnostics').hidden).toBe(true); expect(query('file-issues').querySelector('strong')!.textContent).toBe('script>?.md');
+  expect(query('unsynced-files').hidden).toBe(false); expect(query('file-issues').closest('details')).toBeNull();
+});
+it.each(['zh', 'en'] as const)('shows rule skips and failures together, retains focus during progress, and removes cleared entries in %s', async language => {
+  plugin.i18n.preference = language;
+  const path = '资料/bad?.md';
+  currentStatus = { state: 'needs-attention', outbox: 1, inbox: 0, conflicts: 0, errors: ['UNSUPPORTED_PATH'], issues: [{ path, code: 'UNSUPPORTED_PATH', phase: 'checking' }] };
+  let skips = [{ id: 'large.bin', path: 'large.bin', reason: '超过 50 MB' }, { id: path, path, reason: '临时跳过' }, { id: '.obsidian/obsidian-sync-local/device.json', path: '.obsidian/obsidian-sync-local/device.json', reason: '内部状态' }];
+  Object.assign(plugin.engine!.db.skipped, { toArray: async () => skips });
+  const writeText = vi.fn(async (_path: string) => {}); vi.stubGlobal('navigator', { clipboard: { writeText } });
+  const openFile = vi.fn(async () => {}), file = { path }, app = { vault: { configDir: '.obsidian', getFileByPath: vi.fn(() => file) }, workspace: { getLeaf: () => ({ openFile }) } } as unknown as App;
+  new SyncOverview(app, plugin, () => {}).open();
+  await vi.waitFor(() => expect(query('unsynced-count').textContent).toBe('2'));
+  expect(query('file-issues').textContent).toContain('large.bin'); expect(query('file-issues').textContent).not.toContain('device.json');
+  expect(query('file-issues').querySelectorAll('strong')).toHaveLength(2);
+  expect(query('file-issues').textContent).toContain(language === 'zh' ? '超过 50 MB' : 'Exceeds 50 MB');
+  const buttons = query('file-issues').querySelectorAll('button'), copy = buttons[1] as HTMLButtonElement;
+  copy.focus(); copy.click(); await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(path));
+  emit(); await new Promise(resolve => setTimeout(resolve, 0)); expect(query('file-issues').querySelectorAll('button')[1]).toBe(copy); expect(document.activeElement).toBe(copy);
+  currentStatus = { state: 'complete', outbox: 0, inbox: 0, conflicts: 0, errors: [], issues: [] }; skips = []; emit();
+  await vi.waitFor(() => expect(query('unsynced-files').hidden).toBe(true));
+  currentStatus = { ...currentStatus, state: 'needs-attention', errors: ['UNSUPPORTED_PATH'], issues: [{ path, code: 'UNSUPPORTED_PATH', phase: 'checking' }] }; emit();
+  await vi.waitFor(() => expect(query('unsynced-count').textContent).toBe('1'));
+  (query('file-issues').querySelector('button') as HTMLButtonElement).click(); await vi.waitFor(() => expect(openFile).toHaveBeenCalledWith(file));
+  expect(document.querySelector('.modal-container')).toBeNull(); expect(listeners.size).toBe(0);
+});
 it("automatically waits for post-conflict edits and only enables choices after latest content is ready", async () => {
   pending = true; new ConflictReview({} as App, plugin, "F", "note.md").open();
   await vi.waitFor(() => expect(query("review-description").textContent).toContain("最新修改"));
@@ -170,7 +222,7 @@ it('changes overview language live, including pause state and accessible control
  await vi.waitFor(() => expect(query('status-title').textContent).toBe('已同步'));
  plugin.i18n.preference = 'en'; emit();
  await vi.waitFor(() => expect(query('status-title').textContent).toBe('Synced'));
- expect(query('close-status').getAttribute('aria-label')).toBe('Close sync status');
+ expect(query('progress-bar').getAttribute('aria-label')).toBe('Sync progress');
  button('pause').click(); await vi.waitFor(() => expect(query('status-title').textContent).toBe('Paused'));
  expect(query('pause').textContent).toBe('Resume sync');
 });

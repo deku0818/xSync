@@ -6,6 +6,8 @@ import type { Review } from "../sync/engine.js";
 import { compareLines } from "./diff-lines.js";
 import { mountTemplate, updateIcon } from "./dom.js";
 import { syncPresentation } from "./sync-status.js";
+import { unsyncedFiles } from "./unsynced-files.js";
+import { isSharedConfigPath, SHARED_CONFIG_PREFIX } from "../sync/config-path.js";
 import { overviewTemplate, reviewTemplate } from "./templates.js";
 
 /** Compact status on demand; no routine notifications or permanent dashboard. */
@@ -24,11 +26,10 @@ export class SyncOverview extends Modal {
     }
     const root = this.contentEl.createDiv("oss-app"), q = mountTemplate(root, overviewTemplate, this.plugin.i18n);
     q("device-name").setText(this.plugin.deviceName);
-    q("close-status").onclick = () => this.close();
     q("configure").onclick = () => { this.close(); this.configure(); };
     q("pause").onclick = async () => { try { await this.plugin.setAutoSync(!this.plugin.autoSync); } catch { new Notice(t("同步设置未保存，请重试。")); } };
     q("retry").onclick = () => { void this.plugin.sync(false).catch(() => {}); };
-    let rendering = false, again = false;
+    let rendering = false, again = false, fileSignature = "";
     const render = async (): Promise<void> => {
       if (rendering) { again = true; return; } rendering = true;
       try {
@@ -36,6 +37,23 @@ export class SyncOverview extends Modal {
         const status = await this.plugin.engine?.status(); if (this.closed) return;
         const display = syncPresentation(status, !!this.plugin.engine?.unlocked, this.plugin.autoSync, this.plugin.syncing, this.plugin.localPending, t);
         q("status-title").setText(display.label); q("status-description").setText(display.message);
+        const progress = status?.progress;
+        q("sync-progress").hidden = !status?.activity || !this.plugin.autoSync || !progress;
+        if (progress) {
+          q("progress-count").setText(progress.total ? t("已处理 {0} / {1} 项", progress.completed, progress.total) : t("正在获取任务…"));
+          const bar = q<HTMLProgressElement>("progress-bar");
+          bar.max = Math.max(1, progress.total);
+          if (progress.total) bar.value = Math.min(progress.completed, progress.total); else bar.removeAttribute("value");
+          q("progress-path").setText(progress.path ?? "");
+          const transfer = q("transfer-progress"); transfer.hidden = progress.bytesTotal === undefined;
+          if (progress.bytesTotal !== undefined) {
+            const scale = progress.bytesTotal >= 1048576 ? 1048576 : progress.bytesTotal >= 1024 ? 1024 : 1;
+            const unit = scale === 1048576 ? "MB" : scale === 1024 ? "KB" : "B";
+            transfer.setText(t("本文件 {0} / {1} {2}", ((progress.bytesDone ?? 0) / scale).toFixed(scale === 1 ? 0 : 1), (progress.bytesTotal / scale).toFixed(scale === 1 ? 0 : 1), unit));
+          }
+        }
+        q("queue-summary").hidden = !status || !this.plugin.engine?.unlocked;
+        if (status) q("queue-summary").setText(t("待上传 {0} · 待应用 {1} · 需处理 {2}", status.outbox, status.inbox, status.issues?.length ?? 0));
         root.dataset.state = display.state;
         let statusIcon = "cloud";
         if (display.state === "complete") statusIcon = "check";
@@ -45,13 +63,48 @@ export class SyncOverview extends Modal {
         q<HTMLButtonElement>("pause").disabled = !this.plugin.engine;
         q("retry").hidden = display.state !== "attention";
         q<HTMLButtonElement>("retry").disabled = this.plugin.syncing || !this.plugin.autoSync;
-        const errors = [...(status?.errors ?? []), ...(this.plugin.hostError ? [this.plugin.hostError] : [])];
+        const skipped = await this.plugin.engine?.db.skipped.toArray() ?? [];
+        const skips = new Set(skipped.map(row => row.path));
+        const conflicts = (await this.plugin.engine?.db.conflicts.toArray() ?? []).filter(row => !this.plugin.policy.reason(row.path) && !skips.has(row.path));
+        if (this.closed) return;
+        const files = unsyncedFiles(status?.issues ?? [], skipped, t);
+        const failures = files.filter(file => !file.skipped);
+        const knownCodes = new Set(status?.issues?.map(issue => issue.code));
+        const errors = [...(status?.errors ?? []), ...(this.plugin.hostError ? [this.plugin.hostError] : [])].filter(error => !knownCodes.has(error));
         q("diagnostics").hidden = !errors.length;
         // Codes only: paths, note text and credentials are not needed for a short diagnostic.
         q("diagnostic-message").setText([...new Set(errors.map(error => /^(?:Error: )?([A-Z][A-Z0-9_]{2,79})(?=$|[:\s])/.exec(error)?.[1] ?? "SYNC_INCOMPLETE"))].join("\n"));
-        const skips = new Set((await this.plugin.engine?.db.skipped.toArray() ?? []).map(row => row.path));
-        const conflicts = (await this.plugin.engine?.db.conflicts.toArray() ?? []).filter(row => !this.plugin.policy.reason(row.path) && !skips.has(row.path));
-        if (this.closed) return;
+        q("unsynced-files").hidden = files.length === 0;
+        q("unsynced-count").setText(String(files.length));
+        q("retry").setText(failures.length ? t("重新检查") : t("重试"));
+        q("retry").hidden = failures.length === 0 && display.state !== "attention";
+        const nextSignature = JSON.stringify([files, this.plugin.i18n.language]);
+        if (fileSignature !== nextSignature) {
+          fileSignature = nextSignature;
+          const list = q("file-issues"); list.empty();
+          let skippedHeading = false;
+          for (const file of files) {
+            if (file.skipped && !skippedHeading) { list.createEl("p", { cls: "quiet-skipped-heading", text: t("按本机规则跳过 · {0}", files.length - failures.length) }); skippedHeading = true; }
+            const row = list.createDiv("quiet-file-issue"), head = row.createDiv("quiet-file-head"), names = head.createDiv("quiet-file-names");
+            const slash = file.path.lastIndexOf("/");
+            names.createEl("strong", { text: file.path.slice(slash + 1) });
+            if (slash >= 0) names.createEl("span", { cls: "quiet-file-directory", text: file.path.slice(0, slash + 1) });
+            head.createEl("span", { cls: file.skipped ? "quiet-file-tag quiet-file-skipped" : "quiet-file-tag", text: file.tag });
+            row.createEl("p", { text: file.reason });
+            const actions = row.createDiv("quiet-file-actions");
+            actions.createEl("button", { text: t("定位文件"), attr: { type: "button" } }).onclick = async () => {
+              const path = isSharedConfigPath(file.path) ? `${this.app.vault.configDir}/${file.path.slice(SHARED_CONFIG_PREFIX.length)}` : file.path;
+              const target = this.app.vault.getFileByPath(path);
+              if (!target) { new Notice(t("本机找不到此文件；文件可能尚未下载或已改名。")); return; }
+              try { await this.app.workspace.getLeaf("tab").openFile(target); this.close(); }
+              catch { new Notice(t("无法定位此文件，请复制路径后检查。")); }
+            };
+            actions.createEl("button", { text: t("复制路径"), attr: { type: "button" } }).onclick = async () => {
+              try { await navigator.clipboard.writeText(file.path); new Notice(t("已复制文件路径")); }
+              catch { new Notice(t("无法复制路径，请手动选中文件路径。")); }
+            };
+          }
+        }
         const list = q("conflict-list"); list.empty();
         for (const conflict of conflicts) {
           const row = list.createDiv("quiet-conflict-row"); row.createSpan({ text: conflict.path });

@@ -272,22 +272,24 @@ describe.skipIf(process.env.OBSIDIAN_SYNC_DESKTOP_TEST !== "1")("two clients + a
     };
     const dirs = [join(root, "config-A"), join(root, "config-B")];
     for (const [i,dir] of dirs.entries()) { await mkdir(join(dir, ".custom-config/obsidian-sync-local"), { recursive: true }); await mkdir(join(dir, ".custom-config/themes/Demo"), { recursive: true }); await mkdir(join(dir, ".custom-config/plugins/example"), { recursive: true });
-      await writeFile(join(dir, ".custom-config/app.json"), JSON.stringify({ fontSize: i === 0 ? 16 : 17, deviceId: "device-private-" + i })); await writeFile(join(dir, ".custom-config/workspace.json"), "layout-private-" + i); await writeFile(join(dir, ".custom-config/obsidian-sync-local/device.json"), "identity-private-" + i); await writeFile(join(dir, ".custom-config/plugins/example/data.json"), JSON.stringify({ color: "purple", apiKey: "api-private-" + i })); }
+      await writeFile(join(dir, ".custom-config/app.json"), JSON.stringify({ fontSize: i === 0 ? 16 : 17, deviceId: "device-private-" + i })); await writeFile(join(dir, ".custom-config/workspace.json"), "layout-private-" + i); await writeFile(join(dir, ".custom-config/obsidian-sync-local/device.json"), "identity-private-" + i); await writeFile(join(dir, ".custom-config/plugins/example/data.json"), JSON.stringify({ color: "purple", zoom: 0.75, points: [[-12.125, 1.5]], apiKey: "api-private-" + i })); }
+    for (const dir of dirs) await writeFile(join(dir, ".custom-config/graph.json"), JSON.stringify({ scale: 0.125, center: [12.5, -3.25] }));
     await writeFile(join(dirs[0]!, ".custom-config/themes/Demo/theme.css"), "body { color: purple; }"); await writeFile(join(dirs[0]!, ".custom-config/plugins/example/main.js"), "/* synthetic plugin bytes */");
     const ports = dirs.map(dir => new ObsidianVaultPort(makeApp(dir), ".custom-config/obsidian-sync-local")); const engines: SyncEngine[] = [];
     for (let i = 0; i < 2; i++) { const db = new SyncDB(`config-e2e-${randomId()}`); dbs.push(db); const d = config.devices[i + 2]!; const e = new SyncEngine(db, new Transport(endpoint, d.token, nativeHTTP), ports[i]!, d.id, config.vaultId); await e.unlock("public-e2e-test-passphrase"); engines.push(e); }
     try {
       expect((await engines[0]!.sync()).errors).toEqual([]); expect((await engines[1]!.sync()).errors).toEqual([]);
       expect(await readFile(join(dirs[1]!, ".custom-config/themes/Demo/theme.css"), "utf8")).toBe("body { color: purple; }"); expect(await readFile(join(dirs[1]!, ".custom-config/plugins/example/main.js"), "utf8")).toBe("/* synthetic plugin bytes */");
+      expect(JSON.parse(await readFile(join(dirs[1]!, ".custom-config/plugins/example/data.json"), "utf8"))).toMatchObject({ zoom: 0.75, points: [[-12.125, 1.5]], apiKey: "api-private-1" });
       await engines[0]!.sync();
       const initialConflict = (await engines[0]!.db.conflicts.toArray()).find(c => c.path === ".obsidian/app.json")!;
       expect(initialConflict).toBeDefined(); const initialReview = await engines[0]!.review(initialConflict.id);
       const initialA = initialReview.versions.find(v => JSON.parse(v.text!).fontSize === 16)!;
       expect((await engines[0]!.db.revisions.get(initialA.revision))!.parents).toEqual([]);
       await engines[0]!.resolve(initialReview, initialA.revision); await engines[1]!.sync();
-      await writeFile(join(dirs[1]!, ".custom-config/app.json"), JSON.stringify({ fontSize: 19, deviceId: "device-private-1" })); await writeFile(join(dirs[1]!, ".custom-config/plugins/example/data.json"), JSON.stringify({ color: "green", apiKey: "api-private-1" }));
+      await writeFile(join(dirs[1]!, ".custom-config/app.json"), JSON.stringify({ fontSize: 19, deviceId: "device-private-1" })); await writeFile(join(dirs[1]!, ".custom-config/plugins/example/data.json"), JSON.stringify({ color: "green", zoom: 1.25, apiKey: "api-private-1" }));
       await engines[1]!.sync(); await engines[0]!.sync();
-      expect(JSON.parse(await readFile(join(dirs[0]!, ".custom-config/app.json"), "utf8"))).toEqual({ fontSize: 19, deviceId: "device-private-0" }); expect(JSON.parse(await readFile(join(dirs[0]!, ".custom-config/plugins/example/data.json"), "utf8"))).toEqual({ color: "green", apiKey: "api-private-0" });
+      expect(JSON.parse(await readFile(join(dirs[0]!, ".custom-config/app.json"), "utf8"))).toEqual({ fontSize: 19, deviceId: "device-private-0" }); expect(JSON.parse(await readFile(join(dirs[0]!, ".custom-config/plugins/example/data.json"), "utf8"))).toEqual({ color: "green", zoom: 1.25, apiKey: "api-private-0" });
       expect(await readFile(join(dirs[0]!, ".custom-config/workspace.json"), "utf8")).toBe("layout-private-0"); expect(await readFile(join(dirs[1]!, ".custom-config/obsidian-sync-local/device.json"), "utf8")).toBe("identity-private-1");
       const remote = await engines[0]!.db.remoteFiles.toArray(); expect(remote.length).toBeGreaterThan(0); expect(dec.decode((await ports[0]!.read(".obsidian/plugins/example/data.json"))!)).not.toContain("api-private");
     } finally { engines.forEach(e => e.lock()); }

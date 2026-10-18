@@ -51,7 +51,7 @@ it('covers all source templates and UI translation calls with matching placehold
    for (const source of sources.filter(source => /\p{Script=Han}/u.test(source))) expect(Object.hasOwn(english, source) || Object.hasOwn(adminEnglish, source), source).toBe(true);
   }
  } finally { browser.window.close(); }
- for (const name of ['sync-main.ts', 'ui/connection-form.ts', 'ui/vault-connection.ts', 'ui/sync-panels.ts', 'ui/settings-tab.ts', 'ui/sync-status.ts', 'sync/connection-check.ts']) {
+ for (const name of ['sync-main.ts', 'ui/connection-form.ts', 'ui/vault-connection.ts', 'ui/sync-panels.ts', 'ui/settings-tab.ts', 'ui/sync-status.ts', 'ui/unsynced-files.ts', 'sync/connection-check.ts']) {
   const code = await readFile('plugin/src/' + name, 'utf8');
   for (const match of code.matchAll(/\bt\(("(?:[^"\\]|\\.)*")/g)) {
    const source = JSON.parse(match[1]!); expect(Object.hasOwn(english, source), source).toBe(true);

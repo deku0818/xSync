@@ -1,12 +1,26 @@
 import { expect, it } from "vitest";
 import fc from "fast-check";
 import { SyncPolicy, defaultRules, folderPath, validateRules } from "../../plugin/src/sync/policy";
-import { sharedConfig, mergeConfig } from "../../plugin/src/sync/config-projection";
+import { sharedConfig, mergeConfig, hasDeviceFields } from "../../plugin/src/sync/config-projection";
+import { canonical } from "../../protocol/src/model";
 import { VaultCrypto } from "../../plugin/src/sync/crypto";
 import { compareLines } from "../../plugin/src/ui/diff-lines";
 import { clientName } from "../../protocol/src/client-profile";
 import { canonicalPath } from "../../plugin/src/sync/crypto";
 const enc = new TextEncoder(), dec = new TextDecoder();
+it("syncs fractional graph and drawing settings without weakening protocol canonicalization or sharing local secrets", () => {
+  const path = ".obsidian/plugins/drawing/data.json";
+  const value = { zoom: 0.75, points: [[-12.125, 0.00001], [1.5, 2]], apiKey: "LOCAL-ONLY", nested: { opacity: 0.35 } };
+  const local = enc.encode(JSON.stringify(value));
+  const projected = sharedConfig(path, local);
+  expect(JSON.parse(dec.decode(projected))).toEqual({ zoom: 0.75, points: value.points, nested: value.nested });
+  expect(dec.decode(projected)).not.toContain("LOCAL-ONLY"); expect(hasDeviceFields(path, local)).toBe(true);
+  expect(JSON.parse(dec.decode(mergeConfig(path, local, projected)))).toEqual(value);
+  expect(hasDeviceFields(".obsidian/graph.json", enc.encode('{"scale":0.75}'))).toBe(false);
+  expect(() => canonical({ scale: 0.75 })).toThrow("INVALID_REQUEST");
+  expect(sharedConfig(path, enc.encode('{"zoom":0.75,"nested":{"opacity":0.35},"points":[[-12.125,0.00001],[1.5,2]]}'))).toEqual(projected);
+  expect(() => mergeConfig(path, local, enc.encode('{"zoom":0.75,"apiKey":"REMOTE"}'))).toThrow("REMOTE_CONFIG_CONTAINS_DEVICE_FIELDS");
+});
 it("continues rejecting every ASCII control in paths and device names while accepting multilingual names", () => {
   for (let value=0;value<32;value++) {
     const text=`before${String.fromCharCode(value)}after`;

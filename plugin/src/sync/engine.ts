@@ -12,7 +12,7 @@ import { MetadataClient } from "./metadata-client.js";
 import { CHUNK_BYTES, SyncPolicy, fixedExclusion } from "./policy.js";
 import { isAncestor, project } from "./projection.js";
 import { receiveSnapshot } from "./snapshot-cache.js";
-import { databaseBatches, SyncDB, type ApplyTask, type Inbox, type LocalFile, type Outbox } from "./store.js";
+import { databaseBatches, SyncDB, type ApplyTask, type FileIssue, type Inbox, type LocalFile, type Outbox } from "./store.js";
 import { RemoteError, Transport } from "./transport.js";
 
 export interface FilePort extends StageCleanupPort {
@@ -30,7 +30,8 @@ export interface FilePort extends StageCleanupPort {
   stageRead(id: string): Promise<Uint8Array>;
 }
 export type SyncActivity = "checking" | "uploading" | "downloading" | "applying";
-export interface EngineStatus { state: "locked" | "pending" | "needs-attention" | "complete"; outbox: number; inbox: number; conflicts: number; skipped?: number; errors: string[]; activity?: SyncActivity }
+export interface SyncProgress { phase: SyncActivity; completed: number; total: number; path?: string; bytesDone?: number; bytesTotal?: number }
+export interface EngineStatus { state: "locked" | "pending" | "needs-attention" | "complete"; outbox: number; inbox: number; conflicts: number; skipped?: number; errors: string[]; activity?: SyncActivity; progress?: SyncProgress; issues?: FileIssue[] }
 export interface ReviewVersion { revision: string; device: string; deviceId?: string; kind: string; text: string | null; fingerprint: string; bytes: Uint8Array; length?: number }
 export interface Review { fileId: string; path: string; heads: string[]; versions: ReviewVersion[]; location: FileState["location"] }
 export interface RememberedMaterial { format: 0; vaultId: string; keyPackageFingerprint: string; session: SessionMaterial }
@@ -41,12 +42,13 @@ export class SyncEngine {
   private devices = new Map<string, string>();
   private busy = false;
   private activity?: SyncActivity;
+  private progress?: SyncProgress;
   private owner = randomId();
   private errors: string[] = [];
   private stopping = false;
   private keyPackageFingerprint?: string;
   private captured = new Map<string, LocalFile>();
-  private counts?: { version: number; outbox: number; inbox: number; conflicts: number; skipped: number; dirty: number };
+  private counts?: { version: number; outbox: number; inbox: number; conflicts: number; skipped: number; dirty: number; issues: FileIssue[] };
   fault?: (point: string) => void;
   constructor(readonly db: SyncDB, private remote: Transport, private files: FilePort,
     readonly deviceId: string, readonly vaultId: string, private policy = new SyncPolicy()) {}
@@ -54,6 +56,17 @@ export class SyncEngine {
     return new MetadataClient(this.db, this.remote, this.vaultId, () => this.checkLease(), anchor => { this.crypto().manifest(anchor.revision); }, point => this.fault?.(point));
   }
   setPolicy(policy: SyncPolicy): void { if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.policy = policy; this.counts = undefined; }
+  private beginProgress(phase: SyncActivity, total = 0): void { this.activity = phase; this.progress = { phase, completed: 0, total }; }
+  private async clearIssue(path: string, phase: SyncActivity): Promise<void> {
+    if ((await this.db.issues.get(path))?.phase === phase) await this.db.issues.delete(path);
+  }
+  private async fileError(error: unknown, path: string, phase: SyncActivity): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("LEASE") || message === "LOCKED") throw error;
+    this.errors.push(message);
+    const code = /^(?:Error: )?([A-Z][A-Z0-9_]{2,79})(?=$|[:\s])/.exec(message)?.[1] ?? "SYNC_INCOMPLETE";
+    await this.db.issues.put({ path, code, phase });
+  }
   private async skip(path: string, reason: string): Promise<void> { await this.db.skipped.put({ id: path, path, reason }); }
 
   private async verifiedHandshake(onAuthenticated?: () => void) {
@@ -107,7 +120,7 @@ export class SyncEngine {
   }
   lock(): void { if (this.busy) { this.stopping = true; return; } this.keys?.close(); this.keys = undefined; }
   private crypto(): VaultCrypto { if (!this.keys || this.stopping) throw new Error("LOCKED"); return this.keys; }
-  private ended(): void { this.busy = false; if (this.stopping) { this.stopping = false; this.lock(); } }
+  private ended(): void { this.busy = false; this.activity = undefined; if (this.stopping) { this.stopping = false; this.lock(); } }
   private async lease(): Promise<void> {
     await this.db.transaction("rw", this.db.leases, async () => {
       const current = await this.db.leases.get("engine");
@@ -216,11 +229,6 @@ export class SyncEngine {
     await this.enqueue(await this.request([action]), [captured], [r], objects);
     return captured;
   }
-  private recordCaptureError(error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("LEASE") || message === "LOCKED") throw error;
-    this.errors.push(message);
-  }
   private async capture(full = true): Promise<void> {
     const dirty = new Map((await this.db.dirtyFiles.toArray()).map(row => [row.path, row.generation]));
     const requested = new Set(dirty.keys());
@@ -239,6 +247,7 @@ export class SyncEngine {
       }
     }
     const paths = full ? await this.files.list() : [...requested];
+    this.beginProgress("checking", paths.length);
     const locals = full ? await this.db.localFiles.toArray() : await this.db.localFiles.where("path").anyOf(paths).toArray();
     const byPath = new Map(locals.map(file => [file.path, file]));
     const completeDirty = async (path: string): Promise<void> => {
@@ -250,12 +259,23 @@ export class SyncEngine {
         if (current?.generation === generation) await this.db.dirtyFiles.delete(path);
       });
     };
+    if (full) {
+      const present = new Set(paths);
+      for (const issue of await this.db.issues.toArray()) if (issue.phase === "checking" && !present.has(issue.path)) {
+        await this.db.issues.delete(issue.path);
+        if ((issue.code === "UNSUPPORTED_PATH" || issue.code === "UNSAFE_PATH") && !byPath.has(issue.path)) {
+          await completeDirty(issue.path); dirty.delete(issue.path);
+        }
+      }
+    }
     for (const path of paths) {
+      this.progress!.path = path;
       try {
         await this.files.flushEdits?.(path);
         const stat = await this.files.stat?.(path);
         const reason = this.policy.reason(path, stat?.size);
         if (reason) {
+          await this.clearIssue(path, "checking");
           await this.skip(path, reason);
           await completeDirty(path);
           continue;
@@ -264,6 +284,7 @@ export class SyncEngine {
         const bytes = await this.files.read(path);
         const contentReason = bytes ? this.policy.reason(path, bytes.length) : undefined;
         if (contentReason) {
+          await this.clearIssue(path, "checking");
           await this.skip(path, contentReason);
           await completeDirty(path);
           continue;
@@ -275,11 +296,12 @@ export class SyncEngine {
         await this.db.skipped.delete(path);
         const local = byPath.get(path);
         const captured = await this.captureOne(path, bytes, local);
+        await this.clearIssue(path, "checking");
         if (captured) this.captured.set(captured.id, captured);
         if (captured || bytes === null && (!local || local.deleted)) await completeDirty(path);
       } catch (error) {
-        this.recordCaptureError(error);
-      }
+        await this.fileError(error, path, "checking");
+      } finally { this.progress!.completed++; }
     }
     if (!full) return;
     const scannedPaths = new Set(paths);
@@ -302,7 +324,7 @@ export class SyncEngine {
           }
         }
       } catch (error) {
-        this.recordCaptureError(error);
+        await this.fileError(error, local.path, "checking");
       }
     }
     for (const path of dirty.keys()) {
@@ -311,7 +333,7 @@ export class SyncEngine {
       try {
         if (await this.files.read(path) === null) await completeDirty(path);
       } catch (error) {
-        this.recordCaptureError(error);
+        await this.fileError(error, path, "checking");
       }
     }
   }
@@ -330,16 +352,22 @@ export class SyncEngine {
   private async flush(): Promise<void> {
     await this.checkLease();
     const blocked = new Set<string>();
-    outgoing: for (const row of await this.db.outbox.orderBy("queueId").toArray()) {
+    const rows = await this.db.outbox.orderBy("queueId").toArray();
+    this.beginProgress("uploading", rows.length);
+    outgoing: for (const row of rows) {
       await this.checkLease();
       let excluded = false;
+      const paths = new Set<string>();
+      this.progress!.bytesDone = undefined; this.progress!.bytesTotal = undefined;
       for (const action of row.request.actions) {
         const local = await this.db.localFiles.get(action.fileId);
         const path = action.type === "create" || action.type === "move" ? this.crypto().path(action.fileId, action.location) : local?.path;
+        if (path) paths.add(path);
         const revision = "revisionId" in action ? await this.db.revisions.get(action.revisionId) : undefined;
         const reason = path ? this.policy.reason(path, revision ? this.crypto().manifest(revision).length : undefined) : "UNKNOWN_OUTBOX_PATH";
         if (reason || blocked.has(action.fileId)) { excluded = true; blocked.add(action.fileId); if (path) await this.skip(path, reason ?? "依赖被排除的待上传操作"); }
       }
+      this.progress!.path = [...paths][0];
       if (excluded) { for (const a of row.request.actions) blocked.add(a.fileId); await this.db.outbox.update(row.queueId!, { error: "EXCLUDED_BY_RULE" }); continue; }
       await this.db.outbox.update(row.queueId!, { error: undefined });
       try {
@@ -350,23 +378,36 @@ export class SyncEngine {
           if (!(error instanceof RemoteError) || error.code !== "OBJECT_MISSING") throw error;
           const protection = await this.remote.uploadLease(row.request);
           try {
+            if (row.request.actions.length === 1) {
+              const action = row.request.actions[0]!;
+              const revision = "revisionId" in action ? await this.db.revisions.get(action.revisionId) : undefined;
+              if (revision) { this.progress!.bytesDone = 0; this.progress!.bytesTotal = this.crypto().manifest(revision).length; }
+            }
             for (const obj of row.objects) {
               let bytes: Uint8Array;
-              try { bytes = await this.files.stageRead(obj.stage); this.crypto().decryptObject(obj.id, bytes).fill(0); }
+              let length: number;
+              try { bytes = await this.files.stageRead(obj.stage); const plaintext = this.crypto().decryptObject(obj.id, bytes); length = plaintext.length; plaintext.fill(0); }
               catch (stageError) {
                 if (!this.unlocked) throw stageError;
                 await this.db.outbox.update(row.queueId!, { error: "UPLOAD_STAGE_UNAVAILABLE" });
+                for (const path of paths) await this.db.issues.put({ path, code: "UPLOAD_STAGE_UNAVAILABLE", phase: "uploading" });
                 this.errors.push("UPLOAD_STAGE_UNAVAILABLE"); continue outgoing;
               }
               await this.checkLease(); await this.remote.upload(obj.id, bytes, protection); this.fault?.("after-object-upload");
+              if (this.progress!.bytesDone !== undefined) this.progress!.bytesDone += length;
             }
             await this.checkLease(); receipt = await this.metadata().commit(row);
           } finally { await this.remote.releaseContent(protection); }
         }
         this.fault?.("after-remote-commit"); await this.metadata().complete(row, receipt);
         this.fault?.("after-outbox-ack"); await this.metadata().acknowledgePending();
+        this.progress!.completed++;
+        for (const path of paths) await this.clearIssue(path, "uploading");
       } catch (error) {
-        if (!(error instanceof RemoteError)) throw error;
+        if (!(error instanceof RemoteError)) {
+          for (const path of paths) await this.fileError(error, path, "uploading");
+          throw error;
+        }
         if (error.code === "REVIEW_STALE") {
           // Keep the rejected immutable intent for inspection; it must never be replayed as a fresh decision.
           await this.db.transaction("rw", [this.db.outbox, this.db.rejectedOutbox], async () => {
@@ -374,6 +415,7 @@ export class SyncEngine {
           });
         } else await this.db.outbox.update(row.queueId!, { error: error.code });
         this.errors.push(error.code);
+        for (const path of paths) await this.db.issues.put({ path, code: error.code, phase: "uploading" });
         // Keep immutable intent; unrelated files may still be submitted.
       }
     }
@@ -406,6 +448,7 @@ export class SyncEngine {
     return changed;
   }
   private async receive(): Promise<void> {
+    this.beginProgress("downloading");
     for (;;) {
       const p = (await this.db.progress.get("progress"))!;
       let changes;
@@ -417,6 +460,7 @@ export class SyncEngine {
         continue;
       }
       if (!changes.length) return;
+      this.progress!.total += changes.length;
       const ids = new Set(changes.flatMap(change => actionEntries(change.actions).map(action => action.fileId)));
       const files = new Map((await this.db.remoteFiles.bulkGet([...ids])).filter((file): file is FileState => !!file).map(file => [file.id, file]));
       const needed = new Set([...files.values()].flatMap(file => file.heads));
@@ -447,6 +491,7 @@ export class SyncEngine {
         this.fault?.("before-inbox-commit");
       });
       this.fault?.("after-inbox-commit");
+      this.progress!.completed += changes.length;
       if (changes.length < 100) return;
     }
   }
@@ -456,6 +501,8 @@ export class SyncEngine {
       catch (error) { if (error instanceof RemoteError && error.code === "BASE_NOT_ACCEPTED") throw new RemoteError("VIEW_EXPIRED"); throw error; }
     }
     const manifest = this.crypto().manifest(r); const bytes = new Uint8Array(manifest.length); let offset = 0;
+    const transfer = this.activity === "applying" ? this.progress : undefined;
+    if (transfer) { transfer.bytesDone = 0; transfer.bytesTotal = manifest.length; }
     if (!r.payload.objects.length) { if (manifest.length !== 0 || await fingerprint(bytes) !== manifest.fingerprint) throw new Error("MANIFEST_CONTENT_MISMATCH"); return bytes; }
     const protection = await this.remote.readLease(r.id);
     try {
@@ -463,6 +510,7 @@ export class SyncEngine {
         const part = this.crypto().decryptObject(id, await this.remote.object(id, protection));
         if (offset + part.length > bytes.length) throw new Error("MANIFEST_CONTENT_MISMATCH");
         bytes.set(part, offset); offset += part.length;
+        if (transfer) transfer.bytesDone = offset;
       }
       if (offset !== manifest.length || await fingerprint(bytes) !== manifest.fingerprint) throw new Error("MANIFEST_CONTENT_MISMATCH");
       return bytes;
@@ -579,6 +627,8 @@ export class SyncEngine {
     const work = new Set(this.captured.keys());
     for (const task of await this.db.inbox.toArray()) if (!task.done) for (const id of task.fileIds) work.add(id);
     for (const task of await this.db.applyTasks.toArray()) work.add(task.id);
+    this.beginProgress("applying", full ? await this.db.remoteFiles.count() : work.size);
+    let processed = 0;
     const progress = (await this.db.progress.get("progress"))!;
     const graph = progress.checkpoint === undefined ? new Map((await this.db.revisions.toArray()).map(revision => [revision.id, revision])) : undefined;
     const db = this.db;
@@ -592,8 +642,11 @@ export class SyncEngine {
       const needed = [...new Set(remote.flatMap(file => file.heads))];
       const revisions = graph ?? new Map((await this.db.revisions.bulkGet(needed)).filter((revision): revision is Revision => !!revision).map(revision => [revision.id, revision]));
       for (const f of remote) {
+        let path: string | undefined;
         try {
-          const path = this.crypto().path(f.id, f.location);
+          path = this.crypto().path(f.id, f.location);
+          await this.clearIssue(path, "applying");
+          this.progress!.path = path; this.progress!.bytesDone = undefined; this.progress!.bytesTotal = undefined;
           const lengths = f.heads.map(id => this.crypto().manifest(revisions.get(id)!).length);
           const reason = this.policy.reason(path, Math.max(...lengths));
           if (reason) { await this.skip(path, reason); settled.add(f.id); continue; }
@@ -640,9 +693,17 @@ export class SyncEngine {
           this.fault?.("after-apply-stage");
           await this.checkLease(); await this.db.applyTasks.put(task); this.fault?.("after-apply-prepare");
           if (await this.applyTask(task)) settled.add(f.id);
-        } catch (error) { const message = error instanceof Error ? error.message : String(error); if (error instanceof RemoteError && error.code === "VIEW_EXPIRED") throw error; if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
+        } catch (error) {
+          if (error instanceof RemoteError && error.code === "VIEW_EXPIRED") throw error;
+          if (path) await this.fileError(error, path, "applying");
+          else { const message = error instanceof Error ? error.message : String(error); if (message.includes("LEASE") || message === "LOCKED") throw error; this.errors.push(message); }
+        } finally {
+          if (path && settled.has(f.id)) await this.clearIssue(path, "uploading");
+          this.progress!.completed = ++processed;
+        }
       }
     }
+    this.progress!.total = processed;
     await this.db.transaction("rw", [this.db.leases, this.db.inbox, this.db.progress], async () => {
       await this.checkLease();
       const tasks = await this.db.inbox.orderBy("seq").toArray(); const p = (await this.db.progress.get("progress"))!;
@@ -683,7 +744,7 @@ export class SyncEngine {
   }
   async sync(options: { full?: boolean } = {}): Promise<EngineStatus> {
     if (this.busy) throw new Error("SYNC_ALREADY_RUNNING"); this.crypto(); this.busy = true; this.errors = [];
-    this.activity = "checking";
+    this.beginProgress("checking");
     this.captured.clear();
     let stopRenewing: (() => Promise<void>) | undefined;
     try {
@@ -721,21 +782,24 @@ export class SyncEngine {
   async status(): Promise<EngineStatus> {
     const version = this.db.writeVersion;
     if (this.counts?.version !== version) {
-      const [outgoing, tasks, conflictRows, applyRows, skips, dirty] = await Promise.all([this.db.outbox.toArray(), this.db.inbox.toArray(), this.db.conflicts.toArray(), this.db.applyTasks.toArray(), this.db.skipped.toArray(), this.db.dirtyFiles.toArray()]);
+      const [outgoing, tasks, conflictRows, applyRows, skips, dirty, issues] = await Promise.all([this.db.outbox.toArray(), this.db.inbox.toArray(), this.db.conflicts.toArray(), this.db.applyTasks.toArray(), this.db.skipped.toArray(), this.db.dirtyFiles.toArray(), this.db.issues.toArray()]);
       const skippedPaths = new Set(skips.map(row => row.path));
       this.counts = {
         version, conflicts: conflictRows.filter(row => !this.policy.reason(row.path) && !skippedPaths.has(row.path)).length,
         outbox: outgoing.filter(row => row.error !== "EXCLUDED_BY_RULE").length,
         inbox: tasks.filter(row => !row.done).length + applyRows.filter(row => !this.policy.reason(row.sourcePath, row.size) && !this.policy.reason(row.targetPath, row.size)).length,
         skipped: skips.length, dirty: dirty.filter(row => !this.policy.reason(row.path)).length,
+        issues: issues.filter(issue => !this.policy.reason(issue.path)),
       };
     }
-    const { outbox, inbox, conflicts, skipped, dirty } = this.counts;
+    const { outbox, inbox, conflicts, skipped, dirty, issues } = this.counts;
+    const errors = [...new Set(this.errors)];
+    for (const issue of issues) if (!errors.includes(issue.code)) errors.push(issue.code);
     let state: EngineStatus["state"] = "complete";
     if (!this.keys) state = "locked";
-    else if (conflicts || this.errors.length) state = "needs-attention";
+    else if (conflicts || this.errors.length || (!this.activity && issues.length > 0)) state = "needs-attention";
     else if (this.activity || outbox || inbox || dirty) state = "pending";
-    return { state, outbox, inbox, conflicts, skipped, errors: [...this.errors], ...(this.activity ? { activity: this.activity } : {}) };
+    return { state, outbox, inbox, conflicts, skipped, errors, issues: issues.map(issue => ({ ...issue })), ...(this.activity ? { activity: this.activity } : {}), ...(this.progress ? { progress: { ...this.progress } } : {}) };
   }
 
   async saveMergeDraft(fileId: string, text: string): Promise<void> { const bytes = new TextEncoder().encode(text); if (bytes.length > 65536) throw new Error("MERGE_TOO_LARGE"); const ciphertext = this.crypto().localSeal(`merge:${fileId}`, bytes); await this.db.mergeDrafts.put({ id: fileId, ciphertext }); }

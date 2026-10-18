@@ -1,7 +1,7 @@
 {
   "id": "xsync",
   "name": "xSync",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "1.14.4",
   "description": "End-to-end encrypted vault sync with your own server and explicit conflict review.",
   "author": "deku0818",

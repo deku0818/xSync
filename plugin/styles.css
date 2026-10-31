@@ -593,7 +593,7 @@
 .oss-review-host .review-mini svg{width:13px;height:13px}
 .oss-review-host .copy-version{margin-left:auto;flex-shrink:0}
 .oss-review-host .code-pane{position:relative;flex:1;min-height:0;height:auto;overflow:auto;padding:10px 0 14px;scrollbar-gutter:stable;overscroll-behavior:contain;font:13px/24px var(--font-monospace);user-select:text;cursor:text}
-.oss-review-host .code-row{grid-template-columns:35px minmax(0,1fr);min-height:24px;align-content:start}
+.oss-review-host .code-row{grid-template-columns:35px minmax(0,1fr);min-height:var(--oss-diff-row-height,24px);align-content:start}
 .oss-review-host .line-number{font-size:10px;line-height:24px;color:var(--faint);padding:0 9px 0 0;user-select:none}
 .oss-review-host .code-text{padding-right:12px;line-height:24px}
 .oss-review-host .changed-left .line-number{color:var(--red)}

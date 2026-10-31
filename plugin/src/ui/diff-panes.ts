@@ -76,10 +76,10 @@ export class DiffPanes {
     this.view.cancelAnimationFrame(this.frame ?? 0);
     this.frame = this.view.requestAnimationFrame(() => {
       const rows = this.panes.map(pane => [...pane.querySelectorAll<HTMLElement>(".code-row")]);
-      for (const side of rows) for (const row of side) row.setCssProps({ "min-height": "" });
+      for (const side of rows) for (const row of side) row.setCssProps({ "--oss-diff-row-height": "" });
       const heights = rows[0]!.map((row, index) => Math.max(row.getBoundingClientRect().height, rows[1]![index]!.getBoundingClientRect().height));
       rows[0]!.forEach((row, index) => {
-        const height = { "min-height": `${heights[index]}px` };
+        const height = { "--oss-diff-row-height": `${heights[index]}px` };
         row.setCssProps(height); rows[1]![index]!.setCssProps(height);
       });
     });

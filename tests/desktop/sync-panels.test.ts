@@ -176,6 +176,35 @@ it("automatically waits for post-conflict edits and only enables choices after l
   await savePreview("conflict"); button("choice-both").click(); expect(button("confirm").textContent).toBe("确认保留双方");
   button("confirm").click(); await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest, "computer-2", "note（iPhone 15）.md", undefined));
 });
+it("keeps the selected Mac version and the failure visible until a retry succeeds", async () => {
+  vi.mocked(plugin.resolveConflict).mockRejectedValueOnce(new Error("NETWORK_TIMEOUT"));
+  new ConflictReview({} as App, plugin, "F", "note.md").open();
+  await vi.waitFor(() => expect(query("comparison").hidden).toBe(false));
+  button("choice-a").click(); button("confirm").click();
+  await vi.waitFor(() => expect(query("update-message").textContent).toContain("NETWORK_TIMEOUT"));
+  emit();
+  await vi.waitFor(() => expect(button("confirm").disabled).toBe(false));
+  expect(query("update-message").textContent).toContain("NETWORK_TIMEOUT");
+  expect(button("choice-a").getAttribute("aria-pressed")).toBe("true");
+  expect(button("confirm").textContent).toBe("确认用「MacBook Pro」这份");
+  expect(plugin.resolveConflict).toHaveBeenCalledWith(latest, "computer-1", undefined, undefined);
+  button("confirm").click();
+  await vi.waitFor(() => expect(document.querySelector(".modal-container")).toBeNull());
+  expect(plugin.resolveConflict).toHaveBeenCalledTimes(2); expect(listeners.size).toBe(0);
+});
+it("invalidates a Mac selection when a newer remote version arrives during submission", async () => {
+  vi.mocked(plugin.resolveConflict).mockImplementationOnce(async () => {
+    latest = review("computer-2", "new edit made while confirming");
+    throw new Error("REVIEW_STALE");
+  });
+  new ConflictReview({} as App, plugin, "F", "note.md").open();
+  await vi.waitFor(() => expect(query("comparison").hidden).toBe(false));
+  button("choice-a").click(); button("confirm").click();
+  await vi.waitFor(() => expect(query("pane-a").textContent).toContain("new edit made while confirming"));
+  expect(button("choice-a").getAttribute("aria-pressed")).toBe("false");
+  expect(button("confirm").disabled).toBe(true);
+  expect(query("update-message").textContent).toContain("内容已更新");
+});
 it("clears a stale selection, preserves merge drafts and refreshes automatically when local edits finish uploading", async () => {
   new ConflictReview({} as App, plugin, "F", "note.md").open();
   await vi.waitFor(() => expect(query("comparison").hidden).toBe(false)); button("manual-merge").click();

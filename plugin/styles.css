@@ -299,8 +299,6 @@
 .oss-app button:disabled{opacity:.45;cursor:not-allowed}
 .oss-app button.quiet{background:transparent;color:var(--muted);border-color:transparent;padding:5px 9px}
 .oss-app button.quiet:hover{background:var(--surface)}
-.oss-app button.icon-button{display:grid;place-items:center;padding:6px;width:30px;height:30px;background:transparent;border:0;color:var(--muted)}
-.oss-app button.icon-button:hover{background:var(--surface)}
 .oss-app :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .oss-app input,.oss-app textarea{width:100%;background:var(--surface);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:9px 11px;font-size:12px}
 .oss-app input::placeholder,.oss-app textarea::placeholder{color:var(--faint)}
@@ -360,7 +358,6 @@
 .oss-app .overlay{position:fixed;inset:0;background:#0009;backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:24px;z-index:20}
 .oss-app .review-modal{display:flex;flex-direction:column;max-height:calc(100dvh - 48px);width:min(1040px,100%);border:1px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:var(--shadow);overflow:hidden}
 .oss-app .review-head{padding:18px 23px 14px;border-bottom:1px solid var(--line);flex-shrink:0}
-.oss-app .review-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:15px}
 .oss-app .eyebrow{font-size:10px;color:var(--faint);margin-bottom:3px}
 .oss-app .review-head h2{font-size:19px;font-weight:650;letter-spacing:-.3px;overflow-wrap:anywhere}
 .oss-app .review-head .subtitle{font-size:11px;margin-top:5px}
@@ -475,7 +472,7 @@
 .oss-app .version-id{font-size:9px}
 }
 
-.oss-settings-host{container-type:inline-size}.oss-settings-host .shell{border:0;padding:0;box-shadow:none}.oss-settings-host .field-grid{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr)}.oss-app .tree-chevron svg{display:block;width:12px;height:12px}.oss-app .client-detail dl{margin:0}.oss-app .code-pane{font-family:var(--font-monospace)}.oss-review-host{width:min(1040px,95vw);padding:0;overflow:hidden}.oss-overview-host{width:min(850px,95vw)}.oss-review-host .modal-content{padding:0;overflow:hidden;margin:0}.oss-review-host .modal-close-button{display:none}.oss-review-host .oss-app{width:100%}.oss-app .review-modal{border:0;width:100%;max-height:85vh}.oss-app .conflict-list{display:grid;gap:8px}.oss-app .settings-status{font-size:11px;color:var(--text-muted);margin-top:10px}.oss-app .code-row{white-space:pre-wrap}.oss-app .original-choices input{margin:0}.oss-app .tab:focus-visible{outline:2px solid var(--interactive-accent)}
+.oss-settings-host{container-type:inline-size}.oss-settings-host .shell{border:0;padding:0;box-shadow:none}.oss-settings-host .field-grid{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr)}.oss-app .tree-chevron svg{display:block;width:12px;height:12px}.oss-app .client-detail dl{margin:0}.oss-app .code-pane{font-family:var(--font-monospace)}.oss-review-host{width:min(1040px,95vw);padding:0;overflow:hidden}.oss-overview-host{width:min(850px,95vw)}.oss-review-host .modal-content{padding:0;overflow:hidden;margin:0}.oss-review-host .oss-app{width:100%}.oss-app .review-modal{border:0;width:100%;max-height:85vh}.oss-app .conflict-list{display:grid;gap:8px}.oss-app .settings-status{font-size:11px;color:var(--text-muted);margin-top:10px}.oss-app .code-row{white-space:pre-wrap}.oss-app .original-choices input{margin:0}.oss-app .tab:focus-visible{outline:2px solid var(--interactive-accent)}
 @container(max-width:520px){.oss-settings-host .field-grid{grid-template-columns:1fr}.oss-settings-host .client-layout{grid-template-columns:1fr}.oss-settings-host .shell{padding:0}.oss-settings-host .tree-meta{max-width:48%;flex-wrap:wrap}.oss-settings-host .current-device{padding:12px}.oss-settings-host .rule-row{gap:8px}.oss-settings-host .number-field input{width:65px}}
 /* Obsidian styles native forms and hides settings h1; these components own their layout. */
 .oss-app form{display:block;margin:0;padding:0;background:transparent;border:0;border-radius:0;gap:0}
@@ -572,3 +569,6 @@
 .oss-app .language-control { position: relative; display: inline-flex; max-width: 100%; }
 .oss-app .language-control::after { content: ""; position: absolute; right: 11px; top: 12px; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); pointer-events: none; }
 .oss-app .language-control select { appearance: none; width: auto; min-width: 0; max-width: 100%; height: 32px; margin: 0; padding: 0 29px 0 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); box-shadow: none; font-size: 12px; text-align: start; cursor: pointer; }
+
+/* Reserve header space for Obsidian's native modal close button. */
+.oss-review-host .review-head { padding-inline-end: 48px; }

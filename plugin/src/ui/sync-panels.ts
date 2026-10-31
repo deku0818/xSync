@@ -129,7 +129,7 @@ export class ConflictReview extends Modal {
     this.modalEl.addClass("oss-review-host");
     const root = this.contentEl.createDiv("oss-app"), shell = root.createDiv("review-modal"), q = mountTemplate(shell, reviewTemplate, this.plugin.i18n);
     q("review-title").setText(this.path);
-    let review: Review | undefined, closed = false, submitting = false, refreshing = false, again = false, ready = false, syncRequested = false;
+    let review: Review | undefined, closed = false, submitting = false, refreshing = false, again = false, ready = false, syncRequested = false, awaitingLocalChanges = false;
     let mode = "", original = "", companion = "", draft = "", draftInitialized = false;
     let updateMessage = (): string => '';
     const showUpdate = (message: () => string): void => { updateMessage = message; q("update-message").setText(message()); };
@@ -244,7 +244,6 @@ export class ConflictReview extends Modal {
       void draftWrites.catch(() => { if (!closed) q("footer-summary").setText(t("草稿暂未保存，请先保留此窗口。")); }); updateFooter();
     };
     q("defer").onclick = () => this.close();
-    q("close-review").onclick = () => this.close();
     const refresh = async (): Promise<void> => {
       if (closed || submitting || !this.plugin.engine) return;
       if (refreshing) { again = true; return; }
@@ -262,8 +261,8 @@ export class ConflictReview extends Modal {
           q("update-banner").hidden = !changed;
           showUpdate(() => t("内容已更新，请重新选择。{0}", draftInitialized ? t("合并草稿仍保留。") : ""));
           renderCompare();
-        } else if (!ready) { q("update-banner").hidden = false; showUpdate(() => t("最新内容已就绪，请重新选择。")); }
-        ready = versions().length >= 2; syncRequested = false;
+        } else if (awaitingLocalChanges) { q("update-banner").hidden = false; showUpdate(() => t("最新内容已就绪，请重新选择。")); }
+        ready = versions().length >= 2; syncRequested = false; awaitingLocalChanges = false;
         q("comparison").hidden = !ready; q("decisions").hidden = !ready;
         q("review-description").setText(comparable() ? t("双方内容均保留，请对比后选择。") : t("所有版本均保留，可选择一份；两个文件版本也可都保留。"));
       } catch (error) {
@@ -272,6 +271,7 @@ export class ConflictReview extends Modal {
         q("comparison").hidden = true; q("decisions").hidden = true;
         const code = error instanceof Error ? error.message : "";
         const localPending = code === "REVIEW_LOCAL_CHANGES_PENDING" || code === "LOCAL_EDITOR_CHANGES_PENDING";
+        awaitingLocalChanges = localPending;
         let message = t("暂时无法读取最新内容，正在等待重试。原文件与草稿均保留。");
         if (localPending) message = t("正在同步这篇笔记的最新修改，完成后将自动更新对比。");
         else if (code === "NO_REMOTE_CONFLICT") message = t("这篇笔记的冲突已处理，可以关闭此窗口。");
@@ -295,8 +295,10 @@ export class ConflictReview extends Modal {
         if (closed) return;
         const code = error instanceof Error ? error.message : "";
         q("update-banner").hidden = false;
-        showUpdate(() => ["REVIEW_STALE", "REVIEW_LOCAL_CHANGES_PENDING", "LOCAL_EDITOR_CHANGES_PENDING"].includes(code) ? t("笔记有新修改，正在更新对比。合并草稿仍保留。") : t("暂时没有处理成功，原文件与草稿均保留。"));
-        mode = ""; ready = false;
+        const stale = ["REVIEW_STALE", "REVIEW_LOCAL_CHANGES_PENDING", "LOCAL_EDITOR_CHANGES_PENDING"].includes(code);
+        const diagnostic = /^[A-Z][A-Z0-9_]{2,79}$/.test(code) ? code : "SYNC_INCOMPLETE";
+        showUpdate(() => stale ? t("笔记有新修改，正在更新对比。合并草稿仍保留。") : t("暂时没有处理成功（{0}），请重试。原文件与草稿均保留。", diagnostic));
+        if (stale) { mode = ""; ready = false; }
       } finally { submitting = false; if (!closed) { refreshChoices(); void refresh(); } }
     };
     const unsubscribe = this.plugin.subscribe(() => { void refresh(); });

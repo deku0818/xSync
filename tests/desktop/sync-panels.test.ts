@@ -73,7 +73,8 @@ it.each(['zh', 'en'] as const)('shows pending connection and the old-state failu
   } finally { dispose(); }
 });
 beforeEach(() => {
-  browser = new JSDOM("", { url: "https://fixture.invalid" }); vi.stubGlobal("window", browser.window); vi.stubGlobal("document", browser.window.document);
+  browser = new JSDOM("", { url: "https://fixture.invalid", pretendToBeVisual: true }); vi.stubGlobal("window", browser.window); vi.stubGlobal("document", browser.window.document);
+  browser.window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
   Object.assign(browser.window.HTMLElement.prototype, {
     createEl: element,
     createDiv(this: HTMLElement, options: string | { cls?: string } = {}) { return element.call(this, "div", typeof options === "string" ? { cls: options } : options); },
@@ -217,6 +218,106 @@ it("clears a stale selection, preserves merge drafts and refreshes automatically
   button("manual-merge").click(); expect((query("merge-editor") as HTMLTextAreaElement).value).toBe("keep my merge draft");
   button("confirm").click(); await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest, "", undefined, new TextEncoder().encode("keep my merge draft")));
 });
+it('starts a merge from the local version, saves base changes and can undo a replacement', async () => {
+  new ConflictReview({} as App, plugin, 'F', 'note.md').open();
+  await vi.waitFor(() => expect(button('manual-merge').disabled).toBe(false));
+  button('manual-merge').click();
+  const editor = query('merge-editor') as HTMLTextAreaElement;
+  expect(editor.value).toBe('computer first content');
+  expect(query('comparison').hidden).toBe(false); expect(query('merge-detail').hidden).toBe(false);
+  await vi.waitFor(() => expect(plugin.engine!.saveMergeDraft).toHaveBeenLastCalledWith('F', editor.value));
+  editor.value = 'my partial merge'; editor.dispatchEvent(new browser.window.Event('input'));
+  button('base-b').click(); expect(editor.value).toBe('phone content');
+  button('undo-base').click(); expect(editor.value).toBe('my partial merge');
+  button('choice-a').click(); button('manual-merge').click(); expect(editor.value).toBe('my partial merge');
+  await vi.waitFor(() => expect(query('draft-feedback').textContent).toBe('草稿已保存'));
+  button('confirm').click();
+  await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest, '', undefined, new TextEncoder().encode('my partial merge')));
+});
+it('waits for an existing merge draft before enabling merge and never replaces it with a source', async () => {
+  let loaded!: (text: string) => void;
+  plugin.engine!.loadMergeDraft = vi.fn(() => new Promise<string | null>(resolve => { loaded = resolve; }));
+  new ConflictReview({} as App, plugin, 'F', 'note.md').open();
+  await vi.waitFor(() => expect(query('comparison').hidden).toBe(false));
+  expect(button('manual-merge').disabled).toBe(true);
+  loaded('saved before closing'); await vi.waitFor(() => expect(button('manual-merge').disabled).toBe(false));
+  button('manual-merge').click(); expect((query('merge-editor') as HTMLTextAreaElement).value).toBe('saved before closing');
+  expect(plugin.engine!.saveMergeDraft).not.toHaveBeenCalled();
+});
+it.each(['end', 'selection'] as const)('inserts at the actual %s of a restored draft before the editor is focused', async position => {
+  const saved = 'saved merge content';
+  plugin.engine!.loadMergeDraft = async () => saved;
+  new ConflictReview({} as App, plugin, 'F', 'note.md').open();
+  await vi.waitFor(() => expect(button('manual-merge').disabled).toBe(false)); button('manual-merge').click();
+  const editor = query('merge-editor') as HTMLTextAreaElement;
+  expect(editor.selectionStart).toBe(saved.length);
+  if (position === 'selection') editor.setSelectionRange(6, 11);
+  const start = editor.selectionStart, end = editor.selectionEnd;
+  const range = document.createRange(), selection = document.getSelection()!;
+  range.selectNodeContents(query('pane-b').querySelector('.code-text')!);
+  selection.removeAllRanges(); selection.addRange(range);
+  document.dispatchEvent(new browser.window.Event('selectionchange'));
+  button('insert-b').click();
+  const expected = saved.slice(0, start) + 'phone content' + saved.slice(end);
+  expect(editor.value).toBe(expected);
+  expect([editor.selectionStart, editor.selectionEnd]).toEqual([start + 13, start + 13]);
+  await vi.waitFor(() => expect(plugin.engine!.saveMergeDraft).toHaveBeenLastCalledWith('F', expected));
+  button('confirm').click();
+  await vi.waitFor(() => expect(plugin.resolveConflict).toHaveBeenCalledWith(latest, '', undefined, new TextEncoder().encode(expected)));
+});
+it('copies source text without line numbers or alignment gaps and inserts a selection at the saved caret', async () => {
+  latest = review('computer-1', 'local first\nlocal last');
+  latest.versions[1]!.text = 'phone first\n\nphone middle\nphone last';
+  const writeText = vi.fn(async () => {});
+  Object.defineProperty(browser.window.navigator, 'clipboard', { value: { writeText } });
+  new ConflictReview({} as App, plugin, 'F', 'note.md').open();
+  await vi.waitFor(() => expect(button('manual-merge').disabled).toBe(false));
+  button('copy-b').click(); await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(latest.versions[1]!.text));
+  const pane = query('pane-b'), selection = document.getSelection()!, range = document.createRange();
+  range.selectNodeContents(pane); selection.addRange(range);
+  const setData = vi.fn(), copy = new browser.window.Event('copy', { bubbles: true, cancelable: true });
+  Object.defineProperty(copy, 'clipboardData', { value: { setData } }); pane.dispatchEvent(copy);
+  expect(setData).toHaveBeenCalledWith('text/plain', latest.versions[1]!.text);
+  const lines = pane.querySelectorAll<HTMLElement>('.code-text[data-line]');
+  const first = [...lines].find(line => line.dataset.line === '1')!, second = [...lines].find(line => line.dataset.line === '2')!;
+  range.setStart(first.firstChild!, first.textContent!.length); range.setEnd(second, 0);
+  selection.removeAllRanges(); selection.addRange(range); pane.dispatchEvent(copy);
+  expect(setData).toHaveBeenLastCalledWith('text/plain', '\n');
+  button('manual-merge').click();
+  const editor = query('merge-editor') as HTMLTextAreaElement;
+  editor.setSelectionRange(6, 11); editor.dispatchEvent(new browser.window.Event('select'));
+  const text = pane.querySelector<HTMLElement>('.code-text[data-line="3"]')!.firstChild!;
+  range.setStart(text, 0); range.setEnd(text, 12); selection.removeAllRanges(); selection.addRange(range);
+  document.dispatchEvent(new browser.window.Event('selectionchange'));
+  expect(button('insert-b').disabled).toBe(false); button('insert-b').click();
+  expect(editor.value).toBe('local phone middle\nlocal last');
+  await vi.waitFor(() => expect(plugin.engine!.saveMergeDraft).toHaveBeenLastCalledWith('F', editor.value));
+});
+it('preserves the editing selection during background status refreshes and bounds saved merge size', async () => {
+  new ConflictReview({} as App, plugin, 'F', 'note.md').open();
+  await vi.waitFor(() => expect(button('manual-merge').disabled).toBe(false)); button('manual-merge').click();
+  const editor = query('merge-editor') as HTMLTextAreaElement;
+  editor.value = 'preserve this selection'; editor.dispatchEvent(new browser.window.Event('input'));
+  editor.setSelectionRange(2, 9); emit();
+  await vi.waitFor(() => expect(button('confirm').disabled).toBe(false));
+  expect([editor.selectionStart, editor.selectionEnd]).toEqual([2, 9]);
+  editor.value = '字'.repeat(22000); editor.dispatchEvent(new browser.window.Event('input'));
+  expect(button('confirm').disabled).toBe(true); expect(query('draft-feedback').textContent).toContain('64 KB');
+  editor.value = 'fits again'; editor.dispatchEvent(new browser.window.Event('input'));
+  await vi.waitFor(() => expect(query('draft-feedback').textContent).toBe('草稿已保存'));
+  expect(button('confirm').disabled).toBe(false);
+});
+it('keeps deletion explicit and uses only the host close button, releasing subscriptions on close', async () => {
+  latest.versions[0] = { ...latest.versions[0]!, kind: 'deleted', text: '', bytes: new Uint8Array() };
+  new ConflictReview({} as App, plugin, 'F', 'note.md').open();
+  await vi.waitFor(() => expect(button('choice-a').disabled).toBe(false)); button('choice-a').click();
+  expect(query('pane-a').textContent).toBe('这份修改删除了文件。'); expect(button('choice-both').disabled).toBe(true);
+  expect(button('confirm').textContent).toBe('确认删除文件'); expect(query('choice-summary').hidden).toBe(false);
+  expect(document.querySelector('[data-ui="close-review"]')).toBeNull(); expect(document.querySelectorAll('.modal-close-button')).toHaveLength(1);
+  (document.querySelector('.modal-close-button') as HTMLButtonElement).click();
+  expect(listeners.size).toBe(0); document.dispatchEvent(new browser.window.Event('selectionchange'));
+  expect(document.querySelector('.modal-container')).toBeNull();
+});
 it("keeps transient failures quiet and does not expose arbitrary error text or paths in problem details", async () => {
   currentStatus = { ...currentStatus, state: "needs-attention", errors: ["NETWORK_TIMEOUT"] }; new SyncOverview({} as App, plugin, () => {}).open();
   await vi.waitFor(() => expect(query("status-title").textContent).toBe("等待连接")); expect(query("retry").hidden).toBe(true);
@@ -262,7 +363,7 @@ it('preserves merge decisions and draft contents across a live language switch',
  await vi.waitFor(() => expect(query('comparison').hidden).toBe(false)); button('manual-merge').click();
  const editor = query('merge-editor') as HTMLTextAreaElement;
  editor.value = '已同步：用户合并的中文内容'; editor.dispatchEvent(new browser.window.Event('input'));
- await vi.waitFor(() => expect(plugin.engine!.saveMergeDraft).toHaveBeenCalledOnce());
+ await vi.waitFor(() => expect(plugin.engine!.saveMergeDraft).toHaveBeenLastCalledWith('F', '已同步：用户合并的中文内容'));
  plugin.i18n.preference = 'en'; emit();
  await vi.waitFor(() => expect(button('confirm').textContent).toBe('Confirm merged result'));
  expect(editor.value).toBe('已同步：用户合并的中文内容'); expect(query('version-a-name').textContent).toBe('我的电脑');

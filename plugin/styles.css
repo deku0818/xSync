@@ -472,7 +472,7 @@
 .oss-app .version-id{font-size:9px}
 }
 
-.oss-settings-host{container-type:inline-size}.oss-settings-host .shell{border:0;padding:0;box-shadow:none}.oss-settings-host .field-grid{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr)}.oss-app .tree-chevron svg{display:block;width:12px;height:12px}.oss-app .client-detail dl{margin:0}.oss-app .code-pane{font-family:var(--font-monospace)}.oss-review-host{width:min(1040px,95vw);padding:0;overflow:hidden}.oss-overview-host{width:min(850px,95vw)}.oss-review-host .modal-content{padding:0;overflow:hidden;margin:0}.oss-review-host .oss-app{width:100%}.oss-app .review-modal{border:0;width:100%;max-height:85vh}.oss-app .conflict-list{display:grid;gap:8px}.oss-app .settings-status{font-size:11px;color:var(--text-muted);margin-top:10px}.oss-app .code-row{white-space:pre-wrap}.oss-app .original-choices input{margin:0}.oss-app .tab:focus-visible{outline:2px solid var(--interactive-accent)}
+.oss-settings-host{container-type:inline-size}.oss-settings-host .shell{border:0;padding:0;box-shadow:none}.oss-settings-host .field-grid{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr)}.oss-app .tree-chevron svg{display:block;width:12px;height:12px}.oss-app .client-detail dl{margin:0}.oss-app .code-pane{font-family:var(--font-monospace)}.oss-overview-host{width:min(850px,95vw)}.oss-review-host .oss-app{width:100%}.oss-app .conflict-list{display:grid;gap:8px}.oss-app .settings-status{font-size:11px;color:var(--text-muted);margin-top:10px}.oss-app .code-row{white-space:pre-wrap}.oss-app .original-choices input{margin:0}.oss-app .tab:focus-visible{outline:2px solid var(--interactive-accent)}
 @container(max-width:520px){.oss-settings-host .field-grid{grid-template-columns:1fr}.oss-settings-host .client-layout{grid-template-columns:1fr}.oss-settings-host .shell{padding:0}.oss-settings-host .tree-meta{max-width:48%;flex-wrap:wrap}.oss-settings-host .current-device{padding:12px}.oss-settings-host .rule-row{gap:8px}.oss-settings-host .number-field input{width:65px}}
 /* Obsidian styles native forms and hides settings h1; these components own their layout. */
 .oss-app form{display:block;margin:0;padding:0;background:transparent;border:0;border-radius:0;gap:0}
@@ -544,21 +544,9 @@
 .oss-app .quiet-diagnostics { font-size: 11px; color: var(--muted); margin-top: 12px; }
 .oss-app .quiet-diagnostics p { margin-top: 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .oss-app [data-ui="retry"] { color: var(--text-normal); }
-.oss-app .quiet-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.oss-app .quiet-choices button { white-space: normal; }
-.oss-app .quiet-choices button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--tint); }
-.oss-app .quiet-choice-summary { font-size: 11px; color: var(--muted); margin: 10px 0; min-height: 32px; overflow-wrap: anywhere; }
 .oss-app .version-head small { font-size: 10px; color: var(--muted); }
-.oss-app [data-ui="both-detail"] { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
-.oss-app [data-ui="both-detail"] .inline-label { margin-top: 10px; }
-.oss-app [data-ui="manual-merge"] { font-size: 11px; padding: 3px 0; }
-@media (max-width: 600px) { .oss-app .quiet-choices { grid-template-columns: 1fr; } }
 .oss-status-container .modal-bg { backdrop-filter: none; }
 .oss-app .quiet-status-head span { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oss-review-host { width: min(850px, 95vw); }
-.oss-app h3.decision-heading { font-size: 13px; font-weight: 550; margin-top: 18px; }
-.oss-review-host .code-pane { height: 200px; }
-@media (max-width: 600px) { .oss-review-host .code-pane { height: 160px; } }
 .oss-overview-host, .oss-review-host { box-sizing: border-box; }
 .oss-sync-ribbon { position: relative; }
 .oss-sync-ribbon[data-state="conflict"]::after { content: attr(data-count); position: absolute; top: 0; right: 0; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: var(--text-warning); color: var(--background-primary); font-size: 9px; line-height: 13px; text-align: center; }
@@ -570,5 +558,102 @@
 .oss-app .language-control::after { content: ""; position: absolute; right: 11px; top: 12px; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); pointer-events: none; }
 .oss-app .language-control select { appearance: none; width: auto; min-width: 0; max-width: 100%; height: 32px; margin: 0; padding: 0 29px 0 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); box-shadow: none; font-size: 12px; text-align: start; cursor: pointer; }
 
-/* Reserve header space for Obsidian's native modal close button. */
-.oss-review-host .review-head { padding-inline-end: 48px; }
+
+/* Compact conflict review: source text owns the space; editing keeps both originals visible. */
+.oss-review-host{width:min(1200px,96vw);max-width:96vw;height:min(900px,92dvh);max-height:92dvh;padding:0;overflow:hidden;container-type:inline-size}
+.oss-review-host .modal-title:empty{display:none}
+.oss-review-host .modal-content{height:100%;margin:0;padding:0;overflow:hidden}
+.oss-review-host .oss-app{height:100%}
+.oss-review-host .review-modal{height:100%;width:100%;max-height:none;border:0;border-radius:0;box-shadow:none;background:var(--panel)}
+.oss-review-host .review-head{display:flex;align-items:center;gap:12px;min-height:64px;padding:12px 56px 12px 18px;border-bottom:1px solid var(--line)}
+.oss-review-host .review-file-icon{display:grid;place-items:center;flex-shrink:0;width:32px;height:36px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--faint)}
+.oss-review-host .review-file-icon svg{width:18px;height:20px}
+.oss-review-host .review-file-heading{flex:1;min-width:0}
+.oss-review-host .review-head h2{font-size:14px;line-height:1.5;font-weight:600;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.oss-review-host .review-file-heading p{font-size:11px;line-height:1.5;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.oss-review-host .review-navigation{display:flex;align-items:center;gap:2px;flex-shrink:0;padding:2px 3px 2px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.oss-review-host .review-navigation span{font-size:11px;color:var(--muted);margin-right:5px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.oss-review-host .review-navigation button{display:grid;place-items:center;width:25px;height:25px;padding:4px;border:0;border-radius:5px;background:transparent;box-shadow:none;color:var(--muted)}
+.oss-review-host .review-navigation button:hover{background:var(--hover);color:var(--text)}
+.oss-review-host .review-navigation svg{width:13px;height:13px}
+.oss-review-host .review-status,.oss-review-host .review-selection-note{margin:0;padding:8px 16px;font-size:12px;color:var(--muted);flex-shrink:0}
+.oss-review-host .review-selection-note{color:var(--red)}
+.oss-review-host .review-modal>.update-banner{margin:8px 12px 0;padding:7px 10px;font-size:12px;border-radius:7px;flex-shrink:0}
+.oss-review-host .review-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);flex:1;min-height:0;padding:10px 12px;gap:10px;overflow:hidden;background:var(--surface)}
+.oss-review-host .review-modal[data-mode="merge"] .review-workspace{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.12fr)}
+.oss-review-host .multiple-versions .review-workspace{grid-auto-rows:minmax(200px,1fr);overflow:auto}
+.oss-review-host .version,.oss-review-host .merge-result{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-radius:9px}
+.oss-review-host .merge-result{border-color:color-mix(in srgb,var(--accent) 36%,var(--line))}
+.oss-review-host .version-head{display:flex;align-items:center;gap:7px;min-height:39px;padding:6px 10px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--surface) 35%,var(--panel));flex-shrink:0}
+.oss-review-host .version-head strong{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.oss-review-host .version-head small{font-size:11px;color:var(--muted);padding:1px 5px;border-radius:4px;background:var(--surface);white-space:nowrap}
+.oss-review-host .review-mini{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:25px;padding:3px 6px;font-size:11px;font-weight:400;border:0;border-radius:5px;box-shadow:none;background:transparent;color:var(--muted)}
+.oss-review-host .review-mini:hover{background:var(--hover);color:var(--text)}
+.oss-review-host .review-mini:disabled{cursor:default;opacity:.4}
+.oss-review-host .review-mini svg{width:13px;height:13px}
+.oss-review-host .copy-version{margin-left:auto;flex-shrink:0}
+.oss-review-host .code-pane{position:relative;flex:1;min-height:0;height:auto;overflow:auto;padding:10px 0 14px;scrollbar-gutter:stable;overscroll-behavior:contain;font:13px/24px var(--font-monospace);user-select:text;cursor:text}
+.oss-review-host .code-row{grid-template-columns:35px minmax(0,1fr);min-height:24px;align-content:start}
+.oss-review-host .line-number{font-size:10px;line-height:24px;color:var(--faint);padding:0 9px 0 0;user-select:none}
+.oss-review-host .code-text{padding-right:12px;line-height:24px}
+.oss-review-host .changed-left .line-number{color:var(--red)}
+.oss-review-host .changed-right .line-number{color:var(--green)}
+.oss-review-host .is-current.changed-left{box-shadow:inset 2px 0 color-mix(in srgb,var(--red) 65%,var(--panel))}
+.oss-review-host .is-current.changed-right{box-shadow:inset 2px 0 color-mix(in srgb,var(--green) 65%,var(--panel))}
+.oss-review-host .code-pane::-webkit-scrollbar,.oss-review-host .merge-editor::-webkit-scrollbar{width:7px;height:7px}
+.oss-review-host .code-pane::-webkit-scrollbar-track,.oss-review-host .merge-editor::-webkit-scrollbar-track{background:transparent}
+.oss-review-host .code-pane::-webkit-scrollbar-thumb,.oss-review-host .merge-editor::-webkit-scrollbar-thumb{border:1px solid var(--panel);border-radius:8px;background:var(--line)}
+.oss-review-host .code-pane:hover::-webkit-scrollbar-thumb,.oss-review-host .merge-editor:hover::-webkit-scrollbar-thumb{background:var(--faint)}
+.oss-review-host .source-actions{display:none;align-items:center;justify-content:space-between;gap:5px;min-height:37px;padding:5px 8px;border-top:1px solid var(--line);background:color-mix(in srgb,var(--surface) 35%,var(--panel));flex-shrink:0}
+.oss-review-host .review-modal[data-mode="merge"] .source-actions{display:flex}
+.oss-review-host .use-base{border:1px solid var(--line);background:var(--panel)}
+.oss-review-host .insert-selection:not(:disabled){background:var(--tint);color:var(--accent)}
+.oss-review-host .merge-result .version-head{background:var(--tint)}
+.oss-review-host .merge-result .version-head>svg{width:14px;height:14px;color:var(--accent)}
+.oss-review-host .merge-result [data-ui="draft-origin"]{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.oss-review-host .merge-result [data-ui="undo-base"]{margin-left:auto;flex-shrink:0}
+.oss-review-host .merge-result:has([data-ui="undo-base"]:not([hidden])) [data-ui="draft-origin"]{display:none}
+.oss-review-host .merge-editor{flex:1;width:100%;min-height:0;margin:0;padding:10px 14px;border:0;border-radius:0;resize:none;background:var(--panel);color:var(--text);font:13px/24px var(--font-monospace);box-shadow:none;tab-size:2}
+.oss-review-host .merge-editor:focus-visible{outline-offset:-2px}
+.oss-review-host .merge-status{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:37px;padding:7px 11px;font-size:11px;color:var(--muted);border-top:1px solid var(--line);flex-shrink:0}
+.oss-review-host [data-ui="draft-feedback"]{min-width:0;overflow-wrap:anywhere}
+.oss-review-host [data-ui="draft-count"]{flex-shrink:0;white-space:nowrap;font-variant-numeric:tabular-nums}
+.oss-review-host .review-companion{display:flex;align-items:center;flex-wrap:wrap;gap:9px;padding:0 16px 9px;font-size:12px;flex-shrink:0}
+.oss-review-host .review-companion label{color:var(--muted);white-space:nowrap}
+.oss-review-host .review-companion input{height:29px;max-width:420px;padding:3px 8px;font-size:12px}
+.oss-review-host .review-companion p{color:var(--red);font-size:11px}
+.oss-review-host .review-footer{min-height:60px;margin-top:auto;padding:10px 14px;gap:12px;background:var(--panel);border-top:1px solid var(--line);align-items:center;flex-direction:row}
+.oss-review-host .review-modes{display:flex;align-items:center;flex-wrap:wrap;gap:2px;padding:3px;min-width:0;border:1px solid var(--line);border-radius:9px;background:var(--surface)}
+.oss-review-host .review-modes button{height:28px;max-width:190px;padding:3px 10px;font-size:11px;font-weight:500;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--muted);box-shadow:none;overflow:hidden;text-overflow:ellipsis}
+.oss-review-host .review-modes button:hover{background:var(--hover);color:var(--text)}
+.oss-review-host .review-modes button[aria-pressed="true"]{background:var(--panel);color:var(--accent);border-color:var(--line);box-shadow:0 1px 3px color-mix(in srgb,var(--text) 5%,transparent)}
+.oss-review-host .review-mode-divider{width:1px;height:12px;background:var(--line);margin:0 4px}
+.oss-review-host .footer-actions{width:auto;align-items:center;justify-content:flex-end;gap:9px;margin-left:auto}
+.oss-review-host .footer-actions button{height:32px;padding:5px 13px;font-size:11px;font-weight:500;border-radius:7px}
+.oss-review-host .footer-actions .primary{min-width:82px;max-width:min(280px,60cqw);overflow:hidden;text-overflow:ellipsis;box-shadow:inset 0 1px color-mix(in srgb,var(--panel) 15%,transparent)}
+@container (max-width:980px){
+  .oss-review-host .review-modal[data-mode="merge"] .review-workspace{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(0,1.1fr) minmax(0,1fr)}
+  .oss-review-host .merge-result{grid-column:1/-1}
+  .oss-review-host .review-footer{flex-wrap:wrap}
+}
+@container (max-width:600px){
+  .oss-review-host .review-head{padding-left:12px;gap:8px;min-height:62px}
+  .oss-review-host .review-file-icon{width:26px;height:31px;border-radius:7px}
+  .oss-review-host .review-head h2{font-size:13px}
+  .oss-review-host .review-navigation{padding:2px;gap:0;border:0;background:transparent}
+  .oss-review-host .review-navigation span{font-size:10px;max-width:48px;overflow:hidden}
+  .oss-review-host .review-workspace{padding:7px;gap:7px}
+  .oss-review-host .version-head{gap:4px;padding-inline:7px}
+  .oss-review-host .version-head small,.oss-review-host .copy-version span{display:none}
+  .oss-review-host .code-row{grid-template-columns:26px minmax(0,1fr)}
+  .oss-review-host .code-text{padding-right:6px}
+  .oss-review-host .source-actions{padding-inline:4px;flex-wrap:wrap}
+  .oss-review-host .source-actions button{font-size:10px;padding-inline:4px}
+  .oss-review-host .source-actions svg{display:none}
+  .oss-review-host .merge-editor{font-size:16px;line-height:1.6}
+  .oss-review-host .review-footer{padding:7px;gap:5px}
+  .oss-review-host .review-modes{width:100%;justify-content:space-between}
+  .oss-review-host .review-modes button{font-size:10px;max-width:130px;padding-inline:6px}
+  .oss-review-host .review-mode-divider{margin-inline:1px}
+  .oss-review-host .footer-actions button{height:30px;font-size:11px;padding:4px 9px}
+}

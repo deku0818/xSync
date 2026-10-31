@@ -8,6 +8,11 @@ const iconMarkup = new Map([
   ["alert", "<path d=\"M10.3 3.5 2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.5a2 2 0 0 0-3.4 0zM12 9v4m0 4h.01\"/>"],
   ["check", "<path d=\"m5 12 4 4L19 6\"/>"],
   ["file", "<path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6\"/>"],
+  ["copy", "<rect x=\"8\" y=\"8\" width=\"12\" height=\"13\" rx=\"2\"/><path d=\"M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3\"/>"],
+  ["pen", "<path d=\"m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z\"/>"],
+  ["up", "<path d=\"m6 14 6-6 6 6\"/>"],
+  ["down", "<path d=\"m6 10 6 6 6-6\"/>"],
+  ["arrow", "<path d=\"M4 12h16m-6-6 6 6-6 6\"/>"],
 ]);
 /** Templates are static repository markup. All server/user values are assigned via textContent/value. */
 export interface TemplateQuery {

@@ -208,6 +208,7 @@ export class ConflictReview extends Modal {
       editor.disabled = submitting;
       q<HTMLButtonElement>("manual-merge").disabled = submitting || !ready || !comparable() || !draftLoaded;
       q("draft-origin").setText(draftSource ? t("以「{0}」为底稿", draftSource) : draftInitialized ? t("已编辑") : "");
+      q("draft-origin").hidden = draftHistory.length > 0;
       q("draft-count").setText(t("{0} 字符", draft.length)); q("draft-feedback").setText(draftFeedback());
       q("undo-base").hidden = draftHistory.length === 0; q<HTMLButtonElement>("undo-base").disabled = submitting || !ready;
       q("choice-summary").hidden = chosenVersion()?.kind !== "deleted";

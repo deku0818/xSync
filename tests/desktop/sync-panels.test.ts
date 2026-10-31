@@ -82,6 +82,7 @@ beforeEach(() => {
     setText(this: HTMLElement, text: string) { this.textContent = text; },
     addClass(this: HTMLElement, name: string) { this.classList.add(name); },
     empty(this: HTMLElement) { this.replaceChildren(); },
+    setCssProps(this: HTMLElement, props: Record<string, string>) { for (const [name, value] of Object.entries(props)) this.style.setProperty(name, value); },
   });
   host.close.length = 0; host.notices.length = 0; listeners = new Set(); pending = false; latest = review("computer-1", "computer first content");
   currentStatus = { state: "complete", outbox: 0, inbox: 0, conflicts: 0, errors: [] };

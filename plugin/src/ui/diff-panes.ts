@@ -21,7 +21,7 @@ export function selectedSourceText(pane: HTMLElement): string {
 
 /** Keeps wrapped lines aligned, scroll positions linked and difference navigation in one place. */
 export class DiffPanes {
-  private view: Window & typeof globalThis;
+  private view: NonNullable<Document["defaultView"]>;
   private observer: ResizeObserver;
   private frame?: number;
   private scrollFrame?: number;
@@ -76,9 +76,12 @@ export class DiffPanes {
     this.view.cancelAnimationFrame(this.frame ?? 0);
     this.frame = this.view.requestAnimationFrame(() => {
       const rows = this.panes.map(pane => [...pane.querySelectorAll<HTMLElement>(".code-row")]);
-      for (const side of rows) for (const row of side) row.style.minHeight = "";
+      for (const side of rows) for (const row of side) row.setCssProps({ "min-height": "" });
       const heights = rows[0]!.map((row, index) => Math.max(row.getBoundingClientRect().height, rows[1]![index]!.getBoundingClientRect().height));
-      rows[0]!.forEach((row, index) => { row.style.minHeight = rows[1]![index]!.style.minHeight = `${heights[index]}px`; });
+      rows[0]!.forEach((row, index) => {
+        const height = { "min-height": `${heights[index]}px` };
+        row.setCssProps(height); rows[1]![index]!.setCssProps(height);
+      });
     });
   }
   navigate(delta: number): void {
